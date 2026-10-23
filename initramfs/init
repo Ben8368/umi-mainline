@@ -1,0 +1,404 @@
+#!/bin/busybox sh
+# initramfs/init - bring-up init for Xiaomi Mi 10 (umi) mainline kernel
+#
+# NOTE: everything this script PRINTS is plain ASCII English on purpose.
+#       The framebuffer console uses the VGA 8x16 font, which has no CJK
+#       glyphs - Chinese text would show up as garbage boxes on the phone
+#       screen (and in the panic screen / QR code). Comments are ASCII too,
+#       so a simple grep can verify the whole file is safe.
+#       (scripts/mkinitramfs.sh runs that check automatically.)
+#
+# What it does, in order:
+#   1. mount proc/sys/dev, set up output channels (prefer /dev/kmsg)
+#   2. collect info / pstore(ramoops) / block devices / dmesg / subsystem state
+#   3. optional: dump the log to a raw partition (read back with TWRP)
+#   4. USB gadget: CDC-ACM serial + mass storage (FAT image with the logs)
+#   5. optional: self-test the drm_panic QR screen via debugfs
+#
+# Output goes to: screen (fbcon), USB serial, and txt files on the USB drive.
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+BB=/bin/busybox
+LOGDIR=/tmp/logs
+
+$BB --install -s /bin >/dev/null 2>&1
+$BB --install -s /sbin >/dev/null 2>&1
+$BB --install -s /usr/bin >/dev/null 2>&1
+
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm /tmp /mnt/usb
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null
+mount -t tmpfs tmpfs /tmp 2>/dev/null
+# debugfs is needed for /sys/kernel/debug/devices_deferred (which devices are
+# stuck on EPROBE_DEFER and who they are waiting for) - the single most useful
+# file when a display pipeline refuses to come up.
+mount -t debugfs none /sys/kernel/debug 2>/dev/null
+mkdir -p $LOGDIR
+
+# ---- output channels -------------------------------------------------------
+# Prefer /dev/kmsg: messages land in the kernel ring buffer, so (a) the kernel
+# prints them to the console for us, and (b) they get saved by pstore/ramoops
+# along with everything else - "how far did the initramfs get" is then part of
+# the crash log. (Technique borrowed from MT6895-Mainline's init.c.)
+OUTS="/dev/console"
+[ -c /dev/tty0 ] && OUTS="/dev/tty0 $OUTS"
+[ -c /dev/ttyMSM0 ] && OUTS="/dev/ttyMSM0 $OUTS"
+
+KMSG=0
+if [ -w /dev/kmsg ]; then
+	echo "<6>UMI-INIT: kmsg channel is available" >>/dev/kmsg 2>/dev/null && KMSG=1
+fi
+
+say() {
+	if [ "$KMSG" = 1 ]; then
+		echo "<6>UMI-INIT: $*" >>/dev/kmsg 2>/dev/null
+	else
+		for o in $OUTS; do echo "$*" >>"$o" 2>/dev/null; done
+	fi
+}
+
+# Big blobs (like the previous crash log) go to the screen/serial only, and are
+# deliberately NOT written to kmsg: that would flush the ring buffer and lose
+# this boot's own log.
+dumpfile() {
+	[ -f "$1" ] || { say "   <missing: $1>"; return; }
+	for o in $OUTS; do cat "$1" >>"$o" 2>/dev/null; done
+}
+
+say ""
+say "############################################################"
+say "#  UMI MAINLINE BRING-UP INITRAMFS"
+say "#  If you can read this, the kernel booted, the console works"
+say "#  and user space is running."
+say "#  The log also goes to: USB serial + txt files on the USB drive"
+say "############################################################"
+
+# ------------------------------------------------------------------ [1] info
+say ""
+say "==== [1] basic info ===="
+{
+	echo "kernel     : $(cat /proc/version 2>/dev/null)"
+	echo "cmdline    : $(cat /proc/cmdline 2>/dev/null)"
+	[ -f /proc/device-tree/model ] && echo "DT model   : $(tr -d '\000' </proc/device-tree/model)"
+	[ -f /proc/device-tree/compatible ] && echo "compatible : $(tr '\000' ' ' </proc/device-tree/compatible)"
+	echo "tty devices: $(ls /dev/tty* 2>/dev/null | tr '\n' ' ')"
+	echo "framebuffer: $(ls /dev/fb* 2>/dev/null | tr '\n' ' ')"
+	[ -f /sys/class/graphics/fb0/virtual_size ] && echo "fb0 size   : $(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)"
+	echo "uptime     : $(cat /proc/uptime 2>/dev/null)"
+	echo "initramfs  : alive"
+} >$LOGDIR/info.txt 2>&1
+dumpfile $LOGDIR/info.txt
+
+# ------------------------------------------------------------------ [2] pstore
+say ""
+say "==== [2] pstore / ramoops: last boot's dying words ===="
+{
+	echo "==== pstore records from the previous boot ===="
+	if [ -d /sys/fs/pstore ]; then
+		FILES=$(ls /sys/fs/pstore/ 2>/dev/null)
+		if [ -z "$FILES" ]; then
+			echo "  /sys/fs/pstore is empty (clean shutdown, or ramoops did not register)"
+			echo "  ramoops/pstore lines from dmesg:"
+			dmesg 2>/dev/null | grep -i -E 'ramoops|pstore' | head -20
+		else
+			for f in $FILES; do
+				echo ""
+				echo "  ---------------- /sys/fs/pstore/$f ----------------"
+				cat "/sys/fs/pstore/$f" 2>/dev/null
+				echo "  ---------------- end $f ----------------"
+			done
+		fi
+	else
+		echo "  /sys/fs/pstore does not exist"
+	fi
+} >$LOGDIR/pstore.txt 2>&1
+dumpfile $LOGDIR/pstore.txt
+
+# ------------------------------------------------------------------ [3] blocks
+# Useful to figure out which partition is the log area (for pstore/blk later).
+say ""
+say "==== [3] block devices / partitions ===="
+{
+	echo "==== /sys/class/block ===="
+	for b in /sys/class/block/*; do
+		[ -e "$b" ] || continue
+		name=$(basename "$b")
+		sz=$(cat "$b/size" 2>/dev/null)
+		[ -n "$sz" ] && echo "  /dev/$name  $((sz / 2)) KiB"
+	done
+	echo ""
+	echo "==== by-name ===="
+	ls -l /dev/block/by-name 2>/dev/null | head -60
+} >$LOGDIR/partitions.txt 2>&1
+dumpfile $LOGDIR/partitions.txt
+
+# ------------------------------------------------------------------ [4] dmesg
+say ""
+say "==== [4] dmesg (full; same text is on screen) ===="
+dmesg 2>/dev/null >$LOGDIR/dmesg.txt
+dumpfile $LOGDIR/dmesg.txt
+
+# ------------------------------------------------------------------ [4a] display
+# Everything the display bring-up needs to answer in one file: did mdss/DPU/DSI/
+# the 7nm PHY probe, what is stuck on EPROBE_DEFER, and did a DRM card appear.
+say ""
+say "==== [4a] display pipeline ===="
+{
+	echo "## dmesg: display related lines"
+	dmesg 2>/dev/null | grep -i -E 'msm|dsi|dpu|mdp|mdss|dispcc|drm|panel|dsc|iommu|interconnect|icc|rpmhpd|gdsc' | head -400
+	echo
+	echo "## deferred probe pending (who is waiting for what)"
+	cat /sys/kernel/debug/devices_deferred 2>/dev/null | head -80
+	echo
+	echo "## platform devices that look display related"
+	ls /sys/bus/platform/devices 2>/dev/null | grep -i -E 'ae[0-9a-f]{5}|disp|dsi|mdss|mdp' | head -40
+	echo
+	echo "## drivers actually bound"
+	for d in msm msm_mdss dsi-phy-7nm msm_dsi_phy simple-framebuffer; do
+		if [ -e "/sys/bus/platform/drivers/$d" ]; then
+			echo "  $d : $(ls /sys/bus/platform/drivers/$d 2>/dev/null | tr '\n' ' ')"
+		else
+			echo "  $d : <driver not registered>"
+		fi
+	done
+	echo
+	echo "## /sys/class/drm"
+	ls -l /sys/class/drm 2>/dev/null
+	for f in /sys/class/drm/card*/status /sys/class/drm/card*/modes \
+	         /sys/class/drm/card*-*/status /sys/class/drm/card*-*/modes; do
+		[ -f "$f" ] && echo "  $f = $(head -c 200 "$f" 2>/dev/null | tr '\n' ' ')"
+	done
+	echo
+	echo "## /proc/interrupts (display IRQs)"
+	grep -i -E 'mdss|mdp|dsi|disp' /proc/interrupts 2>/dev/null
+	echo
+	echo "## /sys/kernel/debug/dri"
+	ls /sys/kernel/debug/dri 2>/dev/null
+} >$LOGDIR/display.txt 2>&1
+dumpfile $LOGDIR/display.txt
+
+say ""
+say "==== [5] key subsystem state ===="
+{
+	for s in "/sys/class/drm" "/sys/bus/platform/drivers/simple-framebuffer" \
+	         "/sys/bus/platform/devices/a90000.serial" "/sys/bus/platform/drivers/qcom-geni-uart" \
+	         "/sys/class/udc" "/sys/class/regulator" "/sys/bus/platform/drivers/ufshcd-qcom" \
+	         "/sys/bus/platform/drivers/msm" "/sys/class/drm/card0" ; do
+		if [ -e "$s" ]; then
+			echo "  $s : $(ls "$s" 2>/dev/null | tr '\n' ' ')"
+		else
+			echo "  $s : <absent>"
+		fi
+	done
+} >$LOGDIR/subsystems.txt 2>&1
+dumpfile $LOGDIR/subsystems.txt
+
+# ------------------------------------------------------------------ [5a] panel
+# The panel driver brings the display up at its lowest brightness (1/2047, the
+# DT bl-min) on purpose - we never want a bug to light the screen up bright.
+# For a bring-up image that is too dim to read, so bump it to something
+# comfortable here, in user space, where it is obvious and easy to undo.
+if [ -w /sys/class/backlight/umi-panel/brightness ]; then
+	MAXB=$(cat /sys/class/backlight/umi-panel/max_brightness 2>/dev/null)
+	#
+	# Measured 2026-10-24: this panel (j2_mp_42_02_0b) is completely BLACK at
+	# 400/2047 and only lights up near the top of the range - the brightness
+	# mapping is far steeper than linear, so small values look like "off".
+	# Bring-up default is therefore 1500; go lower only when testing in the dark.
+	#
+	DEFB=1500
+	[ -n "$MAXB" ] && [ "$DEFB" -gt "$MAXB" ] && DEFB=$MAXB
+	echo "$DEFB" >/sys/class/backlight/umi-panel/brightness 2>/dev/null
+	say ""
+	say "==== [5a] panel backlight ===="
+	say "   set to $(cat /sys/class/backlight/umi-panel/brightness 2>/dev/null) / ${MAXB:-?}"
+fi
+
+# ------------------------------------------------------------------ [6] optional raw dump
+# Off by default. Enable with: mkinitramfs.sh --dump-partition sda15
+if [ -f /dump-partition ]; then
+	PART=$(cat /dump-partition)
+	say ""
+	say "==== [6] writing the log to /dev/$PART (read it back with TWRP) ===="
+	if [ -b "/dev/$PART" ]; then
+		SZ=$(cat "/sys/class/block/$PART/size" 2>/dev/null)
+		MIB=$((SZ / 2))
+		say "   /dev/$PART size ${MIB} MiB"
+		if [ "$MIB" -ge 1 ] && [ "$MIB" -le 64 ]; then
+			( cat $LOGDIR/info.txt $LOGDIR/pstore.txt $LOGDIR/dmesg.txt >/tmp/dump.txt
+			  dd if=/tmp/dump.txt of="/dev/$PART" bs=4096 conv=fsync 2>/dev/null ) \
+				&& say "   written (in TWRP: dd if=/dev/block/$PART of=/tmp/log.bin; adb pull /tmp/log.bin)" \
+				|| say "   write failed"
+		else
+			say "   size does not look like a log partition, skipped (safety)"
+		fi
+	else
+		say "   /dev/$PART does not exist"
+	fi
+fi
+
+# ------------------------------------------------------------------ [7] USB: serial + drive
+# The most important channel when the screen cannot be trusted. On by default
+# (mkinitramfs.sh --no-usb-console disables it).
+if [ -f /usb-console ]; then
+	say ""
+	say "==== [7] USB gadget: CDC-ACM serial + mass storage (logs on a drive) ===="
+
+	# ---- pack the logs into a FAT image so Windows shows a drive letter ----
+	LOGIMG=/tmp/usb-log.img
+	IMGOK=0
+	if dd if=/dev/zero of=$LOGIMG bs=1k count=16384 2>/dev/null \
+	   && $BB mkfs.vfat $LOGIMG >/dev/null 2>&1; then
+		if mount -t vfat -o loop $LOGIMG /mnt/usb 2>/dev/null; then
+			cp $LOGDIR/* /mnt/usb/ 2>/dev/null
+			sync
+			umount /mnt/usb 2>/dev/null
+			IMGOK=1
+			say "   FAT image ready (16 MiB, contains: $(ls $LOGDIR | tr '\n' ' '))"
+		else
+			IMGOK=1
+			say "   FAT image ready, but could not mount it (no loop device); serial only"
+		fi
+	else
+		say "   FAT image failed (dd/mkfs.vfat)"
+	fi
+
+	# ---- wait for dwc3 ----
+	i=0
+	while [ $i -lt 20 ] && [ -z "$(ls /sys/class/udc 2>/dev/null)" ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	UDC=$(ls /sys/class/udc 2>/dev/null | head -1)
+
+	mount -t configfs none /sys/kernel/config 2>/dev/null
+	G=/sys/kernel/config/usb_gadget/umi
+	if mkdir -p "$G" 2>/dev/null; then
+		echo 0x1d6b >"$G/idVendor"
+		echo 0x0104 >"$G/idProduct"
+		mkdir -p "$G/strings/0x409"
+		echo "umi-mainline" >"$G/strings/0x409/serialnumber"
+		echo "Xiaomi" >"$G/strings/0x409/manufacturer"
+		echo "Mi 10 bring-up logs" >"$G/strings/0x409/product"
+		mkdir -p "$G/configs/c.1/strings/0x409"
+		echo "ACM + logs" >"$G/configs/c.1/strings/0x409/configuration"
+
+		mkdir -p "$G/functions/acm.usb0"
+		ln -sf "$G/functions/acm.usb0" "$G/configs/c.1/" 2>/dev/null
+
+		if [ "$IMGOK" = 1 ]; then
+			mkdir -p "$G/functions/mass_storage.usb0"
+			echo "$LOGIMG" >"$G/functions/mass_storage.usb0/lun.0/file" 2>/dev/null
+			echo 1 >"$G/functions/mass_storage.usb0/lun.0/removable" 2>/dev/null
+			echo 0 >"$G/functions/mass_storage.usb0/lun.0/ro" 2>/dev/null
+			ln -sf "$G/functions/mass_storage.usb0" "$G/configs/c.1/" 2>/dev/null
+		fi
+
+		if [ -n "$UDC" ]; then
+			echo "$UDC" >"$G/UDC"
+			say "   bound UDC=$UDC (waited ${i}s)"
+			say "   -> PC should now show: a serial port (COMx / ttyACM0) + a USB drive with the logs"
+			say "   on the serial port you can run: dmesg / cat /sys/fs/pstore/* / cat /proc/cmdline"
+			if [ -c /dev/ttyGS0 ]; then
+				(
+					sleep 3
+					{
+						echo ""
+						echo "########## UMI: dmesg over USB ##########"
+						dmesg 2>/dev/null
+						echo "########## UMI: pstore ##########"
+						for f in /sys/fs/pstore/*; do
+							[ -f "$f" ] || continue
+							echo "--- $f ---"
+							cat "$f" 2>/dev/null
+						done
+						echo "########## UMI: end ##########"
+					} >/dev/ttyGS0 2>&1
+				) &
+				setsid sh -c 'while true; do /bin/busybox sh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1; sleep 1; done' &
+				say "   shell is running on /dev/ttyGS0"
+			fi
+		else
+			say "   waited ${i}s but /sys/class/udc never appeared - dwc3 is not up"
+			dmesg 2>/dev/null | grep -i -E 'dwc3|usb_1|hsphy|typec|role' | head -30 | while read -r l; do say "    $l"; done
+		fi
+	else
+		say "   configfs mount or gadget creation failed"
+	fi
+fi
+
+# ------------------------------------------------------------------ [9] done
+say ""
+say "==== [9] initramfs finished ===="
+say "   kernel is alive and user space is running. Reboot with the power key."
+
+if [ -f /reboot-after ]; then
+	N_RB=$(cat /reboot-after)
+	say "   /reboot-after = ${N_RB}s -> will reboot automatically"
+else
+	N_RB=""
+fi
+
+# ------------------------------------------------------------------ [8] panic screen self-test
+# The kernel has CONFIG_DRM_PANIC with the "qr_code" screen: on a real panic it
+# draws the compressed kmsg as a QR code on the panel. This self-test draws it
+# WITHOUT crashing, so you can check that it is scannable and that the decoder
+# works. Triggered from debugfs (CONFIG_DRM_PANIC_DEBUG).
+#
+# *** THIS MUST BE THE LAST THING THE SCRIPT DOES. ***
+# Anything printed after the QR code has been drawn makes fbcon repaint the
+# screen, which erases the QR code within milliseconds -- the self-test would
+# then look like it "did nothing". So:
+#   * all the explanation is printed BEFORE the sleep,
+#   * on success we print NOTHING at all afterwards (silence keeps the QR),
+#   * only a failure may print (there is no QR to protect in that case).
+# ------------------------------------------------------------------ [8a] early boot log
+# The drm_panic QR payload only holds the TAIL of the ring buffer (~110 lines).
+# The errors that matter (rpmh / clock / regulator probe failures) happen in the
+# first few seconds and get scrolled out. So re-inject the HEAD of dmesg into
+# kmsg right here, as the very last thing before the screen capture: then the
+# early boot log IS the tail, and the QR will contain it.
+if [ -f /panic-test ]; then
+	say ""
+	say "==== [8a] re-injecting dmesg HEAD so the QR can hold it ===="
+	dmesg 2>/dev/null | head -70 | while IFS= read -r l; do
+		echo "<6>$l" >>/dev/kmsg 2>/dev/null
+	done
+	say "==== [8a] end of early log ===="
+fi
+
+if [ -f /panic-test ]; then
+	N=$(cat /panic-test)
+	say ""
+	say "==== [8] panic screen self-test ===="
+	say "   in ${N}s the screen will switch to the drm_panic QR code."
+	say "   This looks exactly like a real panic. It is NOT a crash."
+	say "   Nothing will be printed after that on purpose: any further console"
+	say "   output would make the screen repaint and erase the QR code."
+	say "   Scan it, then: python tools\\\\decode-panic-qr.py \"<pasted string>\""
+	sleep "$N"
+	mount -t debugfs none /sys/kernel/debug 2>/dev/null
+	F=$(ls /sys/kernel/debug/dri/*/drm_panic_plane_* 2>/dev/null | head -1)
+	if [ -n "$F" ] && echo 1 >"$F" 2>/dev/null; then
+		: # success: deliberately silent, see the comment above
+	else
+		say "   !! panic screen trigger FAILED (${F:-no drm_panic_plane_* found})"
+		say "      hints: drm=$(ls /sys/kernel/debug/dri 2>/dev/null | tr '\n' ' ')_card=$(ls /sys/class/drm 2>/dev/null | tr '\n' ' ')"
+		say "      DRM_PANIC_DEBUG / DRM_PANIC / a DRM device are required"
+	fi
+fi
+
+# Automatic reboot (only meaningful when packaged with --reboot N).
+if [ -n "$N_RB" ]; then
+	sleep "$N_RB"
+	sync
+	$BB reboot -f 2>/dev/null || echo b >/proc/sysrq-trigger 2>/dev/null
+fi
+
+# Stay alive so the screen / serial output stays visible.
+while true; do
+	sleep 3600
+done

@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CC0-1.0
+#
+# The kernel side of this project only ever sees LF.  Letting git hand out
+# CRLF on a Windows checkout produces device trees that dtc still parses but
+# that diff against upstream for every single line.
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.py   text eol=lf
+*.c    text eol=lf
+*.h    text eol=lf
+*.dts  text eol=lf
+*.dtsi text eol=lf
+*.config text eol=lf
+Makefile text eol=lf
+
+# Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI; CRLF keeps the editor
+# and the interpreter from disagreeing about line endings.
+*.ps1 text eol=crlf
+
+*.png binary
+*.jpg binary

@@ -1,0 +1,31 @@
+umi-mainline - running mainline Linux on the Xiaomi Mi 10 (SM8250 / "umi")
+
+SPDX-License-Identifier: GPL-2.0-only
+
+This repository deliberately mixes four kinds of material, each under the
+license that matches how it has to be used.  The full text of every license
+referenced here is in LICENSES/.
+
+    patches/**/*.c              GPL-2.0-only   (LICENSES/GPL-2.0-only.txt)
+        Kernel drivers.  Not negotiable: a driver cannot enter the Linux
+        kernel under anything else.
+
+    dts/**/*.dts, dts/**/*.dtsi BSD-3-Clause   (LICENSES/BSD-3-Clause.txt)
+        Device trees.  Same license as the arm64 Qualcomm device trees that
+        already live upstream, so these files can be picked up by the kernel
+        tree without any relicensing step.
+
+    scripts/**, tools/**        CC0-1.0        (LICENSES/CC0-1.0.txt)
+        Build scripts and host-side helpers.  Public domain dedication:
+        copy them, change them, relicence them, no attribution required.
+
+    docs/**, README.md          CC-BY-4.0      (LICENSES/CC-BY-4.0.txt)
+        Written documentation.  Reuse and translate freely, keep the
+        attribution.
+
+Unless a file says otherwise, the license above applies to it; a
+SPDX-License-Identifier: tag always wins over this table.
+
+Third-party material used as reference while porting (vendor kernel sources,
+vendor device trees, firmware images) is NOT covered by the licenses above and
+is not redistributed here.  See "Third-party material" in README.md.

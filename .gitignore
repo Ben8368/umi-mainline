@@ -1,0 +1,23 @@
+# ---- build output ----------------------------------------------------------
+out/
+build/
+*.img
+*.dtb
+*.dtbo
+*.o
+*.ko
+*.log
+
+# ---- reference dumps (vendor material, not redistributable) ---------------
+dump/
+downstream-kernel/
+rootfs/
+
+# ---- local scratch --------------------------------------------------------
+_attic/
+scratch/
+*.bak
+
+# ---- python ---------------------------------------------------------------
+__pycache__/
+*.pyc

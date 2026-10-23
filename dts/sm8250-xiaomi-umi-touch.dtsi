@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Xiaomi Mi 10 (umi) - STMicroelectronics "FTS" touchscreen
+ *
+ * Where the numbers come from (all read back from the live MIUI device):
+ *   - bus        : i2c@a94000 -> mainline label &i2c13 (QUPV3 wrap1 SE5)
+ *                  vendor i2c-3, adapter name "Geni-I2C"
+ *   - address    : 0x49  (vendor: /sys/bus/i2c/devices/3-0049/name = fts)
+ *   - SDA / SCL  : GPIO37 / GPIO36, function qup13 (vendor pinctrl
+ *                  qupv3_se13_i2c_active: pins "gpio36","gpio37")
+ *   - reset      : GPIO38, active high (out of reset)
+ *                  vendor: fts,reset-gpio = <&tlmm 0x26 0x00>
+ *   - irq        : GPIO39, level low
+ *                  vendor: fts,irq-gpio = <&tlmm 0x27 0x2008>
+ *   - avdd 3.3 V : GPIO69 enable (touch_vddio_vreg, declared in the common dtsi)
+ *   - vdd  1.8 V : pm8150a_l1
+ *
+ * ★ Deliberately NOT wired up as supplies: both rails are already turned on by
+ *   ABL before the kernel starts and the vendor driver only ever *enables*
+ *   them.  The kernel does not touch them here either (same rule as the panel:
+ *   no voltage changes from Linux).  If the rails ever turn out to be off we
+ *   will see -ENXIO/-ETIMEDOUT on the first I2C transfer instead of booting
+ *   into a half-configured controller.
+ */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/* --- pin states ---------------------------------------------------------- */
+
+&tlmm {
+	ts_reset_state: ts-reset-state {
+		pins = "gpio38";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-low;
+	};
+
+	ts_int_active: ts-int-active-state {
+		pins = "gpio39";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+		input-enable;
+	};
+
+	/*
+	 * The vendor parks the interrupt line with a pull-down while the chip is
+	 * asleep, so the line cannot float high and keep the GIC armed.
+	 */
+	ts_int_sleep: ts-int-sleep-state {
+		pins = "gpio39";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		input-enable;
+	};
+};
+
+/* --- bus ----------------------------------------------------------------- */
+
+/* geniqup@ac0000 - the QUP wrapper that owns i2c@a94000 and its DMA engine */
+&qupv3_id_1 {
+	status = "okay";
+};
+
+&gpi_dma1 {
+	status = "okay";
+};
+
+&i2c13 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	touchscreen@49 {
+		compatible = "st,fts-umi";
+		reg = <0x49>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <39 IRQ_TYPE_LEVEL_LOW>;
+
+		reset-gpios = <&tlmm 38 GPIO_ACTIVE_HIGH>;
+
+		pinctrl-names = "default", "sleep";
+		pinctrl-0 = <&ts_int_active>;
+		pinctrl-1 = <&ts_int_sleep>, <&ts_reset_state>;
+
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <2340>;
+
+		/* vendor: goodix,panel-max-id = 10 for the sibling IC, the FTS
+		 * driver uses max 9 slots too (ABS_MT_SLOT max = 9) */
+		touchscreen-max-id = <10>;
+	};
+};

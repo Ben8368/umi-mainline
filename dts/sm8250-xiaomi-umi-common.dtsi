@@ -1,0 +1,707 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Xiaomi Mi 10 (umi) — Qualcomm SM8250 (Snapdragon 865, "kona")
+ *
+ * 目标：主线内核 bring-up 用「最小可靠集合」。
+ * 规则：只有第一阶段（能进 console / 能挂 rootfs）真正需要的节点才 okay，
+ *       其余全部留在 sm8250.dtsi 默认的 disabled，由 sm8250-xiaomi-umi.dts 逐阶段打开。
+ *
+ * 数据来源：
+ *   - 主板编号 / msm-id      : downstream umi-sm8250-overlay.dts
+ *   - 面板/触控/UFS/供电引脚  : HARDWARE.md（从 downstream 提取）
+ *   - 参考同 SoC 设备        : sm8250-xiaomi-elish-common.dtsi (Mi Pad 5)
+ */
+
+#include <dt-bindings/arm/qcom,ids.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/linux-event-codes.h>
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include <dt-bindings/usb/pd.h>
+#include "sm8250.dtsi"
+#include "pm8150.dtsi"
+#include "pm8150b.dtsi"
+#include "pm8150l.dtsi"
+#include "pm8009.dtsi"
+
+/*
+ * 上游 sm8250.dtsi 里这几个 reserved-memory 是按 MTP 参考板写的，
+ * umi 的实际地址/大小不同 → 删掉后在下面重新定义。
+ */
+/delete-node/ &adsp_mem;
+/delete-node/ &cdsp_secure_heap;
+/delete-node/ &slpi_mem;
+/delete-node/ &spss_mem;
+/delete-node/ &xbl_aop_mem;
+
+/ {
+	chassis-type = "handset";
+
+	/*
+	 * ★ 关键：bootloader 靠这两个属性决定「认不认这个 DTB」。
+	 *   msm-id   : 356 (QCOM_ID_SM8250) + 0x20001 = kona v2.1，与 downstream kona-v2.1.dtsi 一致。
+	 *   board-id : 43 (0x2b)，来自 downstream umi-sm8250-overlay.dts。
+	 *              之前写成 <8 0> 是 Mi Pad 系列的值（elish 是 0x10008），umi 不匹配，
+	 *              ABL 会丢弃追加的 DTB 甚至直接判定引导失败 → 黑屏几秒后回 fastboot。
+	 */
+	qcom,msm-id = <QCOM_ID_SM8250 0x20001>;	/* SM8250 v2.1 */
+	qcom,board-id = <43 0>;			/* umi / M2001J2C */
+
+	aliases {
+		/* qupv3_se12_2uart @ 0xa90000 → ttyMSM0 */
+		serial0 = &uart12;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * ★ 必须项：没有 stdout-path，裸参数 earlycon 找不到设备，
+		 *   内核在 tty 驱动 probe 之前完全没有输出（这也是之前"全黑"的原因之一）。
+		 *   同时 console=tty0 会把 log 打到屏幕上（见 RUNBOOK 第一阶段）。
+		 */
+		stdout-path = "serial0:115200n8";
+
+		/*
+		 * ABL 留在 0x9c000000 的 cont-splash 帧缓冲。
+		 * simpledrm 接管它 → 屏幕上直接出现内核 log。
+		 *
+		 * 注意：这块 fb 和 mdss 并不冲突。simpledrm 是 firmware fb，
+		 * fbcon 一旦挂上就不让位；而且面板节点 status 还是 disabled 时
+		 * msm 根本没有 connector，不会做 modeset。所以打开 DRM_MSM
+		 * 之后这块 framebuffer 依然是可靠的观测通道。
+		 */
+		framebuffer: framebuffer@9c000000 {
+			compatible = "simple-framebuffer";
+			/* reg 覆盖整块 cont-splash（和 elish 一致）。
+			 * simpledrm 只要求 reg 不小于 stride*height，写多点没坏处，
+			 * 反而保证这块内存不会被别的东西抢走。 */
+			reg = <0x0 0x9c000000 0x0 0x2300000>;
+			width = <1080>;
+			height = <2340>;
+			stride = <(1080 * 4)>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	battery: battery {
+		compatible = "simple-battery";
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4450000>;
+		energy-full-design-microwatt-hours = <18300000>;
+		charge-full-design-microamp-hours = <4780000>;
+	};
+
+	vph_pwr: vph-pwr-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vph_pwr";
+		regulator-min-microvolt = <3700000>;
+		regulator-max-microvolt = <3700000>;
+	};
+
+	/* S6c 实际是 ebi.lvl，只为供电树完整性存在 */
+	vreg_s6c_0p88: smpc6-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vreg_s6c_0p88";
+		regulator-min-microvolt = <880000>;
+		regulator-max-microvolt = <880000>;
+		regulator-always-on;
+		vin-supply = <&vph_pwr>;
+	};
+
+	/*
+	 * pm8150a（第二颗 PM8150，OLED 偏压/触控供电）主线没有 RPMH regulator 驱动。
+	 * ABL 跳转前已把它上电，这里用 fixed-regulator 告诉内核"这条轨已存在，别动"。
+	 * 配合 cmdline: pd_ignore_unused clk_ignore_unused
+	 */
+	pm8150a_l1_workaround: pm8150a-l1-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "pm8150a_l1";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	touch_vddio_vreg: touch-vddio-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "touch_vddio_vreg";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		enable-active-high;
+		gpio = <&tlmm 69 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+	};
+
+	gpio_keys: gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&vol_up_n>;
+
+		key-vol-up {
+			label = "Volume Up";
+			gpios = <&pm8150_gpios 6 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <15>;
+			linux,can-disable;
+			wakeup-source;
+		};
+
+		/* Hall（翻盖）键在 gpio14，属于 NORTH tile —— 那块读不了，
+		 * 强行 request 会 abort，所以先去掉。等 NORTH 能访问了再加回来。 */
+	};
+
+	reserved-memory {
+		xbl_aop_mem: xbl-aop@80600000 {
+			reg = <0x0 0x80600000 0x0 0x260000>;
+			no-map;
+		};
+
+		/* XBL/LK 的 UEFI 日志区（设备 DTB 里的 res_xbl_uefi_log_region@80880000，
+		 * 80 KiB）。上游 sm8250.dtsi 没有这个节点，所以以前这块是「内核可以用」
+		 * 的状态 —— 内核随便一分配就把 XBL 的日志写坏了。虽然不影响启动，但出问题
+		 * 时那份日志本来能救命，值得留出来。不加 compatible：mainline 不认识
+		 * downstream 的 "removed-dma-pool"，只要 reg + no-map 就会保留。 */
+		res_xbl_uefi_log: xbl-uefi-log@80880000 {
+			reg = <0x0 0x80880000 0x0 0x14000>;
+			no-map;
+		};
+
+		/* 以下三块沿用 elish 的布局（同 SM8250 + 同 PMIC 方案）；
+		 * 第一阶段这些 remoteproc 全部 disabled，尺寸写错只会浪费 RAM，不会踩到内核。 */
+		slpi_mem: slpi@88c00000 {
+			reg = <0x0 0x88c00000 0x0 0x2f00000>;
+			no-map;
+		};
+
+		adsp_mem: adsp@8bb00000 {
+			reg = <0x0 0x8bb00000 0x0 0x2500000>;
+			no-map;
+		};
+
+		spss_mem: spss@8e000000 {
+			reg = <0x0 0x8e000000 0x0 0x100000>;
+			no-map;
+		};
+
+		cdsp_secure_heap: cdsp-secure-heap@8e100000 {
+			reg = <0x0 0x8e100000 0x0 0x4600000>;
+			no-map;
+		};
+
+		/* cont-splash 整块按下游 DTB 的原尺寸保留（0x2300000 = 35 MB）。
+		 * 不要缩到「刚好一屏」：ABL 的显示管线还在从这块内存扫描输出，
+		 * 缩了之后内核可能会把后面那段拿去分配别的用途 → 屏幕花掉。
+		 * elish 主线也是这么写的。 */
+		cont_splash_mem: cont-splash@9c000000 {
+			reg = <0x0 0x9c000000 0x0 0x2300000>;
+			no-map;
+		};
+
+		/* 设备 DTB 里的 dfps_data_region@9e300000，紧接在 cont-splash 后面。
+		 * 下游 mdss 用它做动态帧率切换的数据交换区；主线不开 mdss 用不到，
+		 * 但 ABL 的显示管线可能还在读，而且这块地址确实在下游的内存图里，
+		 * 留着更接近真机（不加 no-map：下游也没加，只是不让内核分配）。 */
+		dfps_data_mem: dfps-data@9e300000 {
+			reg = <0x0 0x9e300000 0x0 0x100000>;
+		};
+
+		/* 注意：这里故意不写 disp_rdump 区域。
+		 * 下游 DTB 里有 disp_rdump_region@0xb0400000 (16 MB)，但那是下游
+		 * mdss 驱动崩溃转储用的，主线用不到；把它标成 no-map 反而多一块
+		 * 「内核不能碰」的内存，万一 ABL 正好把 initramfs 放在那儿就会
+		 * 解压失败。elish 主线的 reserved-memory 里同样没有这一段。 */
+
+		/* 崩溃现场：内核 log 会留在 0xb0000000，重启后可从 /sys/fs/pstore 读回来。
+		 *
+		 * 尺寸必须让「dmesg dump 区」有空间，否则 panic 时的整段 ring buffer
+		 * 根本存不进来。ramoops 的布局是（fs/pstore/ram.c ramoops_probe）：
+		 *     dump_mem_sz = 总大小 - console_size - ftrace_size - pmsg_size
+		 *     dmesg 记录条数 = dump_mem_sz / record_size
+		 * 我们原来是 record 0x10000 + console 0x200000 + pmsg 0x200000 = 4.06 MB，
+		 * 刚好把 4 MB 占满 → dump_mem_sz = 0 → **一条 dmesg 记录都存不了**，
+		 * panic 时只有 console 区（从 late_initcall 才开始记）能留下东西。
+		 * 现在按 elish（已知能跑的 SM8250 主线移植）的写法：
+		 *     dump_mem_sz = 0x400000 - 0x200000 = 2 MB，record 4 KB → 512 条记录
+		 */
+		ramoops: ramoops@b0000000 {
+			compatible = "ramoops";
+			reg = <0x0 0xb0000000 0x0 0x400000>;
+			record-size = <0x1000>;
+			/* 1 MB：原来 2 MB 时 dump 区只剩 2 MB = 512 条 4 KB 记录，
+			 * 而 pstore.kmsg_bytes=2097152 正好要 512 条 -> 实测 writing error (-28)(ENOSPC)。
+			 * 缩到 1 MB 后 dump 区 3 MB = 768 条，2 MB 的 kmsg 放得下。 */
+			console-size = <0x100000>;
+			ecc-size = <16>;
+			no-map;
+		};
+	};
+};
+
+/* ---------------------------------------------------------------- 供电 */
+&apps_rsc {
+	regulators-0 {
+		compatible = "qcom,pm8150-rpmh-regulators";
+		qcom,pmic-id = "a";
+
+		vdd-s1-supply = <&vph_pwr>;
+		vdd-s2-supply = <&vph_pwr>;
+		vdd-s3-supply = <&vph_pwr>;
+		vdd-s4-supply = <&vph_pwr>;
+		vdd-s5-supply = <&vph_pwr>;
+		vdd-s6-supply = <&vph_pwr>;
+		vdd-s7-supply = <&vph_pwr>;
+		vdd-s8-supply = <&vph_pwr>;
+		vdd-s9-supply = <&vph_pwr>;
+		vdd-s10-supply = <&vph_pwr>;
+		vdd-l1-l8-l11-supply = <&vreg_s6c_0p88>;
+		vdd-l2-l10-supply = <&vreg_bob>;
+		vdd-l3-l4-l5-l18-supply = <&vreg_s6a_0p95>;
+		vdd-l6-l9-supply = <&vreg_s8c_1p35>;
+		vdd-l7-l12-l14-l15-supply = <&vreg_s5a_1p9>;
+		vdd-l13-l16-l17-supply = <&vreg_bob>;
+
+		/* (S1+S2+S3) - cx.lvl (ARC) */
+
+		vreg_s4a_1p8: smps4 {
+			regulator-name = "vreg_s4a_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1920000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_s5a_1p9: smps5 {
+			regulator-name = "vreg_s5a_1p9";
+			regulator-min-microvolt = <1900000>;
+			regulator-max-microvolt = <2040000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_s6a_0p95: smps6 {
+			regulator-name = "vreg_s6a_0p95";
+			regulator-min-microvolt = <950000>;
+			regulator-max-microvolt = <1128000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l2a_3p1: ldo2 {
+			regulator-name = "vreg_l2a_3p1";
+			regulator-min-microvolt = <3072000>;
+			regulator-max-microvolt = <3072000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l3a_0p9: ldo3 {
+			regulator-name = "vreg_l3a_0p9";
+			regulator-min-microvolt = <928000>;
+			regulator-max-microvolt = <932000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* L4 - lmx.lvl (ARC) */
+
+		vreg_l5a_0p88: ldo5 {
+			regulator-name = "vreg_l5a_0p88";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <880000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l6a_1p2: ldo6 {
+			regulator-name = "vreg_l6a_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* L7 is unused. */
+
+		vreg_l9a_1p2: ldo9 {
+			regulator-name = "vreg_l9a_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* L10 is unused, L11 - lcx.lvl (ARC) */
+
+		vreg_l12a_1p8: ldo12 {
+			regulator-name = "vreg_l12a_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* L13 is unused. */
+
+		vreg_l14a_1p88: ldo14 {
+			regulator-name = "vreg_l14a_1p88";
+			regulator-min-microvolt = <1880000>;
+			regulator-max-microvolt = <1880000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* L15 & L16 are unused. */
+
+		vreg_l17a_3p0: ldo17 {
+			regulator-name = "vreg_l17a_3p0";
+			regulator-min-microvolt = <2496000>;
+			regulator-max-microvolt = <3008000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l18a_0p9: ldo18 {
+			regulator-name = "vreg_l18a_0p9";
+			regulator-min-microvolt = <800000>;
+			regulator-max-microvolt = <920000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	/*
+	 * 未支持：OLEDB / ab / ibb（pm8150a 的 OLED 偏压，见上面 pm8150a_l1_workaround）
+	 */
+	regulators-1 {
+		compatible = "qcom,pm8150l-rpmh-regulators";
+		qcom,pmic-id = "c";
+
+		vdd-s1-supply = <&vph_pwr>;
+		vdd-s2-supply = <&vph_pwr>;
+		vdd-s3-supply = <&vph_pwr>;
+		vdd-s4-supply = <&vph_pwr>;
+		vdd-s5-supply = <&vph_pwr>;
+		vdd-s6-supply = <&vph_pwr>;
+		vdd-s7-supply = <&vph_pwr>;
+		vdd-s8-supply = <&vph_pwr>;
+		vdd-l1-l8-supply = <&vreg_s4a_1p8>;
+		vdd-l2-l3-supply = <&vreg_s8c_1p35>;
+		vdd-l4-l5-l6-supply = <&vreg_bob>;
+		vdd-l7-l11-supply = <&vreg_bob>;
+		vdd-l9-l10-supply = <&vreg_bob>;
+		vdd-bob-supply = <&vph_pwr>;
+
+		vreg_bob: bob {
+			regulator-name = "vreg_bob";
+			regulator-min-microvolt = <3350000>;
+			regulator-max-microvolt = <3960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_AUTO>;
+		};
+
+		vreg_s7c_0p35: smps7 {
+			regulator-name = "vreg_s7c_0p35";
+			regulator-min-microvolt = <348000>;
+			regulator-max-microvolt = <1000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_s8c_1p35: smps8 {
+			regulator-name = "vreg_s8c_1p35";
+			regulator-min-microvolt = <1350000>;
+			regulator-max-microvolt = <1400000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l1c_1p8: ldo1 {
+			regulator-name = "vreg_l1c_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l5c_1p8: ldo5 {
+			regulator-name = "vreg_l5c_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l6c_2p9: ldo6 {
+			regulator-name = "vreg_l6c_2p9";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <2960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l7c_2p85: ldo7 {
+			regulator-name = "vreg_l7c_2p85";
+			regulator-min-microvolt = <2856000>;
+			regulator-max-microvolt = <3104000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l8c_1p8: ldo8 {
+			regulator-name = "vreg_l8c_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l9c_2p9: ldo9 {
+			regulator-name = "vreg_l9c_2p9";
+			regulator-min-microvolt = <2704000>;
+			regulator-max-microvolt = <2960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l10c_3p3: ldo10 {
+			regulator-name = "vreg_l10c_3p3";
+			regulator-min-microvolt = <3296000>;
+			regulator-max-microvolt = <3296000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l11c_3p0: ldo11 {
+			regulator-name = "vreg_l11c_3p0";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-2 {
+		compatible = "qcom,pm8009-rpmh-regulators";
+		qcom,pmic-id = "f";
+
+		vdd-s1-supply = <&vph_pwr>;
+		vdd-s2-supply = <&vreg_bob>;
+		vdd-l2-supply = <&vreg_s8c_1p35>;
+		vdd-l5-l6-supply = <&vreg_bob>;
+		vdd-l7-supply = <&vreg_s4a_1p8>;
+
+		vreg_s1f_1p2: smps1 {
+			regulator-name = "vreg_s1f_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_s2f_0p5: smps2 {
+			regulator-name = "vreg_s2f_0p5";
+			regulator-min-microvolt = <512000>;
+			regulator-max-microvolt = <1100000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l2f_1p3: ldo2 {
+			regulator-name = "vreg_l2f_1p3";
+			regulator-min-microvolt = <1304000>;
+			regulator-max-microvolt = <1304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l5f_2p8: ldo5 {
+			regulator-name = "vreg_l5f_2p85";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l6f_2p8: ldo6 {
+			regulator-name = "vreg_l6f_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l7f_1p8: ldo7 {
+			regulator-name = "vreg_l7f_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+/* ---------------------------------------------------------------- 存储 */
+&ufs_mem_hc {
+	vcc-supply = <&vreg_l17a_3p0>;
+	vcc-max-microamp = <800000>;
+	vccq-supply = <&vreg_l6a_1p2>;
+	vccq-max-microamp = <800000>;
+	vccq2-supply = <&vreg_s4a_1p8>;
+	vccq2-max-microamp = <800000>;
+	status = "okay";
+};
+
+&ufs_mem_phy {
+	vdda-phy-supply = <&vreg_l5a_0p88>;
+	vdda-pll-supply = <&vreg_l9a_1p2>;
+	status = "okay";
+};
+
+/* ---------------------------------------------------------------- USB (2.0 only)
+ * 第一阶段固定 peripheral：插上 PC 就是一个 USB gadget，
+ * 不依赖 typec role-switch（role-switch 没有 connector 对接会 probe 延迟到死）。
+ * 注意：旧 DTS 里的 `usb-role-switch` + 空 connector 就是这个坑。
+ */
+&usb_1 {
+	qcom,select-utmi-as-pipe-clk;
+	status = "okay";
+};
+
+&usb_1_dwc3 {
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	phys = <&usb_1_hsphy>;
+	phy-names = "usb2-phy";
+};
+
+&usb_1_hsphy {
+	vdda-pll-supply = <&vreg_l5a_0p88>;
+	vdda18-supply = <&vreg_l12a_1p8>;
+	vdda33-supply = <&vreg_l2a_3p1>;
+	status = "okay";
+};
+
+/* ---------------------------------------------------------------- 调试串口
+ * uart12 = 0xa90000 = qupv3_se12_2uart（downstream 的调试口）
+ * 没焊 UART 也没关系：console=tty0 会把同样的 log 打到屏幕上。
+ */
+&uart12 {
+	status = "okay";
+};
+
+/* ---------------------------------------------------------------- QUP / DMA */
+&gpi_dma0 {
+	status = "okay";
+};
+
+&gpi_dma1 {
+	status = "okay";
+};
+
+&gpi_dma2 {
+	status = "okay";
+};
+
+&qupv3_id_0 {
+	status = "okay";
+};
+
+&qupv3_id_1 {
+	status = "okay";
+};
+
+&qupv3_id_2 {
+	status = "okay";
+};
+
+/* ---------------------------------------------------------------- Type-C / 充电 */
+&pm8150b_typec {
+	vdd-pdphy-supply = <&vreg_l2a_3p1>;
+	status = "okay";
+};
+
+&pm8150b_vbus {
+	regulator-min-microamp = <500000>;
+	regulator-max-microamp = <3000000>;
+	status = "okay";
+};
+
+/* ---------------------------------------------------------------- 按键 / PON */
+&pon_pwrkey {
+	status = "okay";
+};
+
+&pon_resin {
+	linux,code = <KEY_VOLUMEDOWN>;
+	status = "okay";
+};
+
+&pm8150_gpios {
+	vol_up_n: vol-up-n-state {
+		pins = "gpio6";
+		function = "normal";
+		power-source = <1>;
+		input-enable;
+		bias-pull-up;
+	};
+};
+
+/* ---------------------------------------------------------------- GPIO
+ * BT / WiFi enable、触控 pinmux 先留着（后续阶段直接引用）
+ */
+&tlmm {
+	/* ★ 实测：umi 上 NORTH tile 的 TLMM 寄存器读不了（synchronous external abort）。
+	 *
+	 *   主线 sm8250.dtsi 把 TLMM 拆成三块：
+	 *       west  @ 0xf100000 / south @ 0xf500000 / north @ 0xf900000
+	 *   驱动按 PINGROUP(id, TILE, ...) 把每个引脚分配到对应块，寄存器地址 = tile_base + 0x1000*id。
+	 *   pin 28 属于 NORTH（drivers/pinctrl/qcom/pinctrl-sm8250.c:1150），
+	 *   读 0xf900000+0x1c000 直接 abort —— 这块在 umi 上要么被安全域保护，要么没上电。
+	 *
+	 *   gpiochip_add_data_with_key() 会为每个引脚调 get_direction() 读一次寄存器，
+	 *   所以必须让 gpiolib「不认为这些引脚有效」，它就会跳过（gpiochip_line_is_valid()）：
+	 *       gpiochip_init_valid_mask()  ← 处理 gpio-reserved-ranges
+	 *       ... 之后才是 get_direction 循环
+	 *   （顺序见 drivers/gpio/gpiolib.c 的 gpiochip_add_data_with_key）
+	 *
+	 * NORTH 引脚（pinctrl-sm8250.c 里 tile=NORTH 的全部）：
+	 *   4-23, 28-31, 66-68, 77-84, 92-124
+	 *
+	 * 代价：gpio14（霍尔键）、gpio20/21（WiFi/BT 使能）暂时不可用 —— 见下面被注释掉的节点。
+	 *
+	 * ★ 2026-10-24 修正：**gpio12（面板 reset）单独放出来**。
+	 *   之前我拿 pin 28 一次 abort 就把整块 NORTH 全 reserved，连面板复位脚一起挡了。
+	 *   后来在面板驱动里单独读 0x0f90c000（GPIO12 的寄存器）是**成功**的：
+	 *       val = 0x000002c3  -> mux=0(GPIO), OE=1, drive=3, pull-up
+	 *   正是 ABL 配好的复位脚。所以 12 是好的，坏的是别的 pin。
+	 *
+	 *   所以这里拆成 <4 8>(4-11) + <13 11>(13-23)，把 12 留出来给 reset-gpios。
+	 *
+	 *   ⚠⚠ 绝对不要写「批量探测 NORTH 引脚」的诊断：我曾用
+	 *      copy_from_kernel_nofault 连读 68 个引脚，结果整机被看门狗复位 ——
+	 *      那块区域有一部分访问产生的是 SError（异步外部中止），
+	 *      无法归属到某条指令，copy_from_kernel_nofault 兜不住 -> panic -> WDT 重启。
+	 *      要验证某个引脚，就**只读那一个**。
+	 */
+	gpio-reserved-ranges = <4 8>, <13 11>, <28 4>, <40 4>, <66 3>, <77 8>, <92 33>;
+
+	/* BT / WiFi 使能在 gpio21 / gpio20，也是 NORTH tile —— 同上，先不做。
+	 * （定义 pinctrl state 本身不碰寄存器，但一旦有驱动 apply 就会 abort，
+	 *   所以连定义一起拿掉，避免以后误引用。） */
+
+	ts_active: ts-active-state {
+		pins = "gpio38", "gpio39";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
+	};
+
+	ts_reset_suspend: ts-reset-suspend-state {
+		pins = "gpio38";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		output-low;
+	};
+
+	ts_int_suspend: ts-int-suspend-state {
+		pins = "gpio39";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+};
+
+/* ABL 会把 dtbo 分区的 29 个 overlay 打到我们的 DTB 上；
+ * overlay 用 &label 找目标，label 不全就整体失败 -> ABL 静默回 fastboot。
+ * 这个文件给 overlay 要的 224 个 label 建了空占位节点（自动生成，别手改）。 */
+#include "umi-dtbo-stubs.dtsi"
