@@ -495,6 +495,20 @@ static int fts_power_on(struct fts_data *ts)
 	dev_info(ts->dev, "sleep out: %d\n", ret);
 	msleep(100);
 
+	/*
+	 * Vendor probe path: after supplying power it writes the system reset
+	 * register (SYSTEM_RESET_ADDRESS = 0x0023 in ftsHardware.h) through
+	 * the hardware-register window.  Without it the controller answers
+	 * every command but never produces events.
+	 */
+	{
+		u8 sysrst[] = { 0xb6, 0x00, 0x23, 0x01 };
+
+		ret = fts_send(ts, sysrst, sizeof(sysrst));
+		dev_info(ts->dev, "system reset: %d\n", ret);
+		msleep(100);
+	}
+
 	ret = fts_command(ts, FTS_CMD_MS_MT_SENSE_ON);
 	dev_info(ts->dev, "sense on: %d\n", ret);
 	msleep(100);
