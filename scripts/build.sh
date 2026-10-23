@@ -222,6 +222,8 @@ if [ "$fail" = 1 ]; then
 fi
 
 echo "== [5/6] 编译（-j$JOBS, TC=$TC）"
+# 先删旧产物：编译失败时下面的存在性检查才能真的报错（踩过：编挂了却拿旧 Image.gz 打包）
+rm -f "$OUT/arch/arm64/boot/Image.gz" "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi.dtb"
 ( make -C "$TREE" $MAKEFLAGS_TC O="$OUT" -j"$JOBS" Image.gz dtbs ) 2>&1 | tee "$OUT/build.log" | tail -25
 # tee 之后 make 的退出码在 POSIX sh 里拿不到，用产物判断
 for p in "$OUT/arch/arm64/boot/Image.gz" \

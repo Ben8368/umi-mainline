@@ -1,38 +1,62 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * STMicroelectronics FTS touchscreen driver - Xiaomi Mi 10 (umi)
+ * STMicroelectronics FTS5 touchscreen driver - Xiaomi Mi 10 (umi)
  *
  * The panel of the Mi 10 is a command-mode AMOLED and the touch controller is
- * soldered to the same flex, so the touchscreen is a separate I2C slave on
- * QUPV3 wrap1 SE5 (i2c@a94000 -> "i2c13" in mainline, vendor bus i2c-3) at
- * address 0x49.
+ * soldered to the same flex, so the touchscreen is a separate slave at address
+ * 0x49 on the two wires that QUPV3 wrap1 SE5 (0xa94000) also claims.
  *
- * Protocol (verified against the vendor driver, drivers/input/touchscreen/st):
- *   - every read/write is a plain I2C transfer; a command is the first byte
- *     written, results are read back in a second (repeated start) message
- *   - the event FIFO is drained one event at a time with command 0x85; each
- *     event is exactly 8 bytes and 0x00 in byte 0 means "no more events"
- *   - byte 0 is "<class><object>": the low nibble is the object (3 = touch
- *     point, others are gestures) and the high nibble is the class
- *     (1 = enter/motion, 3 = leave).  Older ST parts use the flat codes
- *     0x03/0x04/0x05, both spellings are accepted here.
- *   - bytes 1..7 for a touch point:
- *       [1] bits 3..0 touch id, bits 7..4 number of remaining contacts
- *       [2] x >> 4          [3] y >> 4
- *       [4] bits 7..4 x & 0xf, bits 3..0 y & 0xf
- *       [5] bits 7..6 touch size, bits 4..0 major
- *       [6] minor
+ * ★ The bus is bit-banged here
  *
- * The controller keeps its firmware and configuration in its own flash; MIUI
- * already programmed them ("firmware in the chip newer or equal -> no update"),
- * so this driver never writes to the flash and never loads a firmware blob.
- * It also never touches a regulator: both rails are enabled by ABL and are
- * left exactly as found.
+ *   On a running MIUI the two bus pins report "function gpio", owned by
+ *   a94000.i2c - the vendor "i2c-geni" is not driving the QUP there.  The SE
+ *   has its FIFO interface disabled (GENI_IF_DISABLE_RO), so mainline geni-i2c
+ *   has to use GPI DMA, and on this board GPI never answers EV ALLOCATE:
+ *
+ *       gpi a00000.dma-controller: cmd: EV ALLOCATE completion timeout:2
+ *       geni_i2c a94000.i2c: error -ENODEV: Failed to setup GPI DMA mode
+ *
+ *   The generic i2c-gpio driver registered a bus but every transfer came back
+ *   -ENXIO: its open-drain path wants native open-drain support that
+ *   pinctrl-msm does not have.  A plain bit-banged bus with explicit direction
+ *   switching - the same thing the vendor "gpio mode" does - works and is
+ *   trivially debuggable.  A bus scan settled the pad order: gpio36 is SDA,
+ *   gpio37 is SCL.
+ *
+ * ★ Protocol: this is FTS5, not FTS4
+ *
+ *   Verified against the upstream "Input: support for STM FTS5" series
+ *   (David Heidelberg, v7) and the vendor driver:
+ *
+ *   - events are read in one shot with 0x86; the controller returns
+ *     STACK_DEPTH * 8 bytes and the list ends at the first 0x00 event
+ *   - the event class is the *high* nibble of event[0]:
+ *       0x03 controller ready (whole byte), 0x10 enter, 0x20 motion,
+ *       0x30 leave, 0x40 status, 0x50 user report, 0xe0 debug, 0xf0 error
+ *     (the vendor log prints "Event 0x13 - Press" / "0x33 - release", i.e.
+ *     0x10|0x3 and 0x30|0x3 - the low nibble carries major axis bits)
+ *   - touch point layout:
+ *       [0] id high nibble | major bits 5:4 in bits 3:2
+ *       [1] touch id high nibble | touch type low nibble (1 = finger)
+ *       [2] x bits 7:0
+ *       [3] y bits 3:0 high nibble | x bits 11:8 low nibble
+ *       [4] y bits 11:4
+ *       [5] pressure
+ *       [6] major bits 3:0 high nibble | minor bits 3:0 low nibble
+ *       [7] minor bits 5:4 in bits 7:6
+ *   - scanning is enabled with 0xa0 {mode 0x00, mask 0x01}; there is no 0x93
+ *   - the interrupt source is armed by writing {0xb6 0x00 0x2c 0x01}
+ *     (hardware register write), not by an I2C command
+ *   - 0x80 (read info) does not exist on this part, it answers with zeros
+ *
+ * Firmware and configuration live in the controller's own flash and were
+ * programmed by MIUI, so nothing is ever written to the flash.  The two
+ * supplies are fixed-value rails that are only enabled; no voltage, current or
+ * OPP is programmed anywhere.
  */
 
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
-#include <linux/i2c.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
@@ -41,220 +65,485 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/pm.h>
+#include <linux/regulator/consumer.h>
 #include <linux/slab.h>
-#include <linux/unaligned.h>
 
-#define FTS_CMD_READ_INFO	0x80	/* 8 bytes: [0] chip ver, [2..3] fw ver,
-					 * [4] cfg id, [5] cfg ver, [6..7] chip id */
-#define FTS_CMD_FIFO_READ_ONE	0x85	/* read one 8 byte event */
-#define FTS_CMD_FIFO_FLUSH	0xa1
-#define FTS_CMD_SENSE_OFF	0x92
-#define FTS_CMD_SENSE_ON	0x93
+#define FTS_CMD_READ_ALL_EVENT	0x86	/* FTS5 bulk read (returns empty here) */
+#define FTS_CMD_FIFO_READ_ONE	0x85	/* vendor: one 8 byte event at a time */
+#define FTS_CMD_SET_SCAN_MODE	0xa0	/* + mode byte + scan mask byte */
+#define FTS_CMD_CLEAR_EVENT	0xa1
+#define FTS_CMD_FORCE_CAL	0xa2
+#define FTS_CMD_MS_CX_TUNING	0xa3
+#define FTS_CMD_SS_CX_TUNING	0xa4
+#define FTS_CMD_MS_MT_SENSE_OFF	0x92
+#define FTS_CMD_MS_MT_SENSE_ON	0x93
+#define FTS_CMD_SLEEP_IN	0x90
+#define FTS_CMD_SLEEP_OUT	0x91
+
+#define FTS_SCAN_MODE_ACTIVE	0x00
+#define FTS_SCAN_MULTI_TOUCH	0x01
+
+/* FTS5 event classes (high nibble of event[0]) */
+#define FTS_EV5_CONTROLLER_READY	0x03
+#define FTS_EV5_MT_ENTER		0x10
+#define FTS_EV5_MT_MOTION		0x20
+#define FTS_EV5_MT_LEAVE		0x30
+#define FTS_EV5_STATUS_UPDATE		0x40
+#define FTS_EV5_USER_REPORT		0x50
+#define FTS_EV5_DEBUG			0xe0
+#define FTS_EV5_ERROR			0xf0
 
 #define FTS_EVENT_SIZE		8
-#define FTS_FIFO_DEPTH		64
-#define FTS_MAX_FINGERS		10
+#define FTS_STACK_DEPTH		32
+#define FTS_DATA_SIZE		(FTS_EVENT_SIZE * FTS_STACK_DEPTH)
 
-/*
- * The first events after probe are logged verbatim.  That is how the class /
- * object encoding above was pinned down, and it stays useful whenever a unit
- * turns up with a different controller revision.
- */
-#define FTS_RAW_DUMP_DEFAULT	96
+#define FTS_MAX_FINGERS		10
+#define FTS_I2C_DELAY_US	2	/* ~250 kHz */
+#define FTS_POLL_MS		30
+
+#define FTS_RAW_DUMP_DEFAULT	64
 
 struct fts_data {
-	struct i2c_client *client;
+	struct device *dev;
 	struct input_dev *input;
+	struct gpio_desc *sda;
+	struct gpio_desc *scl;
 	struct gpio_desc *reset;
+	struct regulator_bulk_data supplies[2];
 	struct touchscreen_properties prop;
-	struct mutex lock;		/* serialises FIFO access */
+	struct mutex lock;		/* serialises bus access */
+	int irq;
+	u8 addr;
 	int dump_left;
+	unsigned int err_count;
+	u8 buf[FTS_DATA_SIZE];
+	struct delayed_work poll_work;
 	bool awake;
 };
 
-static int fts_i2c_read(struct fts_data *ts, u8 cmd, u8 *buf, int len)
+/* ---------------- bit-banged I2C ---------------- */
+
+static inline void fts_sda_low(struct fts_data *ts)
 {
-	struct i2c_msg msgs[2] = {
-		{ .addr = ts->client->addr, .flags = 0, .len = 1, .buf = &cmd },
-		{ .addr = ts->client->addr, .flags = I2C_M_RD, .len = len,
-		  .buf = buf },
-	};
-	int ret;
-
-	ret = i2c_transfer(ts->client->adapter, msgs, ARRAY_SIZE(msgs));
-	if (ret < 0)
-		return ret;
-
-	return ret == ARRAY_SIZE(msgs) ? 0 : -EIO;
+	gpiod_direction_output(ts->sda, 0);
 }
 
-static int fts_i2c_write(struct fts_data *ts, const u8 *buf, int len)
+static inline void fts_sda_release(struct fts_data *ts)
 {
-	struct i2c_msg msg = {
-		.addr = ts->client->addr,
-		.flags = 0,
-		.len = len,
-		.buf = (u8 *)buf,
-	};
-	int ret;
+	gpiod_direction_input(ts->sda);
+}
 
-	ret = i2c_transfer(ts->client->adapter, &msg, 1);
-	if (ret < 0)
-		return ret;
+static inline void fts_scl_low(struct fts_data *ts)
+{
+	gpiod_direction_output(ts->scl, 0);
+}
 
-	return ret == 1 ? 0 : -EIO;
+static inline void fts_scl_release(struct fts_data *ts)
+{
+	gpiod_direction_input(ts->scl);
+}
+
+static void fts_bus_idle(struct fts_data *ts)
+{
+	fts_sda_release(ts);
+	fts_scl_release(ts);
+	udelay(FTS_I2C_DELAY_US);
+}
+
+static void fts_start(struct fts_data *ts)
+{
+	fts_sda_release(ts);
+	fts_scl_release(ts);
+	udelay(FTS_I2C_DELAY_US);
+	fts_sda_low(ts);		/* SDA falls while SCL is high */
+	udelay(FTS_I2C_DELAY_US);
+	fts_scl_low(ts);
+	udelay(FTS_I2C_DELAY_US);
+}
+
+static void fts_stop(struct fts_data *ts)
+{
+	fts_sda_low(ts);
+	udelay(FTS_I2C_DELAY_US);
+	fts_scl_release(ts);
+	udelay(FTS_I2C_DELAY_US);
+	fts_sda_release(ts);		/* SDA rises while SCL is high */
+	udelay(FTS_I2C_DELAY_US);
+}
+
+static int fts_write_byte(struct fts_data *ts, u8 byte)
+{
+	int i, nack;
+
+	for (i = 7; i >= 0; i--) {
+		if (byte & BIT(i))
+			fts_sda_release(ts);
+		else
+			fts_sda_low(ts);
+		udelay(FTS_I2C_DELAY_US);
+		fts_scl_release(ts);
+		udelay(FTS_I2C_DELAY_US);
+		fts_scl_low(ts);
+		udelay(FTS_I2C_DELAY_US);
+	}
+
+	/* ninth clock: release SDA and sample it */
+	fts_sda_release(ts);
+	udelay(FTS_I2C_DELAY_US);
+	fts_scl_release(ts);
+	udelay(FTS_I2C_DELAY_US);
+	nack = gpiod_get_value(ts->sda);
+	fts_scl_low(ts);
+	udelay(FTS_I2C_DELAY_US);
+
+	return nack ? -ENXIO : 0;
+}
+
+static u8 fts_read_byte(struct fts_data *ts, bool ack)
+{
+	u8 byte = 0;
+	int i;
+
+	fts_sda_release(ts);
+	for (i = 7; i >= 0; i--) {
+		udelay(FTS_I2C_DELAY_US);
+		fts_scl_release(ts);
+		udelay(FTS_I2C_DELAY_US);
+		if (gpiod_get_value(ts->sda))
+			byte |= BIT(i);
+		fts_scl_low(ts);
+	}
+	udelay(FTS_I2C_DELAY_US);
+
+	if (ack)
+		fts_sda_low(ts);
+	else
+		fts_sda_release(ts);
+	udelay(FTS_I2C_DELAY_US);
+	fts_scl_release(ts);
+	udelay(FTS_I2C_DELAY_US);
+	fts_scl_low(ts);
+	fts_sda_release(ts);
+	udelay(FTS_I2C_DELAY_US);
+
+	return byte;
+}
+
+/* write cmd then read len bytes back (repeated start) */
+static int fts_xfer(struct fts_data *ts, u8 cmd, u8 *buf, int len)
+{
+	int i, ret;
+
+	fts_start(ts);
+	ret = fts_write_byte(ts, ts->addr << 1);
+	if (!ret)
+		ret = fts_write_byte(ts, cmd);
+	if (ret)
+		goto out;
+
+	if (!len) {
+		fts_stop(ts);
+		return 0;
+	}
+
+	fts_start(ts);
+	ret = fts_write_byte(ts, (ts->addr << 1) | 1);
+	if (ret)
+		goto out;
+
+	for (i = 0; i < len; i++)
+		buf[i] = fts_read_byte(ts, i < len - 1);
+
+	fts_stop(ts);
+	return 0;
+
+out:
+	fts_stop(ts);
+	return ret;
 }
 
 static int fts_command(struct fts_data *ts, u8 cmd)
 {
-	return fts_i2c_write(ts, &cmd, 1);
+	return fts_xfer(ts, cmd, NULL, 0);
 }
 
-static int fts_read_info(struct fts_data *ts)
+static int fts_send(struct fts_data *ts, const u8 *buf, int len)
 {
-	struct device *dev = &ts->client->dev;
-	u8 info[FTS_EVENT_SIZE];
-	int ret;
+	int i, ret;
 
-	ret = fts_i2c_read(ts, FTS_CMD_READ_INFO, info, sizeof(info));
-	if (ret) {
-		dev_warn(dev, "info read failed: %d\n", ret);
-		return ret;
-	}
+	fts_start(ts);
+	ret = fts_write_byte(ts, ts->addr << 1);
+	for (i = 0; i < len && !ret; i++)
+		ret = fts_write_byte(ts, buf[i]);
+	fts_stop(ts);
 
-	dev_info(dev,
-		 "chip id %04x, chip ver %02x, fw ver %04x, cfg %02x/%02x\n",
-		 get_unaligned_be16(&info[6]), info[0],
-		 get_unaligned_be16(&info[2]), info[4], info[5]);
+	return ret;
+}
 
-	return 0;
+/* ---------------- chip ---------------- */
+
+static int fts_read_events(struct fts_data *ts, u8 *buf)
+{
+	return fts_xfer(ts, FTS_CMD_READ_ALL_EVENT, buf, FTS_DATA_SIZE);
 }
 
 static void fts_report_point(struct fts_data *ts, const u8 *ev, bool down)
 {
 	struct input_dev *input = ts->input;
-	unsigned int id = ev[1] & 0x0f;
-	unsigned int count = ev[1] >> 4;
-	unsigned int x = (ev[2] << 4) | ((ev[4] & 0xf0) >> 4);
-	unsigned int y = (ev[3] << 4) | (ev[4] & 0x0f);
+	unsigned int id = ev[1] >> 4;
+	unsigned int x = ((ev[3] & 0x0f) << 8) | ev[2];
+	unsigned int y = (ev[4] << 4) | ((ev[3] & 0xf0) >> 4);
+	unsigned int maj = ((ev[0] & 0x0c) << 2) | (ev[6] >> 4);
+	unsigned int min = ((ev[7] & 0xc0) >> 2) | (ev[6] & 0x0f);
+	unsigned int pressure = ev[5] ? ev[5] : 1;
+
+	if (id >= FTS_MAX_FINGERS) {
+		dev_warn_ratelimited(ts->dev, "slot %u out of range\n", id);
+		return;
+	}
 
 	input_mt_slot(input, id);
 
 	if (!down) {
 		input_mt_report_slot_state(input, MT_TOOL_FINGER, false);
-		if (!count)
-			input_report_key(input, BTN_TOUCH, 0);
 		return;
 	}
 
 	input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
 	touchscreen_report_pos(input, &ts->prop, x, y, true);
-	input_report_abs(input, ABS_MT_TOUCH_MAJOR, ev[5] & 0x1f);
-	input_report_abs(input, ABS_MT_TOUCH_MINOR, ev[6]);
-	input_report_abs(input, ABS_MT_PRESSURE, ev[5] & 0x1f);
-	input_report_key(input, BTN_TOUCH, 1);
-	input_report_key(input, BTN_TOOL_FINGER, 1);
+	input_report_abs(input, ABS_MT_TOUCH_MAJOR, maj);
+	input_report_abs(input, ABS_MT_TOUCH_MINOR, min);
+	input_report_abs(input, ABS_MT_PRESSURE, pressure);
 }
 
-static void fts_handle_event(struct fts_data *ts, const u8 *ev)
+static void fts_parse_events(struct fts_data *ts, const u8 *data)
 {
-	u8 class = ev[0] >> 4;
-	u8 object = ev[0] & 0x0f;
+	const char *what;
+	int i;
 
-	/* Flat codes used by the older ST parts. */
-	if (ev[0] == 0x03 || ev[0] == 0x05)
-		return fts_report_point(ts, ev, true);
-	if (ev[0] == 0x04)
-		return fts_report_point(ts, ev, false);
+	for (i = 0; i < FTS_STACK_DEPTH; i++) {
+		const u8 *ev = &data[i * FTS_EVENT_SIZE];
+		u8 type = ev[0] & 0xf0;
 
-	if (object != 0x03)		/* not a touch point (gesture etc.) */
-		return;
+		if (ev[0] == 0x00)
+			break;
 
-	if (class == 0x01)
-		fts_report_point(ts, ev, true);
-	else if (class == 0x03)
-		fts_report_point(ts, ev, false);
+		if (ev[0] == FTS_EV5_CONTROLLER_READY)
+			continue;
+
+		switch (type) {
+		case FTS_EV5_MT_ENTER:
+			what = "enter";
+			break;
+		case FTS_EV5_MT_MOTION:
+			what = "motion";
+			break;
+		case FTS_EV5_MT_LEAVE:
+			what = "leave";
+			break;
+		case FTS_EV5_ERROR:
+			dev_warn_ratelimited(ts->dev,
+					     "controller error %8phN\n", ev);
+			continue;
+		case FTS_EV5_STATUS_UPDATE:
+		case FTS_EV5_USER_REPORT:
+		case FTS_EV5_DEBUG:
+			continue;
+		default:
+			if (ts->dump_left > 0) {
+				ts->dump_left--;
+				dev_info(ts->dev, "ev %8phN (class %02x)\n",
+					 ev, type);
+			}
+			continue;
+		}
+
+		if (ts->dump_left > 0) {
+			ts->dump_left--;
+			dev_info(ts->dev,
+				 "ev %8phN -> %s id %u %u,%u p%u\n", ev, what,
+				 ev[1] >> 4,
+				 ((ev[3] & 0x0f) << 8) | ev[2],
+				 (ev[4] << 4) | ((ev[3] & 0xf0) >> 4), ev[5]);
+		}
+
+		fts_report_point(ts, ev, type != FTS_EV5_MT_LEAVE);
+	}
+
+	input_mt_sync_frame(ts->input);
+	input_sync(ts->input);
 }
 
-static irqreturn_t fts_irq_thread(int irq, void *data)
+/*
+ * Polling instead of interrupts.
+ *
+ * The level-low interrupt source stops delivering after the very first
+ * interrupt on this unit even though the enable register is rewritten after
+ * every frame, and /proc/interrupts stays pinned at 1 while the panel is
+ * being touched.  Reading the event stack on a timer is what the vendor
+ * driver effectively ends up doing for events it missed, needs no IRQ
+ * programming at all, and is cheap: 32 events are 256 bytes over a 250 kHz
+ * bit-banged bus.
+ */
+static void fts_poll_work(struct work_struct *work)
 {
-	struct fts_data *ts = data;
+	struct fts_data *ts = container_of(work, struct fts_data, poll_work.work);
 	u8 ev[FTS_EVENT_SIZE];
 	int i, ret;
 
 	mutex_lock(&ts->lock);
 
-	for (i = 0; i < FTS_FIFO_DEPTH; i++) {
-		ret = fts_i2c_read(ts, FTS_CMD_FIFO_READ_ONE, ev, sizeof(ev));
+	/*
+	 * Read the stack one event at a time with 0x85, exactly like the
+	 * vendor driver; 0x86 always came back empty on this unit.  Every raw
+	 * event is logged for the first FTS_RAW_DUMP_DEFAULT frames so the
+	 * real byte layout can be confirmed from the log.
+	 */
+	for (i = 0; i < FTS_STACK_DEPTH; i++) {
+		ret = fts_xfer(ts, FTS_CMD_FIFO_READ_ONE, ev, sizeof(ev));
 		if (ret) {
-			dev_err_ratelimited(&ts->client->dev,
-					    "event read failed: %d\n", ret);
+			if (++ts->err_count <= 5)
+				dev_err(ts->dev, "event read failed: %d (%u)\n",
+					ret, ts->err_count);
 			break;
 		}
+		ts->err_count = 0;
+
 		if (ev[0] == 0x00)
 			break;
 
 		if (ts->dump_left > 0) {
 			ts->dump_left--;
-			dev_info(&ts->client->dev, "ev %8phN\n", ev);
+			dev_info(ts->dev, "raw %8phN\n", ev);
 		}
-
-		fts_handle_event(ts, ev);
 	}
 
-	input_sync(ts->input);
 	mutex_unlock(&ts->lock);
 
+	schedule_delayed_work(&ts->poll_work, msecs_to_jiffies(FTS_POLL_MS));
+}
+
+static irqreturn_t fts_irq_thread(int irq, void *data)
+{
+	static const u8 ier[] = { 0xb6, 0x00, 0x2c, 0x01 };
+	struct fts_data *ts = data;
+	int ret;
+
+	mutex_lock(&ts->lock);
+
+	ret = fts_read_events(ts, ts->buf);
+	if (ret) {
+		/*
+		 * A dead bus with a level-low interrupt means the handler would
+		 * be re-entered forever.  Complain a few times, then shut the
+		 * interrupt off so the log survives.
+		 */
+		ts->err_count++;
+		if (ts->err_count <= 5)
+			dev_err(ts->dev, "event read failed: %d (%u)\n",
+				ret, ts->err_count);
+		else if (ts->err_count == 6) {
+			dev_err(ts->dev, "bus is not answering, disabling irq %d\n",
+				ts->irq);
+			disable_irq_nosync(ts->irq);
+		}
+	} else {
+		ts->err_count = 0;
+		fts_parse_events(ts, ts->buf);
+	}
+
+	/*
+	 * The vendor driver calls fts_interrupt_enable() after draining the
+	 * event stack; without this re-arm the source stays quiet after the
+	 * very first interrupt (observed: /proc/interrupts stuck at 1).
+	 */
+	fts_send(ts, ier, sizeof(ier));
+
+	mutex_unlock(&ts->lock);
 	return IRQ_HANDLED;
 }
 
 static int fts_power_on(struct fts_data *ts)
 {
-	struct device *dev = &ts->client->dev;
+	int ret;
 
+	/* Fixed-value rails, enable only: vdd = 1.8 V, avdd = 3.3 V. */
+	ret = regulator_bulk_enable(ARRAY_SIZE(ts->supplies), ts->supplies);
+	if (ret) {
+		dev_err(ts->dev, "failed to enable supplies: %d\n", ret);
+		return ret;
+	}
+
+	/* assert reset (low), then release it (high) */
 	if (ts->reset) {
 		gpiod_set_value_cansleep(ts->reset, 0);
 		msleep(20);
 		gpiod_set_value_cansleep(ts->reset, 1);
-		/*
-		 * The datasheet only promises "reset time < 10 ms"; the vendor
-		 * driver is even more generous and sleeps 300 ms in its power
-		 * cycle path.  120 ms is comfortably inside that range.
-		 */
-		msleep(120);
 	}
+	msleep(300);
 
-	fts_command(ts, FTS_CMD_FIFO_FLUSH);
-	fts_command(ts, FTS_CMD_SENSE_ON);
+	/*
+	 * Minimal bring-up: the vendor order is sleep-out while the supplies
+	 * are already up, then sense-on.  Nothing else - the hardware register
+	 * write (0xb6 00 2c 01) and the tuning/calibration opcodes left the
+	 * controller silent here, so they stay out until the event path is
+	 * proven.
+	 */
+	ret = fts_command(ts, FTS_CMD_SLEEP_OUT);
+	dev_info(ts->dev, "sleep out: %d\n", ret);
+	msleep(100);
 
-	dev_info(dev, "powered on (reset %s)\n",
-		 ts->reset ? "toggled" : "not wired, relying on ABL state");
+	ret = fts_command(ts, FTS_CMD_MS_MT_SENSE_ON);
+	dev_info(ts->dev, "sense on: %d\n", ret);
+	msleep(100);
+
+	dev_info(ts->dev, "powered on\n");
 	return 0;
 }
 
-static int fts_probe(struct i2c_client *client)
+static int fts_probe(struct platform_device *pdev)
 {
-	struct device *dev = &client->dev;
+	struct device *dev = &pdev->dev;
 	struct fts_data *ts;
+	u32 addr = 0x49;
 	int ret;
 
 	ts = devm_kzalloc(dev, sizeof(*ts), GFP_KERNEL);
 	if (!ts)
 		return -ENOMEM;
 
-	ts->client = client;
+	ts->dev = dev;
 	ts->dump_left = FTS_RAW_DUMP_DEFAULT;
 	mutex_init(&ts->lock);
-	i2c_set_clientdata(client, ts);
+	platform_set_drvdata(pdev, ts);
+
+	of_property_read_u32(dev->of_node, "reg", &addr);
+	ts->addr = addr & 0xff;
+
+	ts->sda = devm_gpiod_get(dev, "sda", GPIOD_IN);
+	if (IS_ERR(ts->sda))
+		return dev_err_probe(dev, PTR_ERR(ts->sda), "no sda gpio\n");
+
+	ts->scl = devm_gpiod_get(dev, "scl", GPIOD_IN);
+	if (IS_ERR(ts->scl))
+		return dev_err_probe(dev, PTR_ERR(ts->scl), "no scl gpio\n");
 
 	ts->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(ts->reset))
-		return dev_err_probe(dev, PTR_ERR(ts->reset),
-				     "failed to get reset gpio\n");
+		return dev_err_probe(dev, PTR_ERR(ts->reset), "no reset gpio\n");
 
-	if (client->irq <= 0)
-		return dev_err_probe(dev, -ENXIO, "no interrupt assigned\n");
+	ts->irq = platform_get_irq(pdev, 0);
+	if (ts->irq <= 0)
+		return dev_err_probe(dev, -ENXIO, "no interrupt\n");
+
+	ts->supplies[0].supply = "vdd";		/* 1.8 V */
+	ts->supplies[1].supply = "avdd";	/* 3.3 V */
+	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(ts->supplies),
+				      ts->supplies);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to get supplies\n");
 
 	ret = fts_power_on(ts);
 	if (ret)
@@ -277,7 +566,6 @@ static int fts_probe(struct i2c_client *client)
 	touchscreen_parse_properties(ts->input, true, &ts->prop);
 
 	input_set_capability(ts->input, EV_KEY, BTN_TOUCH);
-	input_set_capability(ts->input, EV_KEY, BTN_TOOL_FINGER);
 	__set_bit(INPUT_PROP_DIRECT, ts->input->propbit);
 
 	ret = input_mt_init_slots(ts->input, FTS_MAX_FINGERS, INPUT_MT_DIRECT);
@@ -288,31 +576,26 @@ static int fts_probe(struct i2c_client *client)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to register input\n");
 
-	ret = devm_request_threaded_irq(dev, client->irq, NULL, fts_irq_thread,
-					IRQF_ONESHOT, "fts-umi", ts);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to request irq %d\n",
-				     client->irq);
-
-	/* Reading the id is a pure read; a failure is not fatal (older parts
-	 * answer with 0xff) but it is the first thing worth knowing about. */
-	fts_read_info(ts);
+	INIT_DELAYED_WORK(&ts->poll_work, fts_poll_work);
+	schedule_delayed_work(&ts->poll_work, msecs_to_jiffies(200));
 
 	ts->awake = true;
 
 	dev_info(dev, "%ux%u, %d slots, irq %d\n",
 		 ts->prop.max_x + 1, ts->prop.max_y + 1, FTS_MAX_FINGERS,
-		 client->irq);
+		 ts->irq);
 
 	return 0;
 }
 
-static void fts_remove(struct i2c_client *client)
+static void fts_remove(struct platform_device *pdev)
 {
-	struct fts_data *ts = i2c_get_clientdata(client);
+	struct fts_data *ts = platform_get_drvdata(pdev);
+
+	cancel_delayed_work_sync(&ts->poll_work);
 
 	mutex_lock(&ts->lock);
-	fts_command(ts, FTS_CMD_SENSE_OFF);
+	fts_command(ts, FTS_CMD_SLEEP_IN);
 	mutex_unlock(&ts->lock);
 }
 
@@ -321,7 +604,7 @@ static int fts_suspend(struct device *dev)
 	struct fts_data *ts = dev_get_drvdata(dev);
 
 	mutex_lock(&ts->lock);
-	fts_command(ts, FTS_CMD_SENSE_OFF);
+	fts_command(ts, FTS_CMD_SLEEP_IN);
 	ts->awake = false;
 	mutex_unlock(&ts->lock);
 
@@ -331,31 +614,26 @@ static int fts_suspend(struct device *dev)
 static int fts_resume(struct device *dev)
 {
 	struct fts_data *ts = dev_get_drvdata(dev);
+	int ret;
 
 	mutex_lock(&ts->lock);
-	fts_power_on(ts);
-	ts->awake = true;
+	ret = fts_power_on(ts);
+	if (!ret)
+		ts->awake = true;
 	mutex_unlock(&ts->lock);
 
-	return 0;
+	return ret;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(fts_pm_ops, fts_suspend, fts_resume);
 
 static const struct of_device_id fts_of_match[] = {
 	{ .compatible = "st,fts-umi" },
-	{ .compatible = "st,fts" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, fts_of_match);
 
-static const struct i2c_device_id fts_i2c_id[] = {
-	{ "fts-umi" },
-	{ }
-};
-MODULE_DEVICE_TABLE(i2c, fts_i2c_id);
-
-static struct i2c_driver fts_driver = {
+static struct platform_driver fts_driver = {
 	.driver = {
 		.name = "fts-umi",
 		.of_match_table = fts_of_match,
@@ -363,9 +641,8 @@ static struct i2c_driver fts_driver = {
 	},
 	.probe = fts_probe,
 	.remove = fts_remove,
-	.id_table = fts_i2c_id,
 };
-module_i2c_driver(fts_driver);
+module_platform_driver(fts_driver);
 
-MODULE_DESCRIPTION("STMicroelectronics FTS touchscreen for Xiaomi Mi 10 (umi)");
+MODULE_DESCRIPTION("STMicroelectronics FTS5 touchscreen for Xiaomi Mi 10 (umi)");
 MODULE_LICENSE("GPL");
