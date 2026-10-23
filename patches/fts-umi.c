@@ -117,6 +117,7 @@ struct fts_data {
 	int irq;
 	u8 addr;
 	int dump_left;
+	int dbg_polls;
 	unsigned int err_count;
 	u8 buf[FTS_DATA_SIZE];
 	struct delayed_work poll_work;
@@ -231,19 +232,20 @@ static u8 fts_read_byte(struct fts_data *ts, bool ack)
 	return byte;
 }
 
-/* write cmd then read len bytes back (repeated start) */
-static int fts_xfer(struct fts_data *ts, u8 cmd, u8 *buf, int len)
+/* generic transfer: outlen bytes out, then a repeated start and inlen bytes in */
+static int fts_xfer_n(struct fts_data *ts, const u8 *out, int outlen,
+		      u8 *in, int inlen)
 {
 	int i, ret;
 
 	fts_start(ts);
 	ret = fts_write_byte(ts, ts->addr << 1);
-	if (!ret)
-		ret = fts_write_byte(ts, cmd);
+	for (i = 0; i < outlen && !ret; i++)
+		ret = fts_write_byte(ts, out[i]);
 	if (ret)
 		goto out;
 
-	if (!len) {
+	if (!inlen) {
 		fts_stop(ts);
 		return 0;
 	}
@@ -253,8 +255,8 @@ static int fts_xfer(struct fts_data *ts, u8 cmd, u8 *buf, int len)
 	if (ret)
 		goto out;
 
-	for (i = 0; i < len; i++)
-		buf[i] = fts_read_byte(ts, i < len - 1);
+	for (i = 0; i < inlen; i++)
+		in[i] = fts_read_byte(ts, i < inlen - 1);
 
 	fts_stop(ts);
 	return 0;
@@ -262,6 +264,21 @@ static int fts_xfer(struct fts_data *ts, u8 cmd, u8 *buf, int len)
 out:
 	fts_stop(ts);
 	return ret;
+}
+
+static int fts_xfer(struct fts_data *ts, u8 cmd, u8 *buf, int len)
+{
+	return fts_xfer_n(ts, &cmd, 1, buf, len);
+}
+
+/* The controller exposes a 16 bit memory window: write {0xb6, hi, lo} then
+ * read.  This is how the vendor driver reads FW/CONFIG version - the 0x80
+ * "read info" command answers with zeros on this part. */
+static int fts_hw_read(struct fts_data *ts, u16 addr, u8 *buf, int len)
+{
+	u8 out[3] = { 0xb6, (addr >> 8) & 0xff, addr & 0xff };
+
+	return fts_xfer_n(ts, out, sizeof(out), buf, len);
 }
 
 static int fts_command(struct fts_data *ts, u8 cmd)
@@ -411,6 +428,12 @@ static void fts_poll_work(struct work_struct *work)
 		}
 		ts->err_count = 0;
 
+		if (ts->dbg_polls < 6) {
+			dev_info(ts->dev, "poll%u: %8phN\n",
+				 ts->dbg_polls, ev);
+			ts->dbg_polls++;
+		}
+
 		if (ev[0] == 0x00)
 			break;
 
@@ -509,13 +532,108 @@ static int fts_power_on(struct fts_data *ts)
 		msleep(100);
 	}
 
+	/*
+	 * Vendor order: system reset, then enable the interrupt source, then
+	 * sense on.  IER lives at 0x002C in the hardware register window.
+	 */
+	{
+		u8 ier[] = { 0xb6, 0x00, 0x2c, 0x01 };
+
+		ret = fts_send(ts, ier, sizeof(ier));
+		dev_info(ts->dev, "interrupt enable: %d\n", ret);
+	}
+
 	ret = fts_command(ts, FTS_CMD_MS_MT_SENSE_ON);
 	dev_info(ts->dev, "sense on: %d\n", ret);
 	msleep(100);
 
+	{
+		u8 ver[2];
+
+		if (!fts_hw_read(ts, 0x000a, ver, sizeof(ver)))
+			dev_info(ts->dev, "fw ver %02x%02x\n", ver[0], ver[1]);
+		else
+			dev_info(ts->dev, "fw ver read failed\n");
+	}
+
 	dev_info(ts->dev, "powered on\n");
 	return 0;
 }
+
+/*
+ * Runtime I2C poke box.
+ *
+ *   echo w 93            > .../cmd     write one byte
+ *   echo w b6 00 2c 01   > .../cmd     write four bytes
+ *   echo r 85 8          > .../cmd     write 0x85, read 8 bytes (result in dmesg)
+ *
+ * Lets the command sequence be worked out on the live device instead of
+ * recompiling the kernel for every guess.
+ */
+static ssize_t fts_cmd_store(struct device *dev, struct device_attribute *attr,
+			     const char *buf, size_t count)
+{
+	struct fts_data *ts = dev_get_drvdata(dev);
+	unsigned int vals[8] = { 0 };
+	u8 out[8], in[64];
+	const char *p = buf;
+	int nvals = 0, ret, i;
+	char op;
+
+	while (*p == ' ')
+		p++;
+	op = *p++;
+	if (op != 'w' && op != 'W' && op != 'r' && op != 'R' &&
+	    op != 'h' && op != 'H')
+		return -EINVAL;
+	while (*p == ' ')
+		p++;
+
+	while (nvals < ARRAY_SIZE(vals) && sscanf(p, "%x", &vals[nvals]) == 1) {
+		nvals++;
+		while (*p && *p != ' ' && *p != '\n')
+			p++;
+		while (*p == ' ')
+			p++;
+	}
+	if (!nvals)
+		return -EINVAL;
+
+	mutex_lock(&ts->lock);
+	if (op == 'w' || op == 'W') {
+		for (i = 0; i < nvals; i++)
+			out[i] = vals[i];
+		ret = fts_send(ts, out, nvals);
+		dev_info(dev, "cmd w %d bytes -> %d\n", nvals, ret);
+	} else if (op == 'h' || op == 'H') {
+		int rdlen = nvals > 1 ? vals[1] : 2;
+
+		if (rdlen > (int)sizeof(in))
+			rdlen = sizeof(in);
+		ret = fts_hw_read(ts, vals[0], in, rdlen);
+		if (ret)
+			dev_info(dev, "hw r %04x -> %d\n", vals[0], ret);
+		else
+			dev_info(dev, "hw r %04x len %d -> %*ph\n", vals[0],
+				 rdlen, rdlen, in);
+	} else {
+		int rdlen = nvals > 1 ? vals[1] : 8;
+
+		if (rdlen > (int)sizeof(in))
+			rdlen = sizeof(in);
+		ret = fts_xfer(ts, vals[0], in, rdlen);
+		if (ret)
+			dev_info(dev, "cmd r %02x len %d -> %d\n", vals[0],
+				 rdlen, ret);
+		else
+			dev_info(dev, "cmd r %02x len %d -> %*ph\n", vals[0],
+				 rdlen, rdlen, in);
+	}
+	mutex_unlock(&ts->lock);
+
+	return count;
+}
+static DEVICE_ATTR(cmd, 0200, NULL, fts_cmd_store);
 
 static int fts_probe(struct platform_device *pdev)
 {
@@ -592,6 +710,8 @@ static int fts_probe(struct platform_device *pdev)
 
 	INIT_DELAYED_WORK(&ts->poll_work, fts_poll_work);
 	schedule_delayed_work(&ts->poll_work, msecs_to_jiffies(200));
+
+	device_create_file(dev, &dev_attr_cmd);
 
 	ts->awake = true;
 
