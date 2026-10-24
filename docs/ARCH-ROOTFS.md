@@ -147,14 +147,24 @@ fastboot boot          out\boot-umi-cachetest.img
 ```powershell
 fastboot flash boot     out\boot-umi-arch.img
 fastboot flash userdata out\arch-rootfs.img
-fastboot reboot
+fastboot boot           out\boot-umi-arch.img     # ← 不是 reboot
 ```
+
+> **★ 刷完一定要跟一条 `fastboot boot 同一张镜像`，不要用 `fastboot reboot`。**
+> 这台机器的 ABL 在 `reboot` 之后会直接回落 fastboot（刷进 boot 分区的镜像它
+> 这次不接手），而 `fastboot boot` 能立刻把同一张图跑起来 —— 于是「持久化」
+> 和「马上看到结果」一步到位。
+>
+> 另一个约束：**一个 bootloader 会话只能 `fastboot boot` 一次**。
+> 所以顺序永远是 flash → boot，别把 boot 提前用掉。
 
 - `userdata` 这一条会**抹掉 194 GB MIUI 数据**，不可逆
 - `boot` 刷坏不怕：`dump/boot-stock.img` 是原厂备份，ABL 在 `sde39` 不受影响，
   fastboot 永远进得去
 - 关于 AVB：设备已解锁（我们一直在 `fastboot boot` 自编内核），刷没有 AVB footer 的
   `boot.img` 会走到 "orange state" 警告，但**允许启动**
+- 刷不进去时（大镜像）看 `docs/WIFI.md` 末尾的 TWRP + adb push 分块 dd 办法：
+  `fastboot` 会先把整个文件读进内存，6 GiB 直接 `std::bad_alloc`
 
 ### 5.4 首次启动
 
