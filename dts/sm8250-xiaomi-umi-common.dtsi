@@ -672,7 +672,7 @@
 	 *      无法归属到某条指令，copy_from_kernel_nofault 兜不住 -> panic -> WDT 重启。
 	 *      要验证某个引脚，就**只读那一个**。
 	 */
-	gpio-reserved-ranges = <4 8>, <13 11>, <28 4>, <40 4>, <66 3>, <77 2>, <80 5>, <92 33>;
+	gpio-reserved-ranges = <4 8>, <13 7>, <21 3>, <28 4>, <40 4>, <66 3>, <77 2>, <80 5>, <92 33>;
 
 	/* BT / WiFi 使能在 gpio21 / gpio20，也是 NORTH tile —— 同上，先不做。
 	 * （定义 pinctrl state 本身不碰寄存器，但一旦有驱动 apply 就会 abort，

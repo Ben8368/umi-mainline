@@ -109,6 +109,26 @@
 
 #include "sm8250-xiaomi-umi-touch.dtsi"
 
+/* ------------------------------------------------- WLAN_EN（gpio20）
+ * QCA6390 的上电使能脚。pwrseq-qcom-wcn 用 GPIOD_ASIS 请求它 —— 也就是
+ * **只请求、不改电平**（上游注释说改了会 toggle 电源导致 link down）。
+ * 那么"谁来拉高"就成了问题：正常平台上这是 bootloader 的活儿。
+ *
+ * 这里用 gpio-hog 在 tlmm 注册时直接把它拉高，绕开"没人拉"的尴尬。
+ * 20 已经从 gpio-reserved-ranges 的 <13 11> 里单独放出来了
+ * （拆成 <13 7> + <21 3>），和 gpio79 一个套路。
+ *
+ * 风险：如果 20 和之前整段放开时那样访问 abort，整机会 SError。
+ */
+&tlmm {
+	wlan_en_hog: wlan-en-hog {
+		gpio-hog;
+		gpios = <20 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "wlan-en";
+	};
+};
+
 /* ------------------------------------------------------------- PCIe0 → QCA6390 */
 &pcie0 {
 	/*

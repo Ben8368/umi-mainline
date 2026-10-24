@@ -167,3 +167,106 @@ reboot
 **关键前提**：`setsid`/`stty -echo -onlcr` 必须先关终端回显，
 否则每发一个字符都被原样回显，带宽翻倍、控制台缓冲溢出，
 传 24 KB 就卡死（实测过）。
+
+## 7. 2026-10-24 第二轮：把能控的都控住了，卡仍然不出 link
+
+第一轮的结论是「GPIO 20/79 不可访问」。这一轮把这些逐个证伪了：
+
+### 7.1 找到了一个自己挖的坑：mk-dtb.sh 不同步 dtsi
+
+改了 `sm8250-xiaomi-umi-common.dtsi` 的 `gpio-reserved-ranges`，编译出来的 dtb 里
+却还是旧值。原因是 `tmp/mk-dtb.sh` 只把**主 .dts** 拷进内核树，
+树里那份 `common.dtsi` 一直是旧的。现在会同步 common/panels/touch/dtbo-stubs 全部。
+
+### 7.2 gpio 79（PERST#）可用
+
+只把 79 从 `<77 8>` 里单独放出来（拆成 `<77 2>` + `<80 5>`），配上：
+
+```dts
+&pcie0 { perst-gpios = <&tlmm 79 GPIO_ACTIVE_LOW>; };
+```
+
+`probe failed -22` **消失**，控制器完整起来：
+
+```
+qcom-pcie 1c00000.pcie: iATU: unroll T, 8 ob, 8 ib, align 4K, limit 1024G
+qcom-pcie 1c00000.pcie: PCI host bridge to bus 0000:00
+pci 0000:00:00.0: [17cb:010b] PCIe Root Port
+pcieport 0000:00:00.0: PME: Signaling with IRQ 208
+```
+
+debugfs 里也确认了：`gpio79 : out high func0 2mA pull down`。
+
+### 7.3 gpio 20（WLAN_EN）也可用，而且真被拉高了
+
+上游 `pwrseq-qcom-wcn` 用 `GPIOD_ASIS` 请求 wlan-enable —— **只请求不改电平**，
+假设 bootloader 已经拉高。umi 的 ABL 没有。于是用 gpio-hog 强制拉高：
+
+```dts
+&tlmm {
+	wlan_en_hog: wlan-en-hog {
+		gpio-hog;
+		gpios = <20 GPIO_ACTIVE_HIGH>;
+		output-high;
+	};
+};
+```
+
+20 同样从 `<13 11>` 里单独放出（`<13 7>` + `<21 3>`）。
+结果：`gpio20 : out high func0 2mA pull down`，系统正常没崩。
+
+### 7.4 电源也确认全开
+
+```
+vreg_s6a_0p95 = enabled      vreg_s8c_1p35 = enabled
+vreg_s5a_1p9  = enabled      vreg_s4a_1p8  = enabled
+vreg_l5a_0p88 = enabled      vreg_l9a_1p2  = enabled
+```
+
+`pwrseq-qcom_wcn` 和 `pci-pwrctl-pwrseq` 都正确绑定
+（后者挂在 `1c00000.pcie:pcie@0:wifi@0` 上）。
+
+### 7.5 PERST 时序也没问题
+
+主线的时序是够的：
+
+```c
+qcom_ep_reset_assert:   PERST=1, usleep_range(1000, 1500)
+qcom_ep_reset_deassert: msleep(100), PERST=0, usleep_range(1000, 1500)
+```
+
+### 7.6 结果：还是 `Phy link never came up`
+
+电源、使能、复位、时序全都满足了，卡依然不响应。所以剩下的唯一解释是
+**QCA6390 自己的 PMU 还没有被初始化**。
+
+下游 `cnss2` 驱动（`downstream-kernel/drivers/net/wireless/cnss2/`）的上电序列是：
+
+```c
+int cnss_power_on_device(struct cnss_plat_data *plat_priv)
+{
+	cnss_vreg_on_type(plat_priv, CNSS_VREG_PRIM);   /* 电源 */
+	cnss_clk_on(plat_priv, &plat_priv->clk_list);   /* 时钟 */
+	cnss_select_pinctrl_enable(plat_priv);          /* WLAN_EN */
+	plat_priv->powered_on = true;
+}
+```
+
+下游 DT 里还有几个主线没有的东西：
+
+```
+qcom,sw-ctrl-gpio = <&tlmm 124 0>;     /* 诊断用，打印电平 */
+qcom,cmd_db_name = "smpf2";            /* RPMh 命令数据库资源 */
+qcom,vdd-wlan-aon-config = <...>;      /* 每路轨的电压配置 */
+```
+
+**下一步**要么把 `cnss2` 的电源序列移植成一个小的 mainline 驱动，
+要么接受这台机器的 WiFi 在主线内核上暂时做不到。
+
+### 7.7 kexec 能换内核，换不了设备树
+
+顺便试了 `kexec -l Image.gz --initrd=... --dtb=...`：内核加载成功、能启动，
+但 `/proc/device-tree` 里还是旧设备树（`pcie status = disabled`）。
+**`--dtb` 在 arm64 上不生效**，所以 WiFi 调试没法用 kexec 省按键，
+每次换 dtb 还是得 `fastboot boot`。
+（kexec 带 initrd 本身是好用的，以后调内核参数可以省一次重启。）
