@@ -672,25 +672,28 @@ static int fts_start_scan(struct fts_data *ts)
 
 	fts_flush_fifo(ts);
 
-	/* vendor fts_mode_handler(), screen-on case: sense on, then gesture */
-	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, FTS_SCAN_MT);
-	if (ret)
-		return ret;
-	fts_send(ts, gesture, sizeof(gesture));
-
 	/*
-	 * vendor fts_init_sensing(): the FOD build always cycles the sensing
-	 * off and on again after the mode handler and waits
-	 * WAIT_AFTER_SENSEOFF (50 ms) in between.  Note it uses ACTIVE with a
-	 * zero mask here, not the low power mode.
+	 * ★ Keep this to ONE scan-mode write.
+	 *
+	 * Following the vendor's fts_init_sensing() literally - sense on,
+	 * gesture, then sense off, 50 ms, sense on again - left the display
+	 * black on p53, and so did poking SYS_CMD_SPECIAL with PANEL_INIT
+	 * (0xA4 00 02) by hand.  Every build up to p52, which only ever wrote
+	 * the scan mode once, kept the panel alive.  The touch controller is
+	 * on the panel flex, so cycling its sensing also disturbs the command
+	 * mode AMOLED.  Do not put the off/on cycle back without a way to
+	 * bring the panel back.
 	 */
-	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, 0x00);
+	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_LOW_POWER, 0);
 	if (ret)
 		return ret;
-	msleep(50);
+	msleep(20);
+
 	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, FTS_SCAN_MT);
 	if (ret)
 		return ret;
+
+	fts_send(ts, gesture, sizeof(gesture));
 
 	ret = fts_enable_interrupt(ts);
 	dev_info(ts->dev, "scan on: %d\n", ret);
