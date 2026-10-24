@@ -1947,6 +1947,7 @@ static void fts_user_report_event_handler(struct fts_ts_info *info,
   * the FIFO and dispatch them to the proper event handler according the event
   * ID
   */
+static int fts_dbg_events;
 static irqreturn_t fts_event_handler(int irq, void *ts_info)
 {
 	struct fts_ts_info *info = ts_info;
@@ -1967,10 +1968,20 @@ static irqreturn_t fts_event_handler(int irq, void *ts_info)
 		error = fts_writeReadU8UX(regAdd, 0, 0, data, FIFO_EVENT_SIZE,
 					  DUMMY_FIFO);
 
-		/*logError(0, "%s %s event = %02X %02X %02X %02X %02X %02X %02X %02X\n",
-			tag, __func__, data[0],
-			data[1], data[2], data[3], data[4], data[5], data[6],
-			data[7]);*/
+		/*
+		 * umi: print the first events verbatim.  The dispatch table sends
+		 * anything it does not know to fts_nop_event_handler, and the port
+		 * prints that at log level 0, which is exactly the level that was
+		 * silent here - so log the raw bytes ourselves and only for the
+		 * first few, this runs in interrupt context.
+		 */
+		if (!error && data[0] != EVT_ID_NOEVENT && fts_dbg_events < 40) {
+			fts_dbg_events++;
+			logError(1,
+				 "%s ev %02X %02X %02X %02X %02X %02X %02X %02X\n",
+				 tag, data[0], data[1], data[2], data[3], data[4],
+				 data[5], data[6], data[7]);
+		}
 		if (error == OK && data[0] != EVT_ID_NOEVENT)
 			eventId = data[0] >> 4;
 		else
