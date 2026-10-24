@@ -21,3 +21,5 @@ scratch/
 # ---- python ---------------------------------------------------------------
 __pycache__/
 *.pyc
+# scratch files from bring-up sessions (never part of the source of truth)
+tmp/

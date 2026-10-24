@@ -561,6 +561,42 @@ static ssize_t umi_panel_kick_store(struct device *dev,
 }
 static DEVICE_ATTR(kick, 0200, NULL, umi_panel_kick_store);
 
+/*
+ * Rescue hatch for a black panel.
+ *
+ * The touch controller shares the 3.3 V vddio rail (disp_vddio_vreg) and the
+ * flex with the command mode AMOLED.  A rough touch command sequence can leave
+ * the panel dark while the SoC keeps scanning the framebuffer happily, and
+ * until now the only way back was a reboot.  The on-sequence is just 59 DCS
+ * packets, so re-sending it is cheap:
+ *
+ *   echo 1 > repower
+ *
+ * If the panel comes back with this, the display pipeline was fine all along
+ * and only the panel IC had been knocked over.
+ */
+static ssize_t umi_panel_repower_store(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
+	struct umi_panel *ctx = mipi_dsi_get_drvdata(dsi);
+	int ret;
+
+	dev_info(dev, "repower: re-sending on-sequence (%d bytes)\n",
+		 ctx->cfg.on_seq_len);
+
+	ret = umi_panel_send_seq(ctx, "on-sequence",
+				 ctx->cfg.on_seq, ctx->cfg.on_seq_len);
+	dev_info(dev, "repower: on-sequence -> %d\n", ret);
+
+	if (ctx->bl)
+		backlight_enable(ctx->bl);
+
+	return ret ? ret : count;
+}
+static DEVICE_ATTR(repower, 0200, NULL, umi_panel_repower_store);
+
 /* ------------------------------------------------------------------ DT */
 
 static int umi_panel_parse_dt(struct umi_panel *ctx)
@@ -787,6 +823,7 @@ static int umi_panel_probe(struct mipi_dsi_device *dsi)
 
 	device_create_file(&dsi->dev, &dev_attr_dbg);
 	device_create_file(&dsi->dev, &dev_attr_kick);
+	device_create_file(&dsi->dev, &dev_attr_repower);
 
 	return 0;
 }

@@ -78,14 +78,49 @@
 #define FTS_CMD_READALL		0x86	/* + read FIFO_EVENT_SIZE bytes */
 #define FTS_CMD_SCAN_MODE	0xa0	/* + mode + scan mask */
 #define FTS_CMD_FEATURE		0xa2	/* + feature id + settings */
+#define FTS_CMD_FRAMEBUFFER	0xa6	/* + 16 bit address, then a read */
 
 #define FTS_FEAT_GESTURE	0x03
 
 #define FTS_CMD_SYSTEM		0xa4
 #define FTS_SYS_CMD_SPECIAL	0x00
-#define FTS_SYS_CMD_LOAD_DATA	0x01
+/*
+ * 0x01 is SYS_CMD_INT (FW interrupt control), not load data.  The vendor
+ * driver never sends it and neither should this one: every request built
+ * around "0xA4 01 30" was addressed to the interrupt-control command, which
+ * is why the frame counter never moved.
+ */
+#define FTS_SYS_CMD_INT		0x01
 #define FTS_SYS_CMD_FORCE_CAL	0x02
+#define FTS_SYS_CMD_CX_TUNING	0x03
+#define FTS_SYS_CMD_LOAD_DATA	0x06	/* + one byte of load type */
 #define FTS_SPECIAL_FIFO_FLUSH	0x01
+#define FTS_SPECIAL_PANEL_INIT	0x02
+#define FTS_SPECIAL_FULL_INIT	0x03
+
+/*
+ * Load types for FTS_SYS_CMD_LOAD_DATA (ftsSoftware.h load_opt).  This is a
+ * separate namespace from FTS_SYS_CMD_*: 0x30 is a raw frame, but 0x01 is
+ * LOAD_SYS_INFO and only means anything after the 0x06 selector.
+ */
+#define FTS_LOAD_SYS_INFO	0x01
+#define FTS_LOAD_SYNC_FRAME_RAW	0x30
+#define FTS_LOAD_SYNC_FRAME_FLT	0x31
+#define FTS_LOAD_SYNC_FRAME_BASE 0x32
+#define FTS_LOAD_SYNC_FRAME_STR	0x33
+
+/*
+ * The framebuffer lives at address 0 of the *16 bit* address space and is
+ * read with 0xA6.  That is a different address width from the 0xFA register
+ * window above - handing a 32 bit address to 0xA6 shifts every byte and
+ * quietly returns something that still looks like a valid header.
+ *
+ * Every payload starts with 4 bytes { 0xA5, <load type>, count lo, count hi }.
+ */
+#define FTS_FB_ADDR		0x0000
+#define FTS_FB_SIGNATURE	0xa5
+#define FTS_FB_HEADER_SIZE	4
+#define FTS_TIMEOUT_REQU_DATA	200	/* ms, vendor TIMEOUT_REQU_DATA */
 
 /* FTI register addresses, all inside the 0x2000_0000 window */
 #define ADDR_DCHIP_ID		0x20000000u
@@ -320,6 +355,90 @@ static int fts_hw_write(struct fts_data *ts, u32 addr, const u8 *data, int len)
 	return fts_send(ts, out, 5 + len);
 }
 
+/* { 0xA6, ah, al } then a read: the framebuffer address is 16 bit wide */
+static int fts_fb_read(struct fts_data *ts, u16 addr, u8 *buf, int len)
+{
+	u8 out[3] = { FTS_CMD_FRAMEBUFFER, (addr >> 8) & 0xff, addr & 0xff };
+
+	return fts_xfer_n(ts, out, sizeof(out), buf, len);
+}
+
+/*
+ * requestSyncFrame() from the vendor library.
+ *
+ * The FW does not answer a frame request with an event, it fills a buffer in
+ * its own memory and bumps a counter.  The handshake is therefore: read the
+ * counter, ask for the frame, then poll until the counter changes.  A frame
+ * counter that never moves is the only direct evidence available from the
+ * host side that the analog front end is not sampling.
+ *
+ * Returns the new counter on success or a negative errno; *changed tells
+ * whether the counter actually moved.
+ */
+static int fts_request_frame(struct fts_data *ts, u8 type, bool *changed)
+{
+	u8 hdr[FTS_FB_HEADER_SIZE] = { 0 };
+	u8 req[3] = { FTS_CMD_SYSTEM, FTS_SYS_CMD_LOAD_DATA, type };
+	int ret, i, base, now;
+	bool moved = false;
+
+	*changed = false;
+
+	ret = fts_fb_read(ts, FTS_FB_ADDR, hdr, sizeof(hdr));
+	if (ret)
+		return ret;
+	if (hdr[0] != FTS_FB_SIGNATURE)
+		return -EIO;
+
+	base = hdr[2] | (hdr[3] << 8);
+
+	ret = fts_send(ts, req, sizeof(req));
+	if (ret)
+		return ret;
+
+	now = base;
+	for (i = 0; i < FTS_TIMEOUT_REQU_DATA / 2; i++) {
+		msleep(2);
+		ret = fts_fb_read(ts, FTS_FB_ADDR, hdr, sizeof(hdr));
+		if (ret)
+			return ret;
+		if (hdr[0] != FTS_FB_SIGNATURE)
+			continue;
+		now = hdr[2] | (hdr[3] << 8);
+		if (now != base) {
+			moved = true;
+			break;
+		}
+	}
+
+	*changed = moved;
+	dev_info(ts->dev, "frame %02x: count %d -> %d (%s) hdr %*ph\n",
+		 type, base, now, moved ? "moved" : "stuck",
+		 (int)sizeof(hdr), hdr);
+
+	return 0;
+}
+
+/*
+ * readSysInfo(0): after a reset the FW leaves its system info in the
+ * framebuffer, so this doubles as a check that the 16 bit address path is
+ * the right one.  Only the first 64 bytes are read here; the panel geometry
+ * (TX/RX length) sits further in.
+ */
+static void fts_read_sysinfo(struct fts_data *ts)
+{
+	u8 d[64] = { 0 };
+	int ret;
+
+	ret = fts_fb_read(ts, FTS_FB_ADDR, d, sizeof(d));
+	if (ret) {
+		dev_info(ts->dev, "sysinfo read failed: %d\n", ret);
+		return;
+	}
+
+	dev_info(ts->dev, "sysinfo %*ph\n", (int)sizeof(d), d);
+}
+
 /* one 8 byte event out of the FIFO: { 0x86 } then a read */
 static int fts_read_one_event(struct fts_data *ts, u8 *ev)
 {
@@ -373,6 +492,81 @@ static int fts_flush_fifo(struct fts_data *ts)
 		      FTS_SPECIAL_FIFO_FLUSH };
 
 	return fts_send(ts, cmd, sizeof(cmd));
+}
+
+/*
+ * production_test_initialization(SPECIAL_PANEL_INIT) from the vendor library.
+ * The whole function is three calls:
+ *
+ *     fts_system_reset();
+ *     writeSysCmd(SYS_CMD_SPECIAL, { 0x02 }, 1);   // A4 00 02
+ *     readSysInfo(1);                             // A4 06 01, then read back
+ *
+ * The two steps around the command are the point, and they are exactly what
+ * the earlier hand pokes left out.  Without the reset in front the FW is not
+ * in a state where it takes a panel init, and without readSysInfo(1) there is
+ * no receipt: the AFE versions in the system info are what tells us whether
+ * the panel area was actually reloaded.
+ *
+ * Why it is needed at all: the system info of this unit reads
+ *
+ *     cfgAfeVer = 0x00    cxAfeVer = 0x05    panelCfgAfeVer = 0x05
+ *
+ * and the vendor driver turns exactly that mismatch into init_type =
+ * SPECIAL_PANEL_INIT.  A controller whose panel area is not the one its
+ * configuration expects never brings the analog front end up, which is why no
+ * amount of scan-mode juggling ever produced a touch event.
+ */
+static int fts_panel_init(struct fts_data *ts)
+{
+	u8 cmd[3] = { FTS_CMD_SYSTEM, FTS_SYS_CMD_SPECIAL,
+		      FTS_SPECIAL_PANEL_INIT };
+	u8 req[3] = { FTS_CMD_SYSTEM, FTS_SYS_CMD_LOAD_DATA, FTS_LOAD_SYS_INFO };
+	u8 ev[FTS_EVENT_SIZE];
+	u8 en = IER_ENABLE;
+	int ret, i, ready = 0;
+
+	/* 1. fts_system_reset(): toggle reset, then wait for the 0x03 event */
+	if (ts->reset) {
+		gpiod_set_value_cansleep(ts->reset, 0);
+		msleep(10);
+		gpiod_set_value_cansleep(ts->reset, 1);
+	}
+
+	for (i = 0; i < 30; i++) {
+		if (!fts_read_one_event(ts, ev) &&
+		    ev[0] == FTS_EV_CONTROLLER_READY) {
+			ready = 1;
+			break;
+		}
+		msleep(10);
+	}
+	dev_info(ts->dev, "panel init: controller %s after %d ms\n",
+		 ready ? "ready" : "NOT ready", i * 10);
+
+	/* 2. A4 00 02 */
+	ret = fts_send(ts, cmd, sizeof(cmd));
+	dev_info(ts->dev, "panel init: A4 00 02 -> %d\n", ret);
+	if (ret)
+		return ret;
+
+	/* the FW needs a moment to finish the reload before it answers */
+	msleep(100);
+
+	/* 3. readSysInfo(1) */
+	ret = fts_send(ts, req, sizeof(req));
+	dev_info(ts->dev, "panel init: A4 06 01 -> %d\n", ret);
+	if (ret)
+		return ret;
+
+	msleep(100);
+	fts_read_sysinfo(ts);
+
+	/* the reset wiped IER, arm it again before sensing is turned back on */
+	ret = fts_hw_write(ts, ADDR_IER, &en, 1);
+	dev_info(ts->dev, "panel init: ier -> %d\n", ret);
+
+	return ret;
 }
 
 /* ---------------- input ---------------- */
@@ -635,6 +829,16 @@ static int fts_power_on(struct fts_data *ts)
 	else
 		dev_info(ts->dev, "fw ver read failed\n");
 
+	/*
+	 * Deliberately NOT reading the system info here.
+	 *
+	 * The 64 byte framebuffer read was the only difference between the
+	 * "echo 1" that blacked the panel on p60 and the p49..p52 builds that
+	 * stayed alive, so it is kept out of the plain power-on path.  It is
+	 * still available where it is actually needed: at the end of the panel
+	 * init, as the receipt for whether the panel area was reloaded.
+	 */
+
 	/* vendor fts_enableInterrupt(): IER = 0x41 */
 	{
 		u8 en = IER_ENABLE;
@@ -663,6 +867,7 @@ static int fts_power_on(struct fts_data *ts)
  *   echo 0 > .../enable    controller unpowered (the p43 state, panel safe)
  *   echo 1 > .../enable    controller powered and handshaked, sensing off
  *   echo 2 > .../enable    sensing on, events and input reporting active
+ *   echo 3 > .../enable    panel init (A4 00 02) first, then sensing on
  */
 static int fts_enable_interrupt(struct fts_data *ts)
 {
@@ -783,15 +988,24 @@ static ssize_t fts_cmd_store(struct device *dev, struct device_attribute *attr,
 	 * Measured on umi:
 	 *   0xA4 00 01  SYS_CMD_SPECIAL/FIFO_FLUSH  harmless, used by flush
 	 *   0xA4 00 02  SYS_CMD_SPECIAL/PANEL_INIT  panel goes black
-	 *   0xA4 02     SYS_CMD_FORCE_CAL           panel goes black
-	 * 0xA4 00 02 and 0xA4 02 both survived the write, came back with the
-	 * echo event, and left the command mode AMOLED dark until reboot.
-	 * The controller drives the panel flex, so nothing here may touch the
-	 * panel init or the calibration path.  SYS_CMD_LOAD_DATA (0xA4 01 xx)
-	 * only asks the FW to fill a memory buffer and is allowed, it is how a
-	 * touch frame gets requested.
+	 * 0xA4 00 02 survived the write, came back with the echo event, and
+	 * left the command mode AMOLED dark until reboot.  The controller
+	 * drives the panel flex, so nothing here may touch the panel init or
+	 * the calibration path.
+	 *
+	 * Note what the selector byte actually means: it is NOT load-data for
+	 * 0x01.  The vendor map is 0x00 special, 0x01 FW interrupt control,
+	 * 0x02 force cal, 0x03 CX tuning, 0x06 load data.  Every early build
+	 * that asked for a raw frame with "0xA4 01 30" was therefore sending
+	 * an interrupt-control command with payload 0x30 - that is the build
+	 * (p53) that first left the panel black, not the scan-mode cycling it
+	 * was blamed on at the time.
+	 *
+	 * A real frame request is 0xA4 06 <load type>; it only asks the FW to
+	 * fill a memory buffer and is allowed here.
 	 */
-	if ((op == 'w' || op == 'W') && vals[0] == FTS_CMD_SYSTEM &&
+	if ((op == 'w' || op == 'W' || op == 'x' || op == 'X') &&
+	    vals[0] == FTS_CMD_SYSTEM &&
 	    !(nvals >= 2 && vals[1] == FTS_SYS_CMD_LOAD_DATA) &&
 	    !(nvals >= 2 && vals[1] == FTS_SYS_CMD_FORCE_CAL) &&
 	    !(nvals >= 3 && vals[1] == FTS_SYS_CMD_SPECIAL &&
@@ -864,7 +1078,7 @@ static ssize_t fts_enable_store(struct device *dev,
 	int val, ret = 0;
 	bool kick = false;
 
-	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 2)
+	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 3)
 		return -EINVAL;
 
 	/*
@@ -906,6 +1120,21 @@ static ssize_t fts_enable_store(struct device *dev,
 		}
 		dev_info(dev, "enable 2: scanning %s\n", ret ? "FAILED" : "ok");
 		break;
+	case 3:
+		if (!ts->powered)
+			ret = fts_power_on(ts);
+		if (!ret)
+			ret = fts_panel_init(ts);
+		if (!ret)
+			ret = fts_start_scan(ts);
+		if (!ret) {
+			ts->scanning = true;
+			ts->awake = true;
+			kick = true;
+		}
+		dev_info(dev, "enable 3: panel init + scanning %s\n",
+			 ret ? "FAILED" : "ok");
+		break;
 	}
 
 	mutex_unlock(&ts->lock);
@@ -919,6 +1148,46 @@ static ssize_t fts_enable_store(struct device *dev,
 	return ret ? ret : count;
 }
 static DEVICE_ATTR(enable, 0200, NULL, fts_enable_store);
+
+/*
+ * Runtime frame probe - the only host-side measurement of whether the analog
+ * front end is sampling at all.
+ *
+ * A touch event only reaches the FIFO when the FW decides that a finger
+ * arrived, so "no ENTER event" says nothing about the AFE.  A frame request
+ * does: if the frame counter moves, the AFE produced a frame; if it stays
+ * put, nothing sampled the panel.
+ *
+ *   echo 30 > .../frame    raw frame      (LOAD_SYNC_FRAME_RAW)
+ *   echo 31 > .../frame    filter frame   (LOAD_SYNC_FRAME_FILTER)
+ *   echo 32 > .../frame    baseline frame (LOAD_SYNC_FRAME_BASELINE)
+ *   echo 33 > .../frame    strength frame (LOAD_SYNC_FRAME_STRENGTH)
+ *
+ * The vendor waits WAIT_AFTER_SENSEOFF (50 ms) after stopping sensing before
+ * a frame may be read out of the controller memory.
+ */
+static ssize_t fts_frame_store(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct fts_data *ts = dev_get_drvdata(dev);
+	unsigned int type;
+	bool moved;
+	int ret;
+
+	if (sscanf(buf, "%x", &type) != 1)
+		return -EINVAL;
+
+	mutex_lock(&ts->lock);
+	ret = fts_request_frame(ts, type, &moved);
+	mutex_unlock(&ts->lock);
+
+	if (ret)
+		return ret;
+
+	return count;
+}
+static DEVICE_ATTR(frame, 0200, NULL, fts_frame_store);
 
 static int fts_probe(struct platform_device *pdev)
 {
@@ -1009,6 +1278,7 @@ static int fts_probe(struct platform_device *pdev)
 
 	device_create_file(dev, &dev_attr_cmd);
 	device_create_file(dev, &dev_attr_enable);
+	device_create_file(dev, &dev_attr_frame);
 
 	dev_info(dev, "%ux%u, %d slots, irq %d\n",
 		 ts->prop.max_x + 1, ts->prop.max_y + 1, FTS_MAX_FINGERS,
