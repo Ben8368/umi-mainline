@@ -92,13 +92,22 @@ struct umi_panel_cfg {
 
 struct umi_panel {
 	struct drm_panel panel;
-	struct mipi_dsi_device *dsi;
+
+struct mipi_dsi_device *dsi;
 	struct gpio_desc *reset_gpio;
 	struct regulator_bulk_data *supplies;
 	int num_supplies;
 	struct backlight_device *bl;
 	struct umi_panel_cfg cfg;
 };
+
+/*
+ * Set once this driver has attached the panel.  The touch driver waits for it
+ * so its analog front end does not start sampling before the display has
+ * established its rails (that is the order MIUI runs in).
+ */
+int umi_panel_ready;
+EXPORT_SYMBOL_GPL(umi_panel_ready);
 
 static inline struct umi_panel *to_umi_panel(struct drm_panel *p)
 {
@@ -862,6 +871,14 @@ static int umi_panel_probe(struct mipi_dsi_device *dsi)
 	}
 
 	dev_info(&dsi->dev, "panel attached (4 lane, cmd mode, RGB888)\n");
+
+	/*
+	 * 触摸驱动要等面板起来之后再开始采样。MIUI 上时序是「面板 1s、触摸 3.9s」，
+	 * 我们是「触摸 6.5s、面板 6.8s」，AFE 在 VCOM/ELVSS 建立之前就开始采，
+	 * 结果每一帧都被固件判废（STATUS/FRAME_DROP）。这个标志让触摸 probe 用
+	 * -EPROBE_DEFER 排队到面板就绪之后。
+	 */
+	WRITE_ONCE(umi_panel_ready, true);
 
 	device_create_file(&dsi->dev, &dev_attr_dbg);
 	device_create_file(&dsi->dev, &dev_attr_kick);

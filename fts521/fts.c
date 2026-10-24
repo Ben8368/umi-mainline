@@ -1948,6 +1948,13 @@ static void fts_user_report_event_handler(struct fts_ts_info *info,
   * ID
   */
 static int fts_dbg_events;
+
+/* set by the umi panel driver once its probe has attached the panel */
+extern int umi_panel_ready;
+
+static int umi_probe_delay_ms = 4000;
+module_param(umi_probe_delay_ms, int, 0644);
+MODULE_PARM_DESC(umi_probe_delay_ms, "Delay fts probe, so the panel is up before the AFE starts");
 static irqreturn_t fts_event_handler(int irq, void *ts_info)
 {
 	struct fts_ts_info *info = ts_info;
@@ -3100,6 +3107,21 @@ static int fts_probe(struct spi_device *client)
 
 	logError(1, "%s %s: driver probe begin!\n", tag, __func__);
 
+	/*
+	 * umi: do not start the AFE before the display is up.
+	 *
+	 * MIUI brings the panel up at about 1 s and probes touch at 3.9 s.  Here
+	 * the i2c bus appears at 5 s, this probe at 6.5 s and the panel
+	 * on-sequence only at 6.8 s, so the controller begins sampling before
+	 * VCOM/ELVSS exist and then rejects every frame it produces
+	 * (STATUS/FRAME_DROP, hundreds of them).  Deferring the probe puts it
+	 * after the panel driver has attached, which is the order MIUI runs in.
+	 */
+	if (!READ_ONCE(umi_panel_ready)) {
+		logError(1, "%s panel not ready yet, deferring probe\n", tag);
+		return -EPROBE_DEFER;
+	}
+
 	logError(1, "%s driver ver. %s\n", tag, FTS_TS_DRV_VERSION);
 
 	logError(1, "%s SET Bus Functionality :\n", tag);
@@ -3330,6 +3352,18 @@ static int fts_probe(struct spi_device *client)
 
 	logError(0, "%s Init Core Lib:\n", tag);
 	initCore(info);
+
+	/*
+	 * umi: wait for the display before touching the controller.
+	 *
+	 * On MIUI the panel is up at about 1 s and the touch probe happens at
+	 * 3.9 s.  Here the i2c bus appears at 5 s, this probe at 6.5 s and the
+	 * panel on-sequence only at 6.8 s - so the controller starts sampling
+	 * before the display has established VCOM/ELVSS, and every frame it
+	 * produces is then rejected (STATUS/FRAME_DROP, hundreds of them).
+	 * Delay the probe past the panel bring-up and see whether that alone
+	 * changes it.
+	 */
 	/* init hardware device */
 	logError(1, "%s Device Initialization:\n", tag);
 	error = fts_init(info);
