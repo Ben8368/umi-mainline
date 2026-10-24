@@ -1027,32 +1027,39 @@ static int fts_power_on(struct fts_data *ts)
 	int ret, i, ready = 0;
 
 	/*
-	 * Vendor fts_enable_reg() enables the bus supply (3.3 V) before the
-	 * power supply (1.8 V); keep that order.  Both are fixed rails: only
-	 * the enable is touched, no voltage is programmed.
+	 * Vendor fts_enable_reg(), step for step:
+	 *
+	 *     regulator_enable(vdd);                            // 1.8 V first
+	 *     msleep(15);
+	 *     regulator_set_voltage(avdd, 3300000, 3300000);    // fails here,
+	 *     regulator_set_load(avdd, 100000);                 // fixed rail
+	 *     regulator_enable(avdd);                           // 3.3 V
+	 *
+	 * Only the two enables were done before, and both at once.  The load
+	 * vote is the interesting one: it is a *current* vote that tells the
+	 * supply to come out of its low power state, and it is exactly what an
+	 * analog front end needs and what digital-only traffic keeps working
+	 * without.  No voltage and no current limit is programmed - this only
+	 * casts a vote, the rail still supplies what its driver decides.
 	 */
-	ret = regulator_bulk_enable(ARRAY_SIZE(ts->supplies), ts->supplies);
+	ret = regulator_enable(ts->supplies[1].consumer);	/* vdd, 1.8 V */
 	if (ret) {
-		dev_err(ts->dev, "failed to enable supplies: %d\n", ret);
+		dev_err(ts->dev, "failed to enable vdd: %d\n", ret);
 		return ret;
 	}
 
-	/*
-	 * The vendor driver does not stop at enabling the rails, it also calls
-	 * regulator_set_load() on both of them (62000 uA on avdd, 20000 uA on
-	 * vdd).  On Qualcomm that is a vote that moves the regulator out of its
-	 * low power mode, so regulator_set_mode(FAST) is the closest mainline
-	 * equivalent - but it does not work here and is kept only as a record:
-	 *
-	 *     vdd  (pm8150c L1)  -> -EPERM   mode changes not permitted
-	 *     avdd (fixed 3.3 V) -> -EINVAL  no mode support at all
-	 *
-	 * Neither error is fatal, the rails stay enabled.  Frame count still
-	 * never moves, so this was not what kept the AFE from sampling.
-	 * No voltage is programmed here.
-	 */
-	regulator_set_mode(ts->supplies[1].consumer, REGULATOR_MODE_FAST);
-	regulator_set_mode(ts->supplies[0].consumer, REGULATOR_MODE_FAST);
+	msleep(15);
+
+	ret = regulator_set_load(ts->supplies[0].consumer, 100000);	/* avdd */
+	if (ret)
+		dev_warn(ts->dev, "avdd load vote failed: %d\n", ret);
+
+	ret = regulator_enable(ts->supplies[0].consumer);	/* avdd, 3.3 V */
+	if (ret) {
+		dev_err(ts->dev, "failed to enable avdd: %d\n", ret);
+		regulator_disable(ts->supplies[1].consumer);
+		return ret;
+	}
 
 	msleep(20);
 
@@ -1148,7 +1155,7 @@ static int fts_power_on(struct fts_data *ts)
  * 50), but the FW never produces touch events that way - it wants the explicit
  * off/on cycle, and the interrupt armed only after that.
  */
-static int fts_start_scan(struct fts_data *ts)
+static int fts_start_scan_mask(struct fts_data *ts, u8 mask)
 {
 	int ret;
 
@@ -1182,7 +1189,7 @@ static int fts_start_scan(struct fts_data *ts)
 		return ret;
 	msleep(50);	/* WAIT_AFTER_SENSEOFF */
 
-	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, FTS_SCAN_MT);
+	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, mask);
 	if (ret)
 		return ret;
 
@@ -1202,9 +1209,25 @@ static int fts_start_scan(struct fts_data *ts)
 	 * so dropping the write costs nothing and keeps the controller in the
 	 * only state that can produce touch events.
 	 */
-	dev_info(ts->dev, "scan on\n");
+	dev_info(ts->dev, "scan on, mask %02x\n", mask);
 
 	return 0;
+}
+
+/*
+ * The upstream mainline port of this driver (sm7150-mainline, fts521) turns
+ * sensing on with the *whole* active bitmask instead of just the multi touch
+ * bit:
+ *
+ *     settings[0] = 0xFF;  // enable all the scans the config supports
+ *     setScanMode(SCAN_MODE_ACTIVE, settings[0]);
+ *
+ * That is the one line of a known working mainline integration this driver
+ * does not have, so it gets its own enable value instead of being assumed.
+ */
+static int fts_start_scan(struct fts_data *ts)
+{
+	return fts_start_scan_mask(ts, FTS_SCAN_MT);
 }
 
 static void fts_power_off(struct fts_data *ts)
@@ -1215,7 +1238,9 @@ static void fts_power_off(struct fts_data *ts)
 	}
 
 	if (ts->powered) {
-		regulator_bulk_disable(ARRAY_SIZE(ts->supplies), ts->supplies);
+		/* reverse of fts_power_on(): avdd first, then vdd */
+		regulator_disable(ts->supplies[0].consumer);
+		regulator_disable(ts->supplies[1].consumer);
 		ts->powered = false;
 	}
 
@@ -1359,7 +1384,7 @@ static ssize_t fts_enable_store(struct device *dev,
 	int val, ret = 0;
 	bool kick = false;
 
-	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 7)
+	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 8)
 		return -EINVAL;
 
 	/*
@@ -1486,6 +1511,25 @@ static ssize_t fts_enable_store(struct device *dev,
 			kick = true;
 		}
 		dev_info(dev, "enable 7: vendor parity reset + scanning %s\n",
+			 ret ? "FAILED" : "ok");
+		break;
+	case 8:
+		/*
+		 * Same as 7 but Sense ON with the full 0xFF active mask, the
+		 * way the upstream mainline fts521 port does it.
+		 */
+		if (!ts->powered)
+			ret = fts_power_on(ts);
+		if (!ret)
+			ret = fts_soft_reset(ts);
+		if (!ret)
+			ret = fts_start_scan_mask(ts, 0xff);
+		if (!ret) {
+			ts->scanning = true;
+			ts->awake = true;
+			kick = true;
+		}
+		dev_info(dev, "enable 8: reset + full mask scan %s\n",
 			 ret ? "FAILED" : "ok");
 		break;
 	}

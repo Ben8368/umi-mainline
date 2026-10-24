@@ -457,3 +457,78 @@ Open question, next measurement: MIUI can also be asked for its own CX data
 and the compensation it describes is what the AFE needs, the remaining step is
 to get the same CX data into the controller at boot - the one thing this
 driver has never done and never checked.
+
+## p69 - p71 - and what the event log actually says
+
+Three more things were matched to the vendor and changed nothing:
+
+- p69: the vendor power sequence exactly (vdd first, 15 ms, `regulator_set_load`
+  100 mA vote on avdd, then avdd).  The load vote is accepted and the rail
+  stays at 3300 mV; raw is unchanged.
+- p70: a runtime DSI poke (`echo "<7 byte header> <payload> ..." > dsi` on the
+  panel device).  The MIUI `mi,mdss-dsi-vi-setting-low/high` commands
+  (`page 1` + `B9 1A...` / `B9 1F...`) go through and change nothing either.
+- p71: Sense ON with the full active mask `0xFF`, which is what the working
+  upstream mainline port uses, instead of `0x01`.  Accepted, scan register
+  reads 0x50, raw is still one repeated -13462.
+
+The chip's stored panel data is *identical* to MIUI's, byte for byte:
+
+```
+echo "w a4 06 50" > .../cmd      # LOAD_PANEL_CX_TOT_MS_TOUCH
+echo "x a6 00 00 40" > .../cmd   # -> a5 50 02 00 | 08 00 18 00 1c 00 1c 00 ...
+```
+
+A5 signature, load type 0x50, then 8, 24, 28, 28, ... which is exactly the
+`ms_cx_total` matrix MIUI prints (`MsTouchTotalCx,20,37`, `R00, 8, 24, 28, ...`
+and its last node -16).  So the controller's CX/panel compensation is intact.
+
+### The event log
+
+With the whole FIFO drained the boot looks like this:
+
+```
+ev 4301a40001000005   echo of A4 00 01 (FIFO flush)
+ev 4301a00000000004   echo of A0 00 00 (sense off)
+ev 4301a000ff000003   echo of A0 00 FF (sense on)
+ev 4303f82a00000003   STATUS / FRAME_DROP, and then hundreds more
+ev 4303f82a00000002
+ev 4303f82a00000001
+...
+ev 4303b1430000000f
+```
+
+`0x43` is STATUS, `0x03` is EVT_TYPE_STATUS_FRAME_DROP, and byte 7 counts down
+because the FIFO is full and we are draining it.  The controller produces a
+frame drop for *every single frame* from the moment sensing comes on, and it
+also reports FORCE_CAL / 0x01 "mutual negative detect" once.
+
+That is the missing half of the picture: the analog front end is not silent, it
+samples and its result is rejected as negative on every frame.  Raw, baseline
+and filter are consistent with that (raw == baseline == -13462, filter == 0).
+
+### What is left
+
+Every digital difference that could be found has been removed: reset, sysinfo,
+CX data, scan mode and mask, gesture feature, ioff trim, frame read procedure,
+interrupt model, power sequencing, load votes, VI setting.  The remaining
+suspect is the analog side of the panel/controller interface, i.e. something
+that neither the DT nor the command set above can express.
+
+### Upstream status (found by searching, not by guessing)
+
+A mainline driver for exactly this chip family exists and is being upstreamed:
+
+- `[PATCH v4 00/11] Input: support for STM FTS5`
+  https://lkml.iu.edu/hypermail/linux/kernel/2604.1/01858.html
+- a working port already in a mainline tree:
+  https://github.com/sm7150-mainline/linux/commit/36f473a81f63ecfbe58d5d13f6ed998ce7885c50
+
+Reading that driver against this one turned up the two differences that were
+then tested (the 0xFF scan mask, and the CRC driven init selection), and it is
+also the cheapest way to stop guessing: it is the reference implementation, it
+uses plain `i2c_transfer()`, and it carries the full init flow including the
+`pollForErrorType()` CRC checks that decide between no init, panel init and
+full panel init.  The plan that follows from this is to wrap the bit-banged bus
+in a real `i2c_algorithm`/`i2c_adapter` (the bus works; only the QUP DMA path is
+broken) and let that driver probe 0x49 unchanged.

@@ -597,6 +597,48 @@ static ssize_t umi_panel_repower_store(struct device *dev,
 }
 static DEVICE_ATTR(repower, 0200, NULL, umi_panel_repower_store);
 
+/*
+ * 运行时 DSI poke（和触摸那边的 cmd 盒子对应）。
+ *
+ *   echo "39 01 00 00 00 00 06 F0 55 AA 52 08 01" > dsi
+ *
+ * 数据按下游格式写：7 字节头 {dtype, last, vc, ack, wait, dlen_hi, dlen_lo}
+ * 加 payload，可以一次写多包。这样面板侧的实验（VI setting、ELVSS、
+ * gamma、亮度补偿）就不用每次重新编译内核了。
+ *
+ * 为什么需要它：MIUI 的面板驱动会在运行时按亮度/温度下发 mi,mdss-dsi-vi-setting-*
+ * （page 1 的 B9 0x1A/0x1F）和 dynamic ELVSS，我们的驱动一个都不发；而触摸
+ * 传感器的参考电位就是面板的阴极，这是目前唯一还没对齐的软件变量。
+ */
+static ssize_t umi_panel_dsi_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
+	struct umi_panel *ctx = mipi_dsi_get_drvdata(dsi);
+	const char *p = buf;
+	unsigned int v;
+	u8 seq[512];
+	int n = 0, ret;
+
+	while (n < (int)sizeof(seq) && sscanf(p, "%x", &v) == 1) {
+		seq[n++] = v & 0xff;
+		while (*p && *p != ' ' && *p != '\t' && *p != '\n')
+			p++;
+		while (*p == ' ' || *p == '\t')
+			p++;
+	}
+
+	if (!n)
+		return -EINVAL;
+
+	ret = umi_panel_send_seq(ctx, "dsi poke", seq, n);
+	dev_info(dev, "dsi poke: %d bytes -> %d\n", n, ret);
+
+	return ret ? ret : count;
+}
+static DEVICE_ATTR(dsi, 0200, NULL, umi_panel_dsi_store);
+
 /* ------------------------------------------------------------------ DT */
 
 static int umi_panel_parse_dt(struct umi_panel *ctx)
@@ -824,6 +866,7 @@ static int umi_panel_probe(struct mipi_dsi_device *dsi)
 	device_create_file(&dsi->dev, &dev_attr_dbg);
 	device_create_file(&dsi->dev, &dev_attr_kick);
 	device_create_file(&dsi->dev, &dev_attr_repower);
+	device_create_file(&dsi->dev, &dev_attr_dsi);
 
 	return 0;
 }
