@@ -38,7 +38,7 @@
 #include <linux/string.h>
 #include <linux/delay.h>
 #include <linux/ctype.h>
-#include <linux/of_gpio.h>
+/* 7.x 删掉了 of_gpio.h；本文件本来也没用到任何 of_ 辅助函数，不再包含。 */
 
 #ifdef I2C_INTERFACE
 #include <linux/i2c.h>

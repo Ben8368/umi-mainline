@@ -46,8 +46,15 @@
 #include <linux/spi/spi.h>
 #include <linux/completion.h>
 #include <linux/device.h>
+#include <linux/version.h>
 #include <linux/gpio.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+/* 7.x 删掉了 of_gpio.h：of_get_named_gpio() 整族移除，整数 gpio 的 legacy
+ * 辅助函数搬到 gpio/legacy.h，desc_to_gpio() 在 gpio/consumer.h 里。 */
+#include <linux/gpio/consumer.h>
+#else
 #include <linux/of_gpio.h>
+#endif
 #include <linux/regulator/consumer.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/notifier.h>
@@ -2761,6 +2768,17 @@ static void fts_suspend_work(struct work_struct *work)
 static int fts_fb_state_chg_callback(struct notifier_block *nb,
 				     unsigned long val, void *data)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	/*
+	 * 7.x 的 fbdev notifier 只剩 FB_EVENT_FB_REGISTERED / UNREGISTERED，
+	 * FB_EVENT_BLANK 和 FB_BLANK_* 都被移除了。屏亮灭改由 PM 回调
+	 * （fts_pm_suspend / fts_pm_resume）承担，这里无事可做。
+	 */
+	(void)nb;
+	(void)val;
+	(void)data;
+	return 0;
+#else
 	struct fts_ts_info *info =
 		container_of(nb, struct fts_ts_info, notifier);
 	struct fb_event *evdata = data;
@@ -2798,6 +2816,7 @@ static int fts_fb_state_chg_callback(struct notifier_block *nb,
 		}
 	}
 	return NOTIFY_OK;
+#endif
 }
 
 static struct notifier_block fts_noti_block = {
@@ -2944,6 +2963,7 @@ static int fts_gpio_setup(int gpio, bool config, int dir, int state)
 	unsigned char buf[16];
 
 	if (config) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 		snprintf(buf, 16, "fts_gpio_%u\n", gpio);
 
 		retval = gpio_request(gpio, buf);
@@ -2952,6 +2972,10 @@ static int fts_gpio_setup(int gpio, bool config, int dir, int state)
 				 tag, __func__, gpio, retval);
 			return retval;
 		}
+#else
+		/* 7.x：引脚已经由 devm_gpiod_get() 掌住，这里只补方向。 */
+		(void)buf;
+#endif
 
 		if (dir == 0)
 			retval = gpio_direction_input(gpio);
@@ -2962,8 +2986,11 @@ static int fts_gpio_setup(int gpio, bool config, int dir, int state)
 				 tag, __func__, gpio);
 			return retval;
 		}
-	} else
+	}
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
+	else
 		gpio_free(gpio);
+#endif
 
 	return retval;
 }
@@ -3065,7 +3092,16 @@ static int parse_dt(struct device *dev, struct fts_hw_platform_data *bdata)
 	struct device_node *np = dev->of_node;
 	u32 temp_val;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	/*
+	 * 7.x：中端号已经由标准 "interrupts" 属性给出（client->irq），
+	 * 这里没有需要解析的东西。保持 GPIO_NOT_DEFINED 让后面的
+	 * gpio_to_irq() 回退路径被跳过。
+	 */
+	bdata->irq_gpio = GPIO_NOT_DEFINED;
+#else
 	bdata->irq_gpio = of_get_named_gpio(np, "fts,irq-gpio", 0);
+#endif
 
 	logError(0, "%s irq_gpio = %d\n", tag, bdata->irq_gpio);
 
@@ -3089,11 +3125,28 @@ static int parse_dt(struct device *dev, struct fts_hw_platform_data *bdata)
 		logError(0, "%s bus_reg_name = %s\n", tag, name);
 	}
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	/*
+	 * 7.x：复位脚走描述符 API（DT 里的标准 "reset-gpios"），再翻译回
+	 * fts_lib 用的整数编号。描述符会一直掌着这个引脚，所以
+	 * fts_gpio_setup() 不能再 gpio_request() 一次。
+	 */
+	{
+		struct gpio_desc *gd = devm_gpiod_get_optional(dev, "reset",
+							      GPIOD_ASIS);
+
+		if (IS_ERR(gd))
+			gd = NULL;
+		bdata->reset_gpio = gd ? desc_to_gpio(gd) : GPIO_NOT_DEFINED;
+		logError(0, "%s reset_gpio =%d\n", tag, bdata->reset_gpio);
+	}
+#else
 	if (of_property_read_bool(np, "fts,reset-gpio")) {
 		bdata->reset_gpio = of_get_named_gpio(np, "fts,reset-gpio", 0);
 		logError(0, "%s reset_gpio =%d\n", tag, bdata->reset_gpio);
 	} else
 		bdata->reset_gpio = GPIO_NOT_DEFINED;
+#endif
 
 	retval = of_property_read_u32(np, "fts,irq-flags", &temp_val);
 	if (retval < 0)
@@ -3254,7 +3307,10 @@ static int fts_probe(struct spi_device *client)
 	}
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	info->client->irq = gpio_to_irq(info->board->irq_gpio);
+#endif
+	/* 7.x：client->irq 直接来自 DT 的 interrupts 属性，无需换算。 */
 
 	logError(0, "%s SET Event Handler:\n", tag);
 	device_init_wakeup(&client->dev, 1);

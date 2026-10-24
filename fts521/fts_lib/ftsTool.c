@@ -66,7 +66,8 @@ char *printHex(char *label, u8 *buff, int count, u8 *result)
 	int i, offset;
 
 	offset = strlen(label);
-	strncpy(result, label, offset + 1); /* +1 for terminator char */
+	/* strncpy() 在 6.10 起已从内核移除，strscpy() 两个版本都有。 */
+	strscpy(result, label, offset + 1); /* +1 for terminator char */
 
 	for (i = 0; i < count; i++) {
 		snprintf(&result[offset], 4, "%02X ", buff[i]);

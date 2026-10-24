@@ -163,7 +163,8 @@ if [ -f "$TREE/drivers/dma/qcom/gpi.c" ]; then
 		"$TREE/drivers/dma/qcom/gpi.c" || echo "   !! gpi 补丁没打上"
 fi
 
-MK=$TREE/arch/arm64/boot/dts/qcom/Makefilefor d in sm8250-xiaomi-umi sm8250-xiaomi-umi-plus; do
+MK=$TREE/arch/arm64/boot/dts/qcom/Makefile
+for d in sm8250-xiaomi-umi sm8250-xiaomi-umi-plus; do
 	grep -q "$d\.dtb" "$MK" || \
 		printf 'dtb-$(CONFIG_ARCH_QCOM)\t+= %s.dtb\n' "$d" >> "$MK"
 	# ★ 必须用 -@ 编译：ABL 会往 base DTB 上打 dtbo overlay，overlay 靠 __symbols__
@@ -251,10 +252,22 @@ check_y QCOM_GPI_DMA
 # 注意不含 CPU_IDLE：drivers/acpi/Kconfig:269 的 ACPI_PROCESSOR 会 select 它，关不掉。
 # 关掉 ARM_PSCI_CPUIDLE 就等于关掉了 arm64/DT 下唯一会注册的 cpuidle 驱动。
 for s in FB_SIMPLE RANDOMIZE_BASE WERROR \
-         ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT \
          QCOM_CPR ARM_QCOM_CPUFREQ_HW; do
 	check_n "$s"
 done
+# SMMU bypass：6.12 上还能在编译期关掉，7.x 起它变成 default y 且只在
+# CONFIG_EXPERT 下可见，写 "# ... is not set" 会被 olddefconfig 改回去。
+# 真正生效的开关是 cmdline 里的 arm-smmu.disable_bypass=0，所以这里按它判断。
+if grep -q '^CONFIG_ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT=y' "$OUT/.config"; then
+	if grep -q 'arm-smmu.disable_bypass=0' "$OUT/.config"; then
+		echo "   OK   SMMU bypass 由 cmdline 关闭（arm-smmu.disable_bypass=0）"
+	else
+		echo "   FAIL ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT=y 且 cmdline 里没有 disable_bypass=0"
+		fail=1
+	fi
+else
+	echo "   OK   ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT 关闭"
+fi
 # 必须等于特定值
 check_v ARM64_VA_BITS 48
 check_v CMDLINE_FORCE y

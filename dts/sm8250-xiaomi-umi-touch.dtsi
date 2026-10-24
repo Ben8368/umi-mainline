@@ -132,7 +132,13 @@
 		fts,irq-gpio = <&tlmm 39 GPIO_ACTIVE_LOW>;
 		fts,irq-gpio-name = "fts_irq";
 		fts,reset-gpio-enable;
+		/*
+		 * 两套属性并存：
+		 *   fts,reset-gpio  6.12 的驱动自己解析（vendor 命名）
+		 *   reset-gpios     7.x 的驱动用 devm_gpiod_get(dev, "reset") 取
+		 */
 		fts,reset-gpio = <&tlmm 38 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 38 GPIO_ACTIVE_HIGH>;
 		fts,reset-gpio-name = "fts_rst";
 		fts,irq-flags = <8>;		/* IRQF_TRIGGER_LOW */
 
