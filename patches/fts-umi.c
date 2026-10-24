@@ -586,17 +586,18 @@ static int fts_power_on(struct fts_data *ts)
 	 * The vendor driver does not stop at enabling the rails, it also calls
 	 * regulator_set_load() on both of them (62000 uA on avdd, 20000 uA on
 	 * vdd).  On Qualcomm that is a vote that moves the regulator out of its
-	 * low power mode.  Enabling only is what mainline would do naturally,
-	 * and that may well be why the analog front end never starts sampling:
-	 * the digital side answers perfectly while no frame is ever produced.
-	 * No voltage is programmed here, only the operating mode.
+	 * low power mode, so regulator_set_mode(FAST) is the closest mainline
+	 * equivalent - but it does not work here and is kept only as a record:
+	 *
+	 *     vdd  (pm8150c L1)  -> -EPERM   mode changes not permitted
+	 *     avdd (fixed 3.3 V) -> -EINVAL  no mode support at all
+	 *
+	 * Neither error is fatal, the rails stay enabled.  Frame count still
+	 * never moves, so this was not what kept the AFE from sampling.
+	 * No voltage is programmed here.
 	 */
-	ret = regulator_set_mode(ts->supplies[1].consumer, REGULATOR_MODE_FAST);
-	if (ret)
-		dev_info(ts->dev, "vdd set_mode: %d\n", ret);
-	ret = regulator_set_mode(ts->supplies[0].consumer, REGULATOR_MODE_FAST);
-	if (ret)
-		dev_info(ts->dev, "avdd set_mode: %d\n", ret);
+	regulator_set_mode(ts->supplies[1].consumer, REGULATOR_MODE_FAST);
+	regulator_set_mode(ts->supplies[0].consumer, REGULATOR_MODE_FAST);
 
 	msleep(20);
 
