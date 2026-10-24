@@ -1,29 +1,33 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /*
- * Xiaomi Mi 10 (umi / M2001J2C) — SM8250 — 显示 + 触摸 + PCIe/QCA6390 WiFi
+ * Xiaomi Mi 10 (umi) — 显示/触摸 + PCIe/QCA6390 WiFi
  *
- * 这份是把 sm8250-xiaomi-umi.dts **整份**搬过来，再追加 PCIe/WiFi。
+ * ★ 这一版是**照抄作者 Armbian 镜像里的 dtb**（7.2.7-current-sm8250）反编译出来的配置。
+ *   从他镜像里 dump 出来的关键差异，解释了为什么我们 6.12 上怎么试都不行：
  *
- * 为什么要整份抄而不是只 include sm8250-xiaomi-umi-common.dtsi：
- *   面板相关的三块配置（&mdss / &mdss_dsi0 的 vdda / &mdss_dsi0_phy 的 vdds，
- *   以及 xiaomi-umi-panels.dtsi 和触摸 dtsi 的 include）全都在
- *   sm8250-xiaomi-umi.dts 里，**不在 common.dtsi**。
- *   只 include common.dtsi 的树会得到一个没有 mdss 平台设备的系统：
- *       /sys/class/drm/ 里只有 card0 card0-Unknown-1
- *       dmesg 里一行 panel 日志都没有
- *       sync_state() pending due to soc@0:qcom,dsi-display-primary
- *   实测踩过一次，白折腾一轮 fastboot。
+ *   1. 他的 gpio-reserved-ranges **只有两段**：
+ *          gpio-reserved-ranges = <28 4>, <40 4>;
+ *      也就是说 NORTH tile 的 gpio20/21/79/81 **全是可用的**。
+ *      而我们在 6.12 上把 NORTH 整片保留，还在 7.2.12 上撞到
+ *      gpiochip_setup_shared -EINVAL —— 怀疑 7.2.x 已经修了 NORTH 的访问问题。
  *
- * 相对基线只多了三处：
- *   1. qca6390-pmu 节点（ath11k 要的 10 路 LDO）
- *   2. &pcie0 / &pcie0_phy 打开
- *   3. pcieport0 下的 wifi@0（pci17cb,1101）
+ *   2. pcie0 保留主线给的 pinctrl-0 / perst-gpios / wake-gpios，一个都没删：
+ *          perst-gpios = <&tlmm 79 GPIO_ACTIVE_LOW>;
+ *          wake-gpios  = <&tlmm 81 GPIO_ACTIVE_HIGH>;
+ *          pinctrl-0   = <&pcie0_default_state>;
  *
- * 已知未解：&pcie0 的 pinctrl-0（sm8250.dtsi 的 pcie0_default_state，
- *   pins = "gpio79"）在 umi 上会报
- *       sm8250-pinctrl f100000.pinctrl: error -EINVAL: pin-79 (1c00000.pcie)
- *   所以这里删掉了它。gpio79 = PERST#；删掉后控制器本身还是
- *   probe failed -22，说明还有别的东西没满足，下一步继续查。
+ *   3. qca6390-pmu 带 pinctrl-0 指向 wlan/bt 的 default state，
+ *      并且同时有 wlan-enable-gpios / bt-enable-gpios：
+ *          wlan-default-state { pins = "gpio20"; function = "gpio";
+ *                               drive-strength = <16>; output-low; bias-pull-up; };
+ *          bt-default-state   { pins = "gpio21"; function = "gpio";
+ *                               drive-strength = <16>; output-high; bias-pull-up; };
+ *      注意 wlan 是 output-low —— 上电靠 pwrseq 驱动 power_on 时拉高。
+ *
+ *   4. 子节点 regulators { ldo0..ldo9 } 保留着（新驱动不消费，但留着无害）。
+ *
+ * 所以这份 dts 是「作者的配置 + 我们的显示/触摸部分」。
+ * 它需要 **7.2.x 内核**（7.2.7 是他验证过的版本，我们用 7.2.12）。
  */
 /dts-v1/;
 
@@ -33,14 +37,11 @@
 	model = "Xiaomi Mi 10 (wifi)";
 	compatible = "xiaomi,umi", "qcom,sm8250";
 
-	/*
-	 * QCA6390 的板载 PMU（10 路 LDO）。ath11k 的 qcom-qca6390 驱动通过它
-	 * 拿 vddrfacmn / vddaon / vddwlcx / vddwlmx / vddrfa / vddpcie 这些轨。
-	 * 注意这里只有 regulator 引用，没有一个电压值 —— 全部沿用 common.dtsi
-	 * 里写死 min==max 的定义。
-	 */
 	qca6390_pmu: qca6390-pmu {
 		compatible = "qcom,qca6390-pmu";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&bt_default_state>, <&wlan_default_state>;
 
 		vddaon-supply = <&vreg_s6a_0p95>;
 		vddpmu-supply = <&vreg_s6a_0p95>;
@@ -51,18 +52,8 @@
 		vddpcie1p9-supply = <&vreg_s5a_1p9>;
 		vddio-supply = <&vreg_s4a_1p8>;
 
-		/*
-		 * 没有 wlan-enable-gpios：gpio20 在 NORTH tile 里访问不了
-		 * （一放开 gpio-reserved-ranges 整机就起不来）。
-		 *
-		 * 好消息：drivers/power/sequencing/pwrseq-qcom-wcn.c 用的是
-		 *     devm_gpiod_get_optional(dev, "wlan-enable", ...)
-		 * 所以 GPIO 是**可选**的 —— 不配它驱动照样 probe，照样把
-		 * 那 10 路 LDO 注册出来并使能，只是不去拉那个使能脚。
-		 *
-		 * 这个实验要回答的就是：QCA6390 的电到底是由 LDO 直接给的，
-		 * 还是被 wlan-en 这个 GPIO 当门卡着？
-		 */
+		wlan-enable-gpios = <&tlmm 20 GPIO_ACTIVE_HIGH>;
+		bt-enable-gpios = <&tlmm 21 GPIO_ACTIVE_HIGH>;
 
 		regulators {
 			vreg_pmu_rfa_cmn: ldo0 { regulator-name = "vreg_pmu_rfa_cmn"; };
@@ -80,14 +71,12 @@
 };
 
 /* ---------------------------------------------------------------- 显示子系统
- * 以下整段与 sm8250-xiaomi-umi.dts 完全一致，别删 —— 删了面板就没了。 */
+ * 与基线完全一致，别删。*/
 &mdss {
 	status = "okay";
 };
 
 &mdss_dsi0 {
-	/* 只给 regulator 引用，不给电压值：两路轨都是 min==max 的固定值，
-	 * ABL 起来时已经开着，这里的 enable 只是加一个引用计数。 */
 	vdda-supply = <&vreg_l9a_1p2>;
 	status = "okay";
 };
@@ -101,72 +90,63 @@
 
 &mdss_dsi0 {
 	umi-panel@0 {
-		/* GPIO12 在 NORTH tile，但单独留出来了（能读能写），
-		 * 见 common.dtsi 里 gpio-reserved-ranges 的注释。*/
 		reset-gpios = <&tlmm 12 GPIO_ACTIVE_HIGH>;
 	};
 };
 
 #include "sm8250-xiaomi-umi-touch.dtsi"
 
-/* ------------------------------------------------- WLAN_EN（gpio20）
- * QCA6390 的上电使能脚。pwrseq-qcom-wcn 用 GPIOD_ASIS 请求它 —— 也就是
- * **只请求、不改电平**（上游注释说改了会 toggle 电源导致 link down）。
- * 那么"谁来拉高"就成了问题：正常平台上这是 bootloader 的活儿。
- *
- * 这里用 gpio-hog 在 tlmm 注册时直接把它拉高，绕开"没人拉"的尴尬。
- * 20 已经从 gpio-reserved-ranges 的 <13 11> 里单独放出来了
- * （拆成 <13 7> + <21 3>），和 gpio79 一个套路。
- *
- * 风险：如果 20 和之前整段放开时那样访问 abort，整机会 SError。
+/* ------------------------------------------------------------ GPIO 保留区
+ * 作者只保留 28-31 和 40-43。NORTH tile（20/21/79/81 所在）**全部放开**。
+ * 这正是他那边 WiFi 能起来的前提。
  */
 &tlmm {
-	wlan_en_hog: wlan-en-hog {
-		gpio-hog;
-		gpios = <20 GPIO_ACTIVE_HIGH>;
+	/delete-property/ gpio-reserved-ranges;
+	gpio-reserved-ranges = <28 4>, <40 4>;
+
+	bt_default_state: bt-default-state {
+		pins = "gpio21";
+		function = "gpio";
+		drive-strength = <16>;
 		output-high;
-		line-name = "wlan-en";
+		bias-pull-up;
+	};
+
+	wlan_default_state: wlan-default-state {
+		pins = "gpio20";
+		function = "gpio";
+		drive-strength = <16>;
+		output-low;
+		bias-pull-up;
+	};
+
+	/* 下游 DT 里有 qcom,sw-ctrl-gpio = <&tlmm 124>，cnss2 驱动只在
+	 * PCIe link 恢复失败时把它当前电平打印出来做诊断，从来没主动写过。
+	 * 既然 20/79/81 都验证可访问了，顺手把 124 也当开关试一把：
+	 * 如果它是射频/电源的第三道门，这里拉高就可能让链路起来。
+	 * 124 是 <92 33> 范围的最后一个引脚，已改成 <92 32> 单独放出。*/
+	sw_ctrl_hog: sw-ctrl-hog {
+		gpio-hog;
+		gpios = <124 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "sw-ctrl";
 	};
 };
 
-/* ------------------------------------------------------------- PCIe0 → QCA6390 */
+/* ------------------------------------------------------------- PCIe0 → QCA6390
+ * ★ 一个属性都不删 —— 和作者的 dtb 一样原样用主线那套。
+ *
+ * 之前我把 pinctrl-0 / perst-gpios / wake-gpios 全删了，只留 gpiod 请求，
+ * 结果是 "Phy link never came up"。问题在于 pinctrl-0 负责把 pin79/81 的
+ * mux 切到 GPIO 功能；没有它，PERST# 即使 gpiod 写了值也可能不落到引脚上。
+ * 作者那边是保留 pinctrl-0 = <&pcie0_default_state> 的。*/
 &pcie0 {
-	/*
-	 * 主线 sm8250.dtsi 给这个节点配了四个用 NORTH tile GPIO 的东西：
-	 *     perst-gpios = <&tlmm 79 GPIO_ACTIVE_LOW>;
-	 *     wake-gpios  = <&tlmm 81 GPIO_ACTIVE_HIGH>;
-	 *     pinctrl-0   = <&pcie0_default_state>;   (pins = "gpio79")
-	 * 79/81 都落在 gpio-reserved-ranges 的 <77 8> 里（NORTH tile 读不了），
-	 * 所以 devm_gpiod_get_optional("perst") 直接返回 -EINVAL，
-	 * 整个 probe 就死在
-	 *     qcom-pcie 1c00000.pcie: probe with driver qcom-pcie failed with error -22
-	 * 先全部删掉，让控制器自己去初始化，看 PORT 逻辑能不能起来。
-	 * （没有 PERST# 时设备可能一直处于复位态 —— 那是下一步的事。）
-	 */
-	/delete-property/ pinctrl-names;
-	/delete-property/ pinctrl-0;
-	/delete-property/ wake-gpios;
-
-	/*
-	 * perst-gpios 必须有：qcom_pcie_probe() 用
-	 *     devm_gpiod_get_optional(dev, "perst", GPIOD_OUT_HIGH)
-	 * 请求它 —— GPIOD_OUT_HIGH 对 active-low 的 PERST# 就是「释放复位」。
-	 * 删掉它 = 复位线永远拉着，QCA6390 永远不出 PCIe link，
-	 * 这正是之前一直看到 "Phy link never came up" 的直接原因。
-	 *
-	 * gpio79 只从 gpio-reserved-ranges 的 <77 8> 里单独放出来
-	 * （拆成 <77 2> + <80 5>），不再像上次那样整段放开。
-	 * 参考板 qrb5165-rb5 也是靠这个引脚。
-	 */
-	perst-gpios = <&tlmm 79 GPIO_ACTIVE_LOW>;
-
 	status = "okay";
 };
 
 &pcie0_phy {
 	vdda-phy-supply = <&vreg_l5a_0p88>;
 	vdda-pll-supply = <&vreg_l9a_1p2>;
-
 	status = "okay";
 };
 

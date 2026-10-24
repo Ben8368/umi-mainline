@@ -270,3 +270,88 @@ qcom,vdd-wlan-aon-config = <...>;      /* 每路轨的电压配置 */
 **`--dtb` 在 arm64 上不生效**，所以 WiFi 调试没法用 kexec 省按键，
 每次换 dtb 还是得 `fastboot boot`。
 （kexec 带 initrd 本身是好用的，以后调内核参数可以省一次重启。）
+
+## 8. 第三轮：逐项对齐作者 dtb 后仍然不通，dtbo 也排除了
+
+### 8.1 作者镜像里扒出来的真实情况
+
+`Armbian-unofficial_26.11.0-trunk_Xiaomi-umi_...rootfs.img` 里：
+
+- 内核 `7.2.7-current-sm8250`，**驱动全是主线原版**（ath11k_pci / pwrseq-qcom-wcn /
+  pci-pwrctl-pwrseq），**没有任何自定义补丁**
+- `lib/firmware/ath11k/QCA6390/hw2.0/` 固件齐全
+- 他的 `sm8250-xiaomi-umi.dtb` 里：
+
+```dts
+pcie@1c00000 {
+	perst-gpios = <&tlmm 79 GPIO_ACTIVE_LOW>;
+	wake-gpios  = <&tlmm 81 GPIO_ACTIVE_HIGH>;
+	pinctrl-0   = <&pcie0_default_state>;
+	status = "okay";
+};
+qca6390-pmu {
+	pinctrl-0 = <&bt_default_state>, <&wlan_default_state>;
+	wlan-enable-gpios = <&tlmm 20 GPIO_ACTIVE_HIGH>;
+	bt-enable-gpios   = <&tlmm 21 GPIO_ACTIVE_HIGH>;
+};
+gpio-reserved-ranges = <28 4>, <40 4>;     /* 只保留这两段，NORTH 全放 */
+```
+
+我们把这些**逐项照抄**（`wifi10`），结果依旧 `Phy link never came up`。
+
+### 8.2 6.12 和 7.2 的 pinctrl 驱动没有可移植的差异
+
+逐行 diff 过 `pinctrl-msm.c` / `pinctrl-msm.h` / `pinctrl-sm8250.c`：
+
+- `struct msm_pinctrl` 两边都是 `void __iomem *regs[MAX_NR_TILES]`（6.12 就支持多 tile）
+- `MSM_ACCESSOR` 宏两边一样，都走 `pctrl->regs[g->tile]`
+- `msm_pinmux_set_mux()` 一字不差
+- pin 20/28/79 的 `PINGROUP(..., NORTH, ...)` 定义完全相同
+
+**所以「把 7.2 的修复移植回 6.12」这件事本身不成立 —— 没有那个修复。**
+
+### 8.3 dtbo 分区也被排除了
+
+猜过 ABL 会在 `fastboot boot` 时往 base dtb 上打 dtbo overlay，把我们的配置改掉。
+实测运行时设备树：
+
+```
+/proc/device-tree/qca6390-pmu/wlan-enable-gpios = 00 00 00 54 00 00 00 14 00 00 00 00   (gpio20) ✓
+/proc/device-tree/soc@0/pcie@1c00000/perst-gpios = ... 0x4f 0x01                       (gpio79) ✓
+/proc/device-tree/soc@0/pcie@1c00000/status      = okay                                 ✓
+/proc/device-tree/soc@0/pinctrl@f100000/gpio-reserved-ranges = <28 4> <40 4>            ✓
+```
+
+**和送进去的 dtb 完全一致**，overlay 没有动 WiFi 相关的任何节点。
+
+### 8.4 最后把所有能查的都查了，全部正常
+
+| 项目 | 实测值 |
+|---|---|
+| `gpio20` (WLAN_EN) | `out high func0 16mA` ✅ 真的拉高了（pwrseq power_on 干的） |
+| `gpio79` (PERST#) | `out high` ✅ 复位已释放 |
+| `gpio81` (WAKE) | `in high` ✅ |
+| `gpio124` (SW_CTRL) | `in high` |
+| `pcie_0_gdsc` | `on` ✅ |
+| `vreg_l5a_0p88` / `vreg_l9a_1p2` | `enabled` users=4/3 ✅ |
+| `gcc_pcie_wifi_clkref_en` | `1` (by `1c06000.phy` ref) ✅ |
+| `gcc_pcie_phy_aux_clk` | `1` ✅ |
+| `gcc_pcie0_phy_refgen_clk` | `1` @100 MHz ✅ |
+| `gcc_pcie_0_pipe_clk` | `2` ✅ |
+| PHY 驱动 | `qcom-qmp-pcie-phy` 已绑定 ✅ |
+| PERST 时序 | assert 1 ms → hold 100 ms → release ✅ |
+
+**电源域、六路 regulator、四个时钟、PHY、复位、使能，全部到位，QCA6390 仍然不参与 PCIe 链路训练。**
+
+### 8.5 结论：卡在主线够不到的地方
+
+主线这一侧已经没有可改的了。剩下的可能性都在驱动之外：
+
+1. **RPMh / XPU 配置**：下游 DT 有 `qcom,cmd_db_name = "smpf2"`，
+   `cnss2` 用它向 RPMh 查询资源并下发 sleep/wake 命令。主线没有这个机制，
+   而 QCA6390 很可能需要 XPU 授权它才能被 PCIe 看到。
+2. **硬件本身**：这颗 QCA6390 在 umi 上可能确实没工作（或者需要固件先跑起来）。
+3. 作者那句「完全能跑」大概率指的是**系统**能跑，不一定包括 WiFi ——
+   他的镜像里没有留下任何 WiFi 已连通的痕迹。
+
+**当前状态**：Arch + 串口 + SSH + USB 网卡可用，WiFi 待续。
