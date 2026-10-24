@@ -339,6 +339,55 @@ say ""
 say "==== [9] initramfs finished ===="
 say "   kernel is alive and user space is running. Reboot with the power key."
 
+# ------------------------------------------------------------------ [10] real root
+# Hand over to the real root filesystem (Arch Linux on the userdata partition).
+# This runs AFTER the USB gadget is up on purpose: if the hand-over fails we are
+# still sitting on a working serial console, which is the only way back in.
+#
+# The device can be changed without rebuilding anything:
+#   mkinitramfs.sh --root /dev/sda34 --rootfstype ext4
+# and it can be disabled entirely with --root none (pure rescue image).
+ROOTDEV=""
+[ -f /root-dev ] && ROOTDEV=$(cat /root-dev)
+ROOTFSTYPE=ext4
+[ -f /root-fstype ] && ROOTFSTYPE=$(cat /root-fstype)
+
+if [ -n "$ROOTDEV" ] && [ "$ROOTDEV" != none ]; then
+	say ""
+	say "==== [10] real root: $ROOTDEV ($ROOTFSTYPE) ===="
+	i=0
+	while [ $i -lt 30 ]; do
+		[ -b "$ROOTDEV" ] && break
+		sleep 1
+		i=$((i + 1))
+	done
+	if [ ! -b "$ROOTDEV" ]; then
+		say "   $ROOTDEV is still not a block device after ${i}s"
+		say "   staying in the rescue initramfs (serial console above)"
+	else
+		mkdir -p /newroot
+		if mount -t "$ROOTFSTYPE" -o rw "$ROOTDEV" /newroot; then
+			say "   mounted $ROOTDEV -> /newroot, handing over to /sbin/init"
+			sync
+			# devtmpfs must survive the switch, otherwise there is no console
+			# and no USB serial on the other side.
+			mount --move /dev /newroot/dev 2>/dev/null
+			mount --move /proc /newroot/proc 2>/dev/null
+			mount --move /sys /newroot/sys 2>/dev/null
+			exec switch_root /newroot /sbin/init
+			# only reached if exec fails
+			say "   !! switch_root returned - rescue shell continues"
+			say "   (the real root is mounted at /newroot, look around there)"
+		else
+			say "   mount -t $ROOTFSTYPE $ROOTDEV /newroot FAILED"
+			say "   staying in the rescue initramfs. Possible causes:"
+			say "     - the partition was never written (see docs/ARCH-ROOTFS.md)"
+			say "     - it is not ext4 / it is corrupted"
+			say "     - it is still mounted by something else"
+		fi
+	fi
+fi
+
 if [ -f /reboot-after ]; then
 	N_RB=$(cat /reboot-after)
 	say "   /reboot-after = ${N_RB}s -> will reboot automatically"

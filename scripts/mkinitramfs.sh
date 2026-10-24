@@ -8,6 +8,9 @@
 #   ... --dump-partition sda15      把 log 也写进 /dev/sda15（用 TWRP 读回来，谨慎使用）
 #   ... --test-panic 60             N 秒后自动画一次 panic 屏（二维码自测，默认 60 秒）
 #   ... --no-panic-test             不做这个自测
+#   ... --root /dev/sda34           切根到真正的 rootfs（默认就是这个，Arch 装在 userdata）
+#   ... --rootfstype ext4           根文件系统类型（默认 ext4）
+#   ... --root none                 纯救援镜像，不切根
 #
 # 产物：$WS/out/initramfs.cpio.gz
 set -e
@@ -20,6 +23,8 @@ USB=1
 REBOOT=""
 DUMPPART=""
 PANICTEST="60"
+ROOTDEV="/dev/sda34"
+ROOTFSTYPE="ext4"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--usb-console) USB=1 ;;
@@ -28,6 +33,8 @@ while [ $# -gt 0 ]; do
 	--dump-partition) shift; DUMPPART="$1" ;;
 	--test-panic) shift; PANICTEST="$1" ;;
 	--no-panic-test) PANICTEST="" ;;
+	--root) shift; ROOTDEV="$1" ;;
+	--rootfstype) shift; ROOTFSTYPE="$1" ;;
 	*) echo "未知参数 $1"; exit 1 ;;
 	esac
 	shift
@@ -71,6 +78,11 @@ chmod 755 "$BUILD/init"
 [ -n "$REBOOT" ] && echo "$REBOOT" > "$BUILD/reboot-after"
 [ -n "$DUMPPART" ] && echo "$DUMPPART" > "$BUILD/dump-partition"
 [ -n "$PANICTEST" ] && echo "$PANICTEST" > "$BUILD/panic-test"
+# 切根目标：写进 initramfs 的小文件，init 脚本读它，不用重编内核（cmdline 是编译期固定的）
+if [ -n "$ROOTDEV" ]; then
+	echo "$ROOTDEV" > "$BUILD/root-dev"
+	echo "$ROOTFSTYPE" > "$BUILD/root-fstype"
+fi
 
 echo "== 打包 cpio.gz"
 cd "$BUILD"
