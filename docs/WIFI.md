@@ -466,5 +466,98 @@ WLAN_EN 时序全部到位且用 debugfs 逐个核实过。卡依旧不出现。
 3. **XPU/TZ 层面把 PCIe 端点挡在外面**
 
 **当前状态**：Arch + 串口 + SSH + USB 网卡可用，WiFi 判为硬件/固件层面受限。
-所有诊断工具（LTSSM 探针、PERST 延时补丁、WLAN_EN hog）都保留在仓库里，
+所有诊断工具（LTSSM 探针、PERST 延时补丁）都保留在仓库里，
 换机器或换固件后可以直接复测。
+
+## 10. 第五轮：结论推翻了 —— pwrseq 自己挂了，hog 是元凶
+
+第 9 节的结论（硬件/固件层面受限）**是错的**，收回。真正的线索来自一条
+一直被忽略的日志：
+
+```
+[17.009900] pwrseq-qcom_wcn qca6390-pmu: error -EBUSY: Failed to get the WLAN enable GPIO
+[17.091671] pwrseq-qcom_wcn qca6390-pmu: probe with driver pwrseq-qcom_wcn failed with error -16
+```
+
+### 10.1 为什么 -EBUSY：hog 和白名单冲突
+
+`drivers/power/sequencing/pwrseq-qcom-wcn.c` 的 probe：
+
+```c
+ctx->wlan_gpio = devm_gpiod_get_optional(dev, "wlan-enable", GPIOD_ASIS);
+if (IS_ERR(ctx->wlan_gpio))
+        return dev_err_probe(dev, PTR_ERR(ctx->wlan_gpio),
+                             "Failed to get the WLAN enable GPIO\n");
+```
+
+**gpio-hog 是独占的**：`wlan_en_hog_early` 在 tlmm gpiochip 注册时就把 gpio20
+锁了，之后任何 consumer 去 request 这条线都会拿到 `-EBUSY`。
+
+于是形成第二个环，而且是**第 9 节所有实验的共同前提被破坏**：
+
+```
+hog 占住 gpio20
+  → pwrseq_qcom_wcn probe 失败 (-EBUSY)
+  → pwrseq 设备根本不存在
+  → devm_pwrseq_get() 永远拿不到它
+  → pwrseq_power_on() 永远不会执行：8 路 regulator 一次都没使能
+  → 卡的 vddio/vddaon/vddpmu/vddrfa*/vddpcie* 全是关的
+  → 卡当然不在总线上，LTSSM 当然 Detect.Quiet
+```
+
+也就是说第 9 节里「六路 regulator 全就绪」的核实**只看了 PMIC 那几路**
+（`vreg_l5a_0p88` / `vreg_l9a_1p2`），PMU 的 8 路根本没查 —— 它们确实没开。
+
+### 10.2 7.2 到底不一样在哪
+
+`pwrseq_qcom_wcn_match()` 要求 consumer 的 `vddaon-supply` 指向的 regulator，
+其 parent 必须是 PMU 节点本身：
+
+```c
+if (!reg_node->parent || !reg_node->parent->parent ||
+    reg_node->parent->parent != ctx->of_node)
+        return 0;
+```
+
+- `qca6390-pmu` 自己的 `vddaon-supply = <&vreg_s6a_0p95>` → parent 是 PMIC ❌
+- `wifi@0` 的 `vddaon-supply = <&vreg_pmu_aon_0p59>` → parent 是 PMU ✅
+
+所以 consumer 只能用 `wifi@0`，而 `wifi@0` 是 `of_pci` 扫总线后才建出来的。
+7.2 用新的 `pci_pwrctrl` 框架在 **PERST# 释放之前** 调
+`pci_pwrctrl_power_on_devices()` 把这一步提前了；6.12 只有旧的 `pci_pwrctl`，
+它绑的就是 `wifi@0`，必须等枚举 —— 死锁。
+
+最小等价实现：`patches/pcie-qcom-early-poweron2.py` 在 `qcom_pcie_host_init()`
+里 `of_platform_device_create(wifi_np)` + `devm_pwrseq_get(&wdev->dev, "wlan")`
++ `pwrseq_power_on()`，位置就在 `qcom_ep_reset_deassert()` 之前。
+
+**踩的两个坑**：
+
+1. `of_get_child_by_name()` 比的是 `np->name`，**不含 unit address** ——
+   必须传 `"pcie"` / `"wifi"`，传 `"pcie@0"` / `"wifi@0"` 永远返回 NULL
+   （日志：`early power-on: no wifi@0 node`）。补丁 `patches/fix-node-names.py`。
+2. consumer 不能用 `qca6390-pmu`，否则 `devm_pwrseq_get()` 返回 `-EPROBE_DEFER`
+   （日志：`early power-on: pwrseq unavailable (-517)`）。
+
+### 10.3 本轮的改动
+
+- **DTS 删掉 `wlan_en_hog_early`**：所有权交回 pwrseq，由 early power-on 在
+  PERST 之前拉高。gpio20 的 pinmux（`wlan_default_state`，output-low）保留。
+- `patches/pcie-qcom-early-poweron2.py` + `patches/fix-node-names.py` 进内核。
+- `CONFIG_POWER_SEQUENCING=y`、`CONFIG_POWER_SEQUENCING_QCOM_WCN=y`（原来 `=m`
+  导致 `undefined reference to devm_pwrseq_get`）。
+- `patches/revert-pcie-refclk.py`：REFCLK 相关的实验全部回退，7.2 从没碰过那个寄存器。
+
+### 10.4 附带发现：rootfs 里有重复的 pwrseq_core.ko
+
+```
+[43.017830] pwrseq_core: exports duplicate symbol devm_pwrseq_device_register (owned by kernel)
+```
+
+`pwrseq_core` 现在是 `=y` 编进内核的，rootfs 里还留着早先 `=m` 时代装进去的
+`pwrseq_core.ko`，modprobe 时撞名。无害但要在手机上清掉：
+
+```sh
+find /lib/modules/$(uname -r) -name 'pwrseq*core*.ko*' -delete
+depmod -a
+```

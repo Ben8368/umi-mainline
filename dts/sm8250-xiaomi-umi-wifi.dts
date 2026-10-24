@@ -132,23 +132,22 @@
 		line-name = "sw-ctrl";
 	};
 
-	/* ★★ 解决时序死锁的关键：WLAN_EN 必须早于 PCIe link training 拉高。
+	/* ★★ 这里**不再**用 gpio-hog 去抢 WLAN_EN。
 	 *
-	 * 实测（LTSSM: raw=0x00000001 state=0x0 = Detect.Quiet）：
-	 *   - qcom_pcie_host_init 做 link training 时，卡是沉默的
-	 *   - 而 WLAN_EN 要等 pci-pwrctl-pwrseq 在 wifi@0 上 probe 时才被
-	 *     pwrseq_power_on() 拉高，wifi@0 又是 of_pci 扫描 PCI 总线才创建的
-	 *   - 于是：link 要等 WLAN_EN，WLAN_EN 要等 link —— 死锁
+	 * 之前的思路：WLAN_EN 必须早于 PCIe link training 拉高，而 pwrseq 要等
+	 * wifi@0 枚举后才 power_on，于是用 gpio-hog 提前顶住 gpio20。
 	 *
-	 * gpio-hog 在 tlmm gpiochip 注册时就执行，远早于 PCIe probe，
-	 * 所以用它把 WLAN_EN 提前顶上去，绕开这个死锁。
-	 * （wifi9 那版加过 hog，但当时没有 LTSSM 探针，看不出效果。）*/
-	wlan_en_hog_early: wlan-en-hog {
-		gpio-hog;
-		gpios = <20 GPIO_ACTIVE_HIGH>;
-		output-high;
-		line-name = "wlan-en-early";
-	};
+	 * 但实测 pwrseq 驱动直接挂了：
+	 *     pwrseq-qcom_wcn qca6390-pmu: error -EBUSY: Failed to get the
+	 *     WLAN enable GPIO
+	 * 因为 pwrseq_qcom_wcn_probe() 里是
+	 *     devm_gpiod_get_optional(dev, "wlan-enable", GPIOD_ASIS)
+	 * hog 已经把这条线独占，别的 consumer 一律 -EBUSY。hog 存在，pwrseq
+	 * 设备就永远不存在，我们的 early power-on 也就永远拿不到 pwrseq。
+	 *
+	 * 现在改由 pcie-qcom 的 early power-on（devm_pwrseq_get + power_on，
+	 * 在 PERST# 释放之前）来拉高 WLAN_EN —— 正是 7.2 里
+	 * pci_pwrctrl_power_on_devices() 的位置。所有权归 pwrseq，谁也不抢。*/
 };
 
 /* ------------------------------------------------------------- PCIe0 → QCA6390
