@@ -100,7 +100,7 @@
 #define FTS_DATA_SIZE		(FTS_EVENT_SIZE * FTS_STACK_DEPTH)
 
 #define FTS_MAX_FINGERS		10
-#define FTS_I2C_DELAY_US	2	/* ~250 kHz */
+#define FTS_I2C_DELAY_US	10	/* ~50 kHz */
 #define FTS_POLL_MS		30
 
 #define FTS_RAW_DUMP_DEFAULT	64
@@ -418,7 +418,7 @@ static void fts_poll_work(struct work_struct *work)
 	 * event is logged for the first FTS_RAW_DUMP_DEFAULT frames so the
 	 * real byte layout can be confirmed from the log.
 	 */
-	for (i = 0; i < FTS_STACK_DEPTH; i++) {
+	for (i = 0; i < 8; i++) {
 		ret = fts_xfer(ts, FTS_CMD_FIFO_READ_ONE, ev, sizeof(ev));
 		if (ret) {
 			if (++ts->err_count <= 5)
@@ -505,7 +505,43 @@ static int fts_power_on(struct fts_data *ts)
 		msleep(20);
 		gpiod_set_value_cansleep(ts->reset, 1);
 	}
-	msleep(300);
+	msleep(50);
+
+	/*
+	 * Vendor fts_system_reset() blocks on the CONTROL_READY event (0x10)
+	 * right after releasing reset, and only then talks to the chip.  Until
+	 * that event shows up the controller ACKs every command and answers
+	 * every read with zeros, which is exactly what we have been seeing.
+	 */
+	{
+		u8 ev[FTS_EVENT_SIZE];
+		int ready = 0;
+
+		for (i = 0; i < 200; i++) {
+			if (!fts_xfer(ts, FTS_CMD_FIFO_READ_ONE, ev,
+				      sizeof(ev)) && ev[0] == 0x10) {
+				ready = 1;
+				break;
+			}
+			msleep(10);
+		}
+		dev_info(ts->dev, "controller %s after %d ms\n",
+			 ready ? "ready" : "NOT ready", i * 10);
+	}
+
+	/*
+	 * Read the firmware version straight after the reset, before anything
+	 * else touches the chip - that is the order the vendor driver uses, and
+	 * reading it late (after sleep-out/sense-on) always came back zeros.
+	 */
+	{
+		u8 ver[2];
+
+		if (!fts_hw_read(ts, 0x000a, ver, sizeof(ver)))
+			dev_info(ts->dev, "fw ver %02x%02x\n", ver[0], ver[1]);
+		else
+			dev_info(ts->dev, "fw ver read failed\n");
+	}
 
 	/*
 	 * Minimal bring-up: the vendor order is sleep-out while the supplies
@@ -546,15 +582,6 @@ static int fts_power_on(struct fts_data *ts)
 	ret = fts_command(ts, FTS_CMD_MS_MT_SENSE_ON);
 	dev_info(ts->dev, "sense on: %d\n", ret);
 	msleep(100);
-
-	{
-		u8 ver[2];
-
-		if (!fts_hw_read(ts, 0x000a, ver, sizeof(ver)))
-			dev_info(ts->dev, "fw ver %02x%02x\n", ver[0], ver[1]);
-		else
-			dev_info(ts->dev, "fw ver read failed\n");
-	}
 
 	dev_info(ts->dev, "powered on\n");
 	return 0;

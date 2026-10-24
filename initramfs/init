@@ -211,7 +211,11 @@ if [ -w /sys/class/backlight/umi-panel/brightness ]; then
 	#
 	DEFB=1500
 	[ -n "$MAXB" ] && [ "$DEFB" -gt "$MAXB" ] && DEFB=$MAXB
-	echo "$DEFB" >/sys/class/backlight/umi-panel/brightness 2>/dev/null
+	# Writing the same value the driver already has does NOT trigger
+# update_status (the panel stays dark).  Force a transition first.
+echo 0 >/sys/class/backlight/umi-panel/brightness 2>/dev/null
+sleep 0.2
+echo "$DEFB" >/sys/class/backlight/umi-panel/brightness 2>/dev/null
 	say ""
 	say "==== [5a] panel backlight ===="
 	say "   set to $(cat /sys/class/backlight/umi-panel/brightness 2>/dev/null) / ${MAXB:-?}"
