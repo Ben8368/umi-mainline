@@ -217,3 +217,17 @@ ssh root@192.168.42.1     # 从电脑上
 | `scripts/mk-mini-rootfs.sh` | 64 MB busybox 镜像，验证 switch_root |
 | `scripts/mkinitramfs.sh` | `--root` / `--rootfstype` 控制切根目标 |
 | `tools/pack-umi.py` | 内核 + dtb + initramfs → boot.img（校验 ABL 需要的 id） |
+
+## 9. 教训：不要直接改 boot 分区里的 dtb 段
+
+试过把新 dtb `dd` 到 boot 分区的 `0xf2f000`（md5 校验完全一致），结果手机起不来、
+ABL 回落 fastboot —— **即使 md5 对得上**。
+
+原因没有完全查清（可能是 ABL 对 boot.img 的某种一致性检查，或者 dtb 段尾部
+被写脏），但结论很明确：
+
+> **每次换 dtb 都重新 `pack-umi.py` 打一张完整的 boot.img，然后
+> `fastboot flash boot` + `fastboot boot`。**
+> 不要图省事在手机上改分区里的 dtb 段。
+
+代价是每次实验要按一次键进 fastboot，但至少不用猜为什么起不来。
