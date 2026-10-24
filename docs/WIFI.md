@@ -561,3 +561,96 @@ if (!reg_node->parent || !reg_node->parent->parent ||
 find /lib/modules/$(uname -r) -name 'pwrseq*core*.ko*' -delete
 depmod -a
 ```
+
+## 11. 第六轮：WiFi 通了 —— 根因是 PM8009 SMPS2 没供电
+
+### 11.1 一句话
+
+**`vddpmu` / `vddrfa0p95` 接错了 PMIC 轨。** 它们在这台机器上是
+**PM8009 SMPS2**（0.95V，WiFi PMU 的 digital 域），我们却接到了 PM8150 S6A
+（AON）。于是 PM8009 S2 一个 consumer 都没有，一直是关着的：
+
+```
+$ grep s2f /sys/kernel/debug/regulator/regulator_summary
+       vreg_s2f_0p5     0 users   512mV      ← 关着，而且只有 512mV
+       vreg_bob         1 users  3352mV
+       vreg_s4a_1p8     3 users  1800mV
+       vreg_s6a_0p95    4 users   952mV
+```
+
+PMU 的数字域完全没电 → QCA6390 在 PCIe 上是"死的" → LTSSM 永远
+Detect.Quiet。第 9 节"硬件受限"的结论是错的，第 10 节解决的是另一个真实问题
+（hog/pwrseq），但两个都不是最后一层。
+
+### 11.2 怎么找到的
+
+对照三份 DT，只有下游 DT 写明了板级真实接线：
+
+| cnss 供应（下游 `qcom,cnss-qca6390`） | 实际 rail（`dump/downstream.dts`） |
+|---|---|
+| `vdd-wlan-aon` 0.95V | `pm8150_s6` |
+| **`vdd-wlan-dig` 0.95V** | **`pm8009_s2`** |
+| `vdd-wlan-io` 1.8V | `pm8150_s4` |
+| `vdd-wlan-rfa1` 1.9V | `pm8150_s5` |
+| `vdd-wlan-rfa2` 1.35V | `pm8150a_s8` |
+
+作者的 7.2 dtb 也是这么接的（`vddaon = vreg_s6a_0p95`、`vddpmu =
+vddrfa0p95 = vreg_s2f_0p95`、`vddrfa1p3 = vreg_s8c_1p3`、`vddrfa1p9 =
+vreg_s5a_1p9`、`vddio = vreg_s4a_1p8`），只是我们抄的时候把 vddpmu 写成了 S6A。
+
+顺带排除了两个假线索：`refgen`（0x088e7000）是**显示 DSI** 的 reference
+generator，不是 PCIe 的；7.2 的 `pwrseq-qcom-wcn` 对 qca6390 也没有实质变化。
+
+### 11.3 修法
+
+`dts/sm8250-xiaomi-umi-common.dtsi` 的 `regulators-2`（PM8009）：
+
+```dts
+		vreg_s2f_0p5: vreg_s2f_0p95: smps2 {
+			regulator-name = "vreg_s2f_0p95";
+			regulator-min-microvolt = <900000>;
+			regulator-max-microvolt = <952000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_AUTO>;
+		};
+```
+
+`dts/sm8250-xiaomi-umi-wifi.dts`：
+
+```dts
+		vddaon-supply      = <&vreg_s6a_0p95>;
+		vddpmu-supply      = <&vreg_s2f_0p95>;
+		vddrfa0p95-supply  = <&vreg_s2f_0p95>;
+```
+
+**坑**：`min == max` 会让 regulator 注册时去读当前电压，RPM 回
+`-ENOTRECOVERABLE(-131)`，整个 `regulators-2` probe 失败（连带 pwrseq 拿不到
+supplier，`early power-on: pwrseq -517`）。必须像作者一样给一个区间
+（900000–952000）+ `RPMH_REGULATOR_MODE_AUTO`。
+
+### 11.4 结果
+
+```
+[42.319] pci 0000:01:00.0: 4.000 Gb/s available PCIe bandwidth, limited by 5.0 GT/s PCIe x1 link
+[42.732] qcom-pcie 1c00000.pcie: LTSSM after training: raw=0x00011401 state=0x11   ← L0
+[42.865] ath11k_pci 0000:01:00.0: Adding to iommu group 10
+[42.931] ath11k_pci 0000:01:00.0: qca6390 hw2.0
+[43.387] ath11k_pci 0000:01:00.0: fw_version 0x10121492 fw_build_timestamp 2021-11-04
+[43.612] ath11k_pci 0000:01:00.0 wlp1s0: renamed from wlan0
+```
+
+```
+$ ip -br link
+lo      UNKNOWN  00:00:00:00:00:00
+usb0    UP       02:1d:6b:01:04:01    ← USB 网卡照旧
+wlp1s0  DOWN     00:03:7f:12:e7:e7    ← WiFi 接口
+```
+
+`usb0`（RNDIS）和串口控制台都没有受影响，符合"保留 USB 网卡"的要求。
+
+### 11.5 还差什么
+
+- `wlp1s0` 还是 DOWN：rootfs 里没有 `iw` / `wpa_supplicant` / `iwd` /
+  NetworkManager，只有 `dhcpcd`。
+- 没有 `/lib/firmware/regulatory.db`（`cfg80211: failed to load regulatory.db`），
+  需要 `wireless-regdb`；缺它时按 world regdomain 走，5 GHz 会受限。
+

@@ -492,11 +492,20 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		vreg_s2f_0p5: smps2 {
-			regulator-name = "vreg_s2f_0p5";
-			regulator-min-microvolt = <512000>;
-			regulator-max-microvolt = <1100000>;
-			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		/* PM8009 SMPS2 是 WiFi（QCA6390）PMU 的 digital 0.95V。
+		 * 下游 DT 里就是 cnss 的 vdd-wlan-dig = pm8009_s2 @0.95V。
+		 * 这里原来照抄 MTP 的 0.512–1.1V 范围，又没有 consumer，
+		 * 于是 regulator_summary 里一直是 `0 users / 512mV`（关着的）。
+		 *
+		 * 电压范围与 mode 照抄作者 7.2 dtb 里那颗 vreg_s2f_0p95：
+		 * min 900000 / max 952000 / initial-mode = AUTO(2)。
+		 * 不能用 min == max：regulator 注册时 core 会去读当前电压，
+		 * RPM 回 -ENOTRECOVERABLE，整个 regulators-2 连 probe 都失败。*/
+		vreg_s2f_0p5: vreg_s2f_0p95: smps2 {
+			regulator-name = "vreg_s2f_0p95";
+			regulator-min-microvolt = <900000>;
+			regulator-max-microvolt = <952000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_AUTO>;
 		};
 
 		vreg_l2f_1p3: ldo2 {
