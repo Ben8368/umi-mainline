@@ -12,7 +12,7 @@
  *   - vdd  1.8 V : vreg_l1c_1p8   (vendor "pm8150a_l1", really ldoc1 = PM8150L LDO1)
  *   - avdd 3.3 V : touch_vddio_vreg (GPIO69 enable, declared in the common dtsi)
  *
- * ★ Why the bus is bit-banged in the driver instead of being an i2c@ node
+ * �?Why the bus is bit-banged in the driver instead of being an i2c@ node
  *
  *   On a running MIUI the two bus pins report "function gpio", owned by
  *   a94000.i2c -- the vendor "i2c-geni" there is not driving the QUP at all.
@@ -85,34 +85,60 @@
 	status = "disabled";
 };
 
-/* --- the controller ------------------------------------------------------ */
+/* --- the bus and the controller ----------------------------------------- */
 
+/*
+ * 主线 ST FTS5 驱动（sm7150-mainline 移植版，drivers/input/touchscreen/fts521�? * 是一份普�?i2c_driver，只�?i2c_transfer()。这里把两根线做成真正的
+ * i2c_adapter（umi,i2c-bitbang），0x49 用子节点描述，驱动自�?probe�? *
+ * 老的 st,fts-umi 平台驱动（自�?bit-bang、自己解析协议）保留在树里，
+ * 但它和这份驱动不能同时占�?GPIO，所以同一�?config 里只能开一个�? */
 / {
-	fts_touch: touchscreen {
-		compatible = "st,fts-umi";
+	i2c_touch: i2c-touch {
+		compatible = "umi,i2c-bitbang";
+		#address-cells = <1>;
+		#size-cells = <0>;
 
-		/* I2C slave address; the driver does not use the i2c framework */
-		reg = <0x49>;
-
-		/* Bus scan settled this: gpio36 is SDA, gpio37 is SCL. */
+		/* 总线扫描定过：gpio36 = SDA，gpio37 = SCL */
 		sda-gpios = <&tlmm 36 GPIO_ACTIVE_HIGH>;
 		scl-gpios = <&tlmm 37 GPIO_ACTIVE_HIGH>;
-		reset-gpios = <&tlmm 38 GPIO_ACTIVE_HIGH>;
+		clock-frequency = <100000>;
 
-		interrupt-parent = <&tlmm>;
-		interrupts = <39 IRQ_TYPE_LEVEL_LOW>;
-
-		/* Fixed-value rails, enable only.  No voltage is programmed. */
-		vdd-supply = <&vreg_l1c_1p8>;
-		avdd-supply = <&touch_vddio_vreg>;
-
-		pinctrl-names = "default", "sleep";
+		pinctrl-names = "default";
 		pinctrl-0 = <&ts_i2c_pins &ts_int_active &ts_reset_pins>;
-		pinctrl-1 = <&ts_int_sleep>;
 
-		touchscreen-size-x = <1080>;
-		touchscreen-size-y = <2340>;
+		touchscreen@49 {
+			compatible = "st,fts";
+			reg = <0x49>;
 
-		status = "okay";
+			interrupt-parent = <&tlmm>;
+			interrupts = <39 IRQ_TYPE_LEVEL_LOW>;
+
+			fts,irq-gpio = <&tlmm 39 GPIO_ACTIVE_LOW>;
+			fts,reset-gpio = <&tlmm 38 GPIO_ACTIVE_HIGH>;
+			fts,irq-flags = <8>;		/* IRQF_TRIGGER_LOW */
+
+			/* Fixed rails, enable only, no voltage is programmed. */
+			fts,regulator_dvdd = "vdd";
+			fts,regulator_avdd = "avdd";
+			vdd-supply = <&vreg_l1c_1p8>;
+			avdd-supply = <&touch_vddio_vreg>;
+
+			fts,x-max = <1080>;
+			fts,y-max = <2340>;
+
+			touchscreen-size-x = <1080>;
+			touchscreen-size-y = <2340>;
+
+			status = "okay";
+		};
 	};
+};
+
+/*
+ * Touch 1.8 V rail (vendor: pm8150a_l1). Mainline has no PM8150A regulator
+ * driver, so the reference driver enables it and always-on is the fallback.
+ * Enable only, no voltage is programmed.
+ */
+&vreg_l1c_1p8 {
+	regulator-always-on;
 };

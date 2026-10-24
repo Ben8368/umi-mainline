@@ -112,6 +112,45 @@ fi
 FTS_MK="$TREE/drivers/input/touchscreen/Makefile"
 grep -q 'fts-umi' "$FTS_MK" || \
 	printf 'obj-$(CONFIG_TOUCHSCREEN_FTS_UMI)\t+= fts-umi.o\n' >> "$FTS_MK"
+
+# ---- 参考实现：sm7150-mainline 的 fts521（主线 ST FTS5 驱动）----
+# 它只通过标准 i2c_transfer() 说话，所以配 umi-i2c 那个 bit-bang 适配器用。
+# 目的不是替换 fts-umi，而是拿一份「别处已经跑通的主线实现」去 probe 同一颗芯片：
+# 要么它直接能用，要么它同样失败 —— 那软件面就真的到头了。
+REF_SRC="$WS/fts521"
+if [ -d "$REF_SRC" ]; then
+	REF_DST="$TREE/drivers/input/touchscreen/fts521"
+	rm -rf "$REF_DST"
+	mkdir -p "$REF_DST/fts_lib"
+	cp -f "$REF_SRC/Kconfig" "$REF_SRC/Makefile" "$REF_DST"/ 2>/dev/null
+	cp -f "$REF_SRC/fts.c" "$REF_SRC/fts.h" "$REF_DST"/ 2>/dev/null
+	cp -f "$REF_SRC/fts_lib/"* "$REF_DST/fts_lib"/ 2>/dev/null
+	cp -f "$WS/patches/umi-i2c.c" "$TREE/drivers/input/touchscreen/umi-i2c.c"
+	if ! grep -q 'TOUCHSCREEN_ST_FTS_V521' "$FTS_K"; then
+		cat >> "$FTS_K" <<'EOF'
+
+config TOUCHSCREEN_ST_FTS_V521
+	tristate "STMicroelectronics FTS V521 touchscreen (mainline port)"
+	depends on I2C
+	depends on OF
+	help
+	  Mainline driver for the ST FTS5 controller family, taken from the
+	  sm7150-mainline port of the ST driver.  Plain i2c_transfer() only.
+
+config I2C_UMI_BITBANG
+	tristate "Bit-banged i2c adapter for the Xiaomi Mi 10 touch bus"
+	depends on I2C
+	depends on GPIOLIB
+	help
+	  Exposes the two touch bus pins as a real i2c_adapter so that standard
+	  i2c drivers can probe the controller at 0x49.
+EOF
+	fi
+	grep -q 'fts521/' "$FTS_MK" || \
+		printf 'obj-$(CONFIG_TOUCHSCREEN_ST_FTS_V521)\t+= fts521/\n' >> "$FTS_MK"
+	grep -q 'umi-i2c' "$FTS_MK" || \
+		printf 'obj-$(CONFIG_I2C_UMI_BITBANG)\t+= umi-i2c.o\n' >> "$FTS_MK"
+fi
 MK=$TREE/arch/arm64/boot/dts/qcom/Makefile
 for d in sm8250-xiaomi-umi sm8250-xiaomi-umi-plus; do
 	grep -q "$d\.dtb" "$MK" || \
@@ -192,7 +231,9 @@ done
 # 编成模块（=m）等于没编：initramfs 里不会去加载它，DSI 就一直 EPROBE_DEFER。
 check_y DRM_PANEL_XIAOMI_UMI
 # 触摸：同样是 =m 等于没编（initramfs 无模块加载器）。
-check_y TOUCHSCREEN_FTS_UMI
+# 现在跑的是主线参考实现（fts521 走标准 i2c_transfer），fts-umi 那版留着但不编。
+check_y I2C_UMI_BITBANG
+check_y TOUCHSCREEN_ST_FTS_V521
 check_y I2C_QCOM_GENI
 check_y QCOM_GPI_DMA
 # 「必须关掉」的（y 或 m 都算失败）
