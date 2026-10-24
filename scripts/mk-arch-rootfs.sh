@@ -40,8 +40,10 @@ if [ -f "$OUT" ]; then
 fi
 truncate -s "${SIZE_MB}M" "$OUT"
 # -m 0: 不给 root 留 5% 保留块，6 GB 的空间要全部可用
+# -b 4096: UFS 的逻辑扇区是 4 KiB，1 KiB / 2 KiB 块的 ext4 挂不上去
+#          （小镜像上 mke2fs 会自作主张选 1024，见 mk-mini-rootfs.sh 的教训）
 # -L umiroot: 挂载时好认
-mkfs.ext4 -q -F -L umiroot -m 0 "$OUT"
+mkfs.ext4 -q -F -L umiroot -m 0 -b 4096 "$OUT"
 echo "== ext4 建好了"
 
 # ---- 2. 解压 tarball -------------------------------------------------------

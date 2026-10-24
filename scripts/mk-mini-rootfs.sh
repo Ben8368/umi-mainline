@@ -24,7 +24,10 @@ echo "== 输出 $OUT ($SIZE_MB MiB)"
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
 truncate -s "${SIZE_MB}M" "$OUT"
-mkfs.ext4 -q -F -L umimini -m 0 "$OUT"
+# -b 4096 是必须的：UFS 的逻辑扇区是 4 KiB，1 KiB 块的 ext4 在这里
+# 直接 mount 不上，内核报 "EXT4-fs (sda29): bad block size 1024"。
+# mke2fs 对 64 MiB 的小文件系统默认就挑 1024 —— 踩过一次。
+mkfs.ext4 -q -F -L umimini -m 0 -b 4096 "$OUT"
 
 mkdir -p "$MNT"
 mount -o loop "$OUT" "$MNT"

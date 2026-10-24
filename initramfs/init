@@ -293,6 +293,17 @@ if [ -f /usb-console ]; then
 		mkdir -p "$G/functions/acm.usb0"
 		ln -sf "$G/functions/acm.usb0" "$G/configs/c.1/" 2>/dev/null
 
+		# RNDIS: give the PC a network interface next to the serial port.
+		# This is the file-transfer channel: 115200 baud serial tops out at
+		# 11 KB/s, which is useless for boot images, and it chokes above
+		# ~24 KB because of terminal echo. Over RNDIS we get a few MB/s and
+		# the card gets 192.168.42.1/24 (configured on the Arch side by
+		# /etc/systemd/network/10-usb0.network).
+		mkdir -p "$G/functions/rndis.usb0"
+		echo "02:1d:6b:01:04:01" >"$G/functions/rndis.usb0/dev_addr" 2>/dev/null
+		echo "02:1d:6b:01:04:02" >"$G/functions/rndis.usb0/host_addr" 2>/dev/null
+		ln -sf "$G/functions/rndis.usb0" "$G/configs/c.1/" 2>/dev/null
+
 		if [ "$IMGOK" = 1 ]; then
 			mkdir -p "$G/functions/mass_storage.usb0"
 			echo "$LOGIMG" >"$G/functions/mass_storage.usb0/lun.0/file" 2>/dev/null

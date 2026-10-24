@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Xiaomi Mi 10 (umi / M2001J2C) — SM8250 — 显示 + 触摸 + PCIe/QCA6390 WiFi
+ *
+ * 这份是把 sm8250-xiaomi-umi.dts **整份**搬过来，再追加 PCIe/WiFi。
+ *
+ * 为什么要整份抄而不是只 include sm8250-xiaomi-umi-common.dtsi：
+ *   面板相关的三块配置（&mdss / &mdss_dsi0 的 vdda / &mdss_dsi0_phy 的 vdds，
+ *   以及 xiaomi-umi-panels.dtsi 和触摸 dtsi 的 include）全都在
+ *   sm8250-xiaomi-umi.dts 里，**不在 common.dtsi**。
+ *   只 include common.dtsi 的树会得到一个没有 mdss 平台设备的系统：
+ *       /sys/class/drm/ 里只有 card0 card0-Unknown-1
+ *       dmesg 里一行 panel 日志都没有
+ *       sync_state() pending due to soc@0:qcom,dsi-display-primary
+ *   实测踩过一次，白折腾一轮 fastboot。
+ *
+ * 相对基线只多了三处：
+ *   1. qca6390-pmu 节点（ath11k 要的 10 路 LDO）
+ *   2. &pcie0 / &pcie0_phy 打开
+ *   3. pcieport0 下的 wifi@0（pci17cb,1101）
+ *
+ * 已知未解：&pcie0 的 pinctrl-0（sm8250.dtsi 的 pcie0_default_state，
+ *   pins = "gpio79"）在 umi 上会报
+ *       sm8250-pinctrl f100000.pinctrl: error -EINVAL: pin-79 (1c00000.pcie)
+ *   所以这里删掉了它。gpio79 = PERST#；删掉后控制器本身还是
+ *   probe failed -22，说明还有别的东西没满足，下一步继续查。
+ */
+/dts-v1/;
+
+#include "sm8250-xiaomi-umi-common.dtsi"
+
+/ {
+	model = "Xiaomi Mi 10 (wifi)";
+	compatible = "xiaomi,umi", "qcom,sm8250";
+
+	/*
+	 * QCA6390 的板载 PMU（10 路 LDO）。ath11k 的 qcom-qca6390 驱动通过它
+	 * 拿 vddrfacmn / vddaon / vddwlcx / vddwlmx / vddrfa / vddpcie 这些轨。
+	 * 注意这里只有 regulator 引用，没有一个电压值 —— 全部沿用 common.dtsi
+	 * 里写死 min==max 的定义。
+	 */
+	qca6390_pmu: qca6390-pmu {
+		compatible = "qcom,qca6390-pmu";
+
+		vddaon-supply = <&vreg_s6a_0p95>;
+		vddpmu-supply = <&vreg_s6a_0p95>;
+		vddrfa0p95-supply = <&vreg_s6a_0p95>;
+		vddrfa1p3-supply = <&vreg_s8c_1p35>;
+		vddrfa1p9-supply = <&vreg_s5a_1p9>;
+		vddpcie1p3-supply = <&vreg_s8c_1p35>;
+		vddpcie1p9-supply = <&vreg_s5a_1p9>;
+		vddio-supply = <&vreg_s4a_1p8>;
+
+		/*
+		 * gpio20 = WLAN_EN。它同样从 gpio-reserved-ranges 的 <13 11>
+		 * 里单独放出来了（拆成 <13 7> + <21 3>）。
+		 * 没有它 qca6390-pmu 不会给芯片上电，PCIe 那边就是
+		 * "Phy link never came up"。
+		 */
+		wlan-enable-gpios = <&tlmm 20 GPIO_ACTIVE_HIGH>;
+
+		regulators {
+			vreg_pmu_rfa_cmn: ldo0 { regulator-name = "vreg_pmu_rfa_cmn"; };
+			vreg_pmu_aon_0p59: ldo1 { regulator-name = "vreg_pmu_aon_0p59"; };
+			vreg_pmu_wlcx_0p8: ldo2 { regulator-name = "vreg_pmu_wlcx_0p8"; };
+			vreg_pmu_wlmx_0p85: ldo3 { regulator-name = "vreg_pmu_wlmx_0p85"; };
+			vreg_pmu_btcmx_0p85: ldo4 { regulator-name = "vreg_pmu_btcmx_0p85"; };
+			vreg_pmu_rfa_0p8: ldo5 { regulator-name = "vreg_pmu_rfa_0p8"; };
+			vreg_pmu_rfa_1p2: ldo6 { regulator-name = "vreg_pmu_rfa_1p2"; };
+			vreg_pmu_rfa_1p7: ldo7 { regulator-name = "vreg_pmu_rfa_1p7"; };
+			vreg_pmu_pcie_0p9: ldo8 { regulator-name = "vreg_pmu_pcie_0p9"; };
+			vreg_pmu_pcie_1p8: ldo9 { regulator-name = "vreg_pmu_pcie_1p8"; };
+		};
+	};
+};
+
+/* ---------------------------------------------------------------- 显示子系统
+ * 以下整段与 sm8250-xiaomi-umi.dts 完全一致，别删 —— 删了面板就没了。 */
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	/* 只给 regulator 引用，不给电压值：两路轨都是 min==max 的固定值，
+	 * ABL 起来时已经开着，这里的 enable 只是加一个引用计数。 */
+	vdda-supply = <&vreg_l9a_1p2>;
+	status = "okay";
+};
+
+&mdss_dsi0_phy {
+	vdds-supply = <&vreg_l5a_0p88>;
+	status = "okay";
+};
+
+#include "xiaomi-umi-panels.dtsi"
+
+&mdss_dsi0 {
+	umi-panel@0 {
+		/* GPIO12 在 NORTH tile，但单独留出来了（能读能写），
+		 * 见 common.dtsi 里 gpio-reserved-ranges 的注释。*/
+		reset-gpios = <&tlmm 12 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+#include "sm8250-xiaomi-umi-touch.dtsi"
+
+/* ------------------------------------------------------------- PCIe0 → QCA6390 */
+&pcie0 {
+	/*
+	 * 主线 sm8250.dtsi 给这个节点配了四个用 NORTH tile GPIO 的东西：
+	 *     perst-gpios = <&tlmm 79 GPIO_ACTIVE_LOW>;
+	 *     wake-gpios  = <&tlmm 81 GPIO_ACTIVE_HIGH>;
+	 *     pinctrl-0   = <&pcie0_default_state>;   (pins = "gpio79")
+	 * 79/81 都落在 gpio-reserved-ranges 的 <77 8> 里（NORTH tile 读不了），
+	 * 所以 devm_gpiod_get_optional("perst") 直接返回 -EINVAL，
+	 * 整个 probe 就死在
+	 *     qcom-pcie 1c00000.pcie: probe with driver qcom-pcie failed with error -22
+	 * 先全部删掉，让控制器自己去初始化，看 PORT 逻辑能不能起来。
+	 * （没有 PERST# 时设备可能一直处于复位态 —— 那是下一步的事。）
+	 */
+	/delete-property/ pinctrl-names;
+	/delete-property/ pinctrl-0;
+	/delete-property/ wake-gpios;
+
+	/* gpio79 = PERST#。它现在从 gpio-reserved-ranges 的 <77 8> 里单独
+	 * 放出来了（拆成 <77 2> + <80 5>），所以能 request。
+	 * 这是让 QCA6390 上电的关键一步：不释放复位，PCIe 上永远
+	 * "Phy link never came up"（已经实测到这个日志）。*/
+	perst-gpios = <&tlmm 79 GPIO_ACTIVE_LOW>;
+
+	status = "okay";
+};
+
+&pcie0_phy {
+	vdda-phy-supply = <&vreg_l5a_0p88>;
+	vdda-pll-supply = <&vreg_l9a_1p2>;
+
+	status = "okay";
+};
+
+&pcieport0 {
+	wifi@0 {
+		compatible = "pci17cb,1101";
+		reg = <0x10000 0x0 0x0 0x0 0x0>;
+
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
+		vddwlmx-supply = <&vreg_pmu_wlmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
+		vddpcie0p9-supply = <&vreg_pmu_pcie_0p9>;
+		vddpcie1p8-supply = <&vreg_pmu_pcie_1p8>;
+	};
+};
