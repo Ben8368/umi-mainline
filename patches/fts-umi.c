@@ -120,6 +120,7 @@
 #define FTS_FB_ADDR		0x0000
 #define FTS_FB_SIGNATURE	0xa5
 #define FTS_FB_HEADER_SIZE	4
+#define FTS_SYS_INFO_SIZE	208	/* vendor SYS_INFO_SIZE */
 #define FTS_TIMEOUT_REQU_DATA	200	/* ms, vendor TIMEOUT_REQU_DATA */
 
 /* FTI register addresses, all inside the 0x2000_0000 window */
@@ -155,7 +156,7 @@
 #define FTS_DATA_SIZE		(FTS_EVENT_SIZE * FTS_STACK_DEPTH)
 
 #define FTS_MAX_FINGERS		10
-#define FTS_I2C_DELAY_US	10	/* ~30 kHz on the bit-banged bus */
+#define FTS_I2C_DELAY_US	4	/* ~100 kHz on the bit-banged bus */
 #define FTS_POLL_MS		20
 #define FTS_EVENTS_PER_POLL	6
 
@@ -174,6 +175,7 @@ struct fts_data {
 	u8 addr;
 	int dump_left;
 	int dbg_polls;
+	bool dbg;		/* log every event, not just the boot budget */
 	unsigned int err_count;
 	u8 buf[FTS_DATA_SIZE];
 	struct delayed_work poll_work;
@@ -422,12 +424,20 @@ static int fts_request_frame(struct fts_data *ts, u8 type, bool *changed)
 /*
  * readSysInfo(0): after a reset the FW leaves its system info in the
  * framebuffer, so this doubles as a check that the 16 bit address path is
- * the right one.  Only the first 64 bytes are read here; the panel geometry
- * (TX/RX length) sits further in.
+ * the right one.  The layout is the vendor's, parsed out of readSysInfo():
+ *
+ *     [ 4.. ] api, chip ids, fw/svn/cfg/cx versions, AFE versions
+ *     [ 80 ] screen resolution, then TX/RX lengths
+ *     [136 ] address of the raw frame inside the framebuffer
+ *
+ * The TX/RX lengths matter: they are the panel geometry the FW uses to turn
+ * sampled nodes into touch points.  If they read back as 0 the controller
+ * samples happily and can hand out frames all day, but it can never find a
+ * finger on them - which is precisely what this unit was doing.
  */
 static void fts_read_sysinfo(struct fts_data *ts)
 {
-	u8 d[64] = { 0 };
+	u8 d[FTS_SYS_INFO_SIZE];
 	int ret;
 
 	ret = fts_fb_read(ts, FTS_FB_ADDR, d, sizeof(d));
@@ -436,7 +446,21 @@ static void fts_read_sysinfo(struct fts_data *ts)
 		return;
 	}
 
-	dev_info(ts->dev, "sysinfo %*ph\n", (int)sizeof(d), d);
+	if (d[0] != FTS_FB_SIGNATURE) {
+		dev_info(ts->dev, "sysinfo bad signature %02x\n", d[0]);
+		return;
+	}
+
+	dev_info(ts->dev,
+		 "sysinfo count %u fw %04x cfg %04x cx %04x afe %02x/%02x/%02x\n",
+		 d[2] | (d[3] << 8), d[16] | (d[17] << 8),
+		 d[22] | (d[23] << 8), d[24] | (d[25] << 8),
+		 d[28], d[29], d[30]);
+
+	dev_info(ts->dev,
+		 "sysinfo res %ux%u tx %u rx %u key %u force %u raw@%04x\n",
+		 d[80] | (d[81] << 8), d[82] | (d[83] << 8),
+		 d[84], d[85], d[86], d[87], d[136] | (d[137] << 8));
 }
 
 /* one 8 byte event out of the FIFO: { 0x86 } then a read */
@@ -517,13 +541,11 @@ static int fts_flush_fifo(struct fts_data *ts)
  * configuration expects never brings the analog front end up, which is why no
  * amount of scan-mode juggling ever produced a touch event.
  */
-static int fts_panel_init(struct fts_data *ts)
+static int fts_panel_init(struct fts_data *ts, u8 type)
 {
-	u8 cmd[3] = { FTS_CMD_SYSTEM, FTS_SYS_CMD_SPECIAL,
-		      FTS_SPECIAL_PANEL_INIT };
+	u8 cmd[3] = { FTS_CMD_SYSTEM, FTS_SYS_CMD_SPECIAL, type };
 	u8 req[3] = { FTS_CMD_SYSTEM, FTS_SYS_CMD_LOAD_DATA, FTS_LOAD_SYS_INFO };
 	u8 ev[FTS_EVENT_SIZE];
-	u8 en = IER_ENABLE;
 	int ret, i, ready = 0;
 
 	/* 1. fts_system_reset(): toggle reset, then wait for the 0x03 event */
@@ -544,9 +566,9 @@ static int fts_panel_init(struct fts_data *ts)
 	dev_info(ts->dev, "panel init: controller %s after %d ms\n",
 		 ready ? "ready" : "NOT ready", i * 10);
 
-	/* 2. A4 00 02 */
+	/* 2. A4 00 <type> */
 	ret = fts_send(ts, cmd, sizeof(cmd));
-	dev_info(ts->dev, "panel init: A4 00 02 -> %d\n", ret);
+	dev_info(ts->dev, "panel init %02x: A4 00 %02x -> %d\n", type, type, ret);
 	if (ret)
 		return ret;
 
@@ -562,11 +584,8 @@ static int fts_panel_init(struct fts_data *ts)
 	msleep(100);
 	fts_read_sysinfo(ts);
 
-	/* the reset wiped IER, arm it again before sensing is turned back on */
-	ret = fts_hw_write(ts, ADDR_IER, &en, 1);
-	dev_info(ts->dev, "panel init: ier -> %d\n", ret);
-
-	return ret;
+	/* IER is left alone here too, same as everywhere else in this driver */
+	return 0;
 }
 
 /* ---------------- input ---------------- */
@@ -623,15 +642,17 @@ static void fts_parse_event(struct fts_data *ts, const u8 *ev)
 		 * hundred events a second and none of them is a touch, so the
 		 * content is exactly what has to be seen now.
 		 */
-		if (ts->dump_left > 0) {
-			ts->dump_left--;
+		if (ts->dbg || ts->dump_left > 0) {
+			if (ts->dump_left > 0)
+				ts->dump_left--;
 			dev_info(ts->dev, "ev %8phN\n", ev);
 		}
 		return;
 	}
 
-	if (ts->dump_left > 0) {
-		ts->dump_left--;
+	if (ts->dbg || ts->dump_left > 0) {
+		if (ts->dump_left > 0)
+			ts->dump_left--;
 		dev_info(ts->dev, "ev %8phN id %u %u,%u area %u\n", ev,
 			 ev[1] >> 4,
 			 ((ev[3] & 0x0f) << 8) | ev[2],
@@ -671,7 +692,7 @@ static void fts_poll_work(struct work_struct *work)
 	for (i = 0; i < count; i++) {
 		u8 *ev = &ts->buf[i * FTS_EVENT_SIZE];
 
-		if (ts->dbg_polls < 4) {
+		if (ts->dbg || ts->dbg_polls < 4) {
 			dev_info(ts->dev, "poll%u: %8phN\n", ts->dbg_polls, ev);
 			ts->dbg_polls++;
 		}
@@ -742,16 +763,9 @@ static irqreturn_t fts_irq_thread(int irq, void *data)
 	}
 
 	/*
-	 * The FW clears IER itself once it has an event to hand over and then
-	 * waits for the host; without this re-arm it stops producing events
-	 * after the very first one.  Reading IER back after an enable always
-	 * returned 0x00, which is what made the missing re-arm visible.
+	 * No IER write here either.  Reading the FIFO is the acknowledgement;
+	 * the FW maintains IER itself.
 	 */
-	if (ts->powered) {
-		u8 en = IER_ENABLE;
-
-		fts_hw_write(ts, ADDR_IER, &en, 1);
-	}
 
 	mutex_unlock(&ts->lock);
 	return IRQ_HANDLED;
@@ -839,13 +853,17 @@ static int fts_power_on(struct fts_data *ts)
 	 * init, as the receipt for whether the panel area was reloaded.
 	 */
 
-	/* vendor fts_enableInterrupt(): IER = 0x41 */
-	{
-		u8 en = IER_ENABLE;
-
-		ret = fts_hw_write(ts, ADDR_IER, &en, 1);
-		dev_info(ts->dev, "interrupt enable: %d\n", ret);
-	}
+	/*
+	 * IER is deliberately NOT written here.
+	 *
+	 * The vendor driver never writes it either - fts_enableInterrupt() only
+	 * enables the Linux irq.  0x41 looked like an "enable value" purely
+	 * because this driver wrote it first: a freshly reset chip reads back
+	 * 0x40, every write of 0x41 is immediately overwritten by the FW, and
+	 * the write keeps the interrupt line asserted.  With the AFE running
+	 * that turned into a self sustaining storm - 1370 interrupts a second
+	 * with an empty FIFO behind them.
+	 */
 
 	/* drop whatever the controller queued while it was booting */
 	fts_flush_fifo(ts);
@@ -859,22 +877,16 @@ static int fts_power_on(struct fts_data *ts)
  * Powering the controller and enabling its sensing are two separate steps, and
  * the second one is the one the panel objects to: the controller and the
  * command mode AMOLED sit on the same flex and share the 3.3 V touch/vddio rail
- * (vendor name disp_vddio_vreg).  Every build that let the controller actually
- * run left the panel black, and deferring it until after the panel was up did
- * not help, so the armed/dead distinction is exposed here instead of being
- * guessed at with one reflash per attempt:
+ * (vendor name disp_vddio_vreg).  The armed/dead distinction is therefore
+ * exposed through "enable" instead of being guessed at with one reflash per
+ * attempt:
  *
  *   echo 0 > .../enable    controller unpowered (the p43 state, panel safe)
  *   echo 1 > .../enable    controller powered and handshaked, sensing off
  *   echo 2 > .../enable    sensing on, events and input reporting active
- *   echo 3 > .../enable    panel init (A4 00 02) first, then sensing on
+ *   echo 3 > .../enable    panel init        (A4 00 02), then sensing on
+ *   echo 4 > .../enable    full panel init   (A4 00 03), then sensing on
  */
-static int fts_enable_interrupt(struct fts_data *ts)
-{
-	u8 en = IER_ENABLE;
-
-	return fts_hw_write(ts, ADDR_IER, &en, 1);
-}
 
 /*
  * Bring sensing up the way the vendor's fts_init_sensing() does it:
@@ -909,10 +921,21 @@ static int fts_start_scan(struct fts_data *ts)
 	 * mode AMOLED.  Do not put the off/on cycle back without a way to
 	 * bring the panel back.
 	 */
-	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_LOW_POWER, 0);
+	/*
+	 * Vendor senseOff()/senseOn(): both are SCAN_MODE_ACTIVE, only the mask
+	 * changes.  Using SCAN_MODE_LOW_POWER for the "off" half switches the
+	 * controller onto the self capacitance path, which runs on a different
+	 * set of Cx data (LOAD_CX_SS_TOUCH_IDLE); coming back with a bare
+	 * 0xA0 00 01 does not swap that data back.  The AFE then samples the
+	 * mutual channels against the wrong baseline and reports
+	 * EVT_TYPE_STATUS_FORCE_CAL / subtype 0x01 "mutual negative detect"
+	 * over and over - exactly what this unit started doing right after the
+	 * first panel init.
+	 */
+	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, 0x00);
 	if (ret)
 		return ret;
-	msleep(20);
+	msleep(50);	/* WAIT_AFTER_SENSEOFF */
 
 	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, FTS_SCAN_MT);
 	if (ret)
@@ -920,16 +943,15 @@ static int fts_start_scan(struct fts_data *ts)
 
 	fts_send(ts, gesture, sizeof(gesture));
 
-	ret = fts_enable_interrupt(ts);
-	dev_info(ts->dev, "scan on: %d\n", ret);
+	dev_info(ts->dev, "scan on\n");
 
-	return ret;
+	return 0;
 }
 
 static void fts_power_off(struct fts_data *ts)
 {
 	if (ts->scanning) {
-		fts_set_scan_mode(ts, FTS_SCAN_MODE_LOW_POWER, 0);
+		fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, 0x00);
 		ts->scanning = false;
 	}
 
@@ -1078,7 +1100,7 @@ static ssize_t fts_enable_store(struct device *dev,
 	int val, ret = 0;
 	bool kick = false;
 
-	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 3)
+	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 4)
 		return -EINVAL;
 
 	/*
@@ -1124,7 +1146,7 @@ static ssize_t fts_enable_store(struct device *dev,
 		if (!ts->powered)
 			ret = fts_power_on(ts);
 		if (!ret)
-			ret = fts_panel_init(ts);
+			ret = fts_panel_init(ts, FTS_SPECIAL_PANEL_INIT);
 		if (!ret)
 			ret = fts_start_scan(ts);
 		if (!ret) {
@@ -1135,14 +1157,39 @@ static ssize_t fts_enable_store(struct device *dev,
 		dev_info(dev, "enable 3: panel init + scanning %s\n",
 			 ret ? "FAILED" : "ok");
 		break;
+	case 4:
+		if (!ts->powered)
+			ret = fts_power_on(ts);
+		if (!ret)
+			ret = fts_panel_init(ts, FTS_SPECIAL_FULL_INIT);
+		if (!ret)
+			ret = fts_start_scan(ts);
+		if (!ret) {
+			ts->scanning = true;
+			ts->awake = true;
+			kick = true;
+		}
+		dev_info(dev, "enable 4: full panel init + scanning %s\n",
+			 ret ? "FAILED" : "ok");
+		break;
 	}
 
 	mutex_unlock(&ts->lock);
 
+	/*
+	 * Interrupt only - do NOT schedule the poll work as well.
+	 *
+	 * The two readers steal from each other.  A batch read takes the number
+	 * of queued events from byte 7 of the first event and then collects
+	 * that many more, so a second reader stepping in between the two
+	 * transfers splits the batch and both handlers act on half an event
+	 * stream.  While the AFE was down this never mattered because there was
+	 * nothing to read; now that it samples, it is the difference between
+	 * working touch and a console that crawls.
+	 */
 	if (kick) {
 		enable_irq(ts->irq);
 		ts->irq_on = true;
-		schedule_delayed_work(&ts->poll_work, 0);
 	}
 
 	return ret ? ret : count;
@@ -1188,6 +1235,37 @@ static ssize_t fts_frame_store(struct device *dev,
 	return count;
 }
 static DEVICE_ATTR(frame, 0200, NULL, fts_frame_store);
+
+/*
+ * Event logging switch.
+ *
+ * The boot-time budget (48 events, 4 poll samples) exists so a controller that
+ * misbehaves cannot flood the console, but it is spent long before the
+ * interesting part happens: the AFE only comes up after the panel init, and by
+ * then nothing is printed any more.
+ *
+ *   echo 1 > dbg    print every event the FW hands over
+ *   echo 0 > dbg    back to quiet
+ */
+static ssize_t fts_dbg_store(struct device *dev, struct device_attribute *attr,
+			     const char *buf, size_t count)
+{
+	struct fts_data *ts = dev_get_drvdata(dev);
+	int v;
+
+	if (sscanf(buf, "%d", &v) != 1)
+		return -EINVAL;
+
+	ts->dbg = v != 0;
+	if (ts->dbg) {
+		ts->dump_left = 1 << 20;
+		ts->dbg_polls = 0;
+	}
+	dev_info(dev, "dbg %d\n", ts->dbg ? 1 : 0);
+
+	return count;
+}
+static DEVICE_ATTR(dbg, 0200, NULL, fts_dbg_store);
 
 static int fts_probe(struct platform_device *pdev)
 {
@@ -1279,6 +1357,7 @@ static int fts_probe(struct platform_device *pdev)
 	device_create_file(dev, &dev_attr_cmd);
 	device_create_file(dev, &dev_attr_enable);
 	device_create_file(dev, &dev_attr_frame);
+	device_create_file(dev, &dev_attr_dbg);
 
 	dev_info(dev, "%ux%u, %d slots, irq %d\n",
 		 ts->prop.max_x + 1, ts->prop.max_y + 1, FTS_MAX_FINGERS,
@@ -1311,8 +1390,7 @@ static int fts_suspend(struct device *dev)
 
 	mutex_lock(&ts->lock);
 	if (ts->awake) {
-		fts_set_scan_mode(ts, FTS_SCAN_MODE_LOW_POWER, 0);
-		fts_hw_write(ts, ADDR_IER, (const u8[]){ IER_DISABLE }, 1);
+		fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, 0x00);
 		ts->awake = false;
 	}
 	mutex_unlock(&ts->lock);
