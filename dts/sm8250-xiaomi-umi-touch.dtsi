@@ -69,7 +69,26 @@
 	status = "okay";
 };
 
+/*
+ * gpi_dma1 needs a non-zero EE register offset.
+ *
+ * sm8250 has two GPI DMA controllers whose EE registers do not sit at the
+ * start of their register windows.  Newer mainline names the two variants
+ * "qcom,sm8250-gpi-dma-0" (ee_offset 0x1000) and "qcom,sm8250-gpi-dma-1"
+ * (ee_offset 0x6000); this tree (6.12.94) only carries the single
+ * "qcom,sm8250-gpi-dma", whose match data is ee_offset 0.  With that offset
+ * the driver computes a wrong ee_base for wrap1 and every GPI command goes
+ * unanswered:
+ *
+ *     gpi a00000.dma-controller: cmd: EV ALLOCATE completion timeout:2
+ *     gpi a00000.dma-controller: error alloc_ev_chan:-5
+ *     geni_i2c a94000.i2c: error -ENODEV: Failed to setup GPI DMA mode
+ *
+ * The two match entries are added by scripts/build.sh, which patches
+ * drivers/dma/qcom/gpi.c in the kernel tree before building.
+ */
 &gpi_dma1 {
+	compatible = "qcom,sm8250-gpi-dma-1", "qcom,sdm845-gpi-dma";
 	status = "okay";
 };
 
@@ -90,9 +109,23 @@
 		pinctrl-0 = <&ts_int_active>;
 		pinctrl-1 = <&ts_int_sleep>;
 
-		/* Working mapping: bus/IO rail first, then the 1.8 V power rail. */
-		vdd-supply = <&touch_vddio_vreg>;
-		avdd-supply = <&vreg_l1c_1p8>;
+		/*
+		 * Supply mapping taken from MIUI, not from the other working DTS.
+		 *
+		 * On a running MIUI the regulator state is:
+		 *   vreg_l1c_1p8     1800 mV  consumer 4900000003.touchscreen-vdd
+		 *   touch_vddio_vreg 3300 mV  1 user
+		 * so vdd (bus) is the 1.8 V PM8150L LDO and avdd (power) is the
+		 * GPIO69 gated rail.  That also matches the vendor driver, which
+		 * programs avdd with regulator_set_voltage(avdd, 3300000, 3300000).
+		 *
+		 * The other working tree has these two swapped; with avdd on the
+		 * fixed 1.8 V rail that call fails and every raw sample comes back
+		 * identical (-13462), i.e. the analogue front end never sees a
+		 * valid acquisition.
+		 */
+		vdd-supply = <&vreg_l1c_1p8>;
+		avdd-supply = <&touch_vddio_vreg>;
 		fts,regulator_dvdd = "vdd";
 		fts,regulator_avdd = "avdd";
 

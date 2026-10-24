@@ -151,8 +151,19 @@ EOF
 	grep -q 'umi-i2c' "$FTS_MK" || \
 		printf 'obj-$(CONFIG_I2C_UMI_BITBANG)\t+= umi-i2c.o\n' >> "$FTS_MK"
 fi
-MK=$TREE/arch/arm64/boot/dts/qcom/Makefile
-for d in sm8250-xiaomi-umi sm8250-xiaomi-umi-plus; do
+# ---- GPI DMA：补上 sm8250 的两个 EE 偏移变体 ----
+# 6.12.94 的 gpi_of_match 只有 "qcom,sm8250-gpi-dma"（ee_offset 0），而 sm8250
+# 的两个 GPI 控制器 EE 窗口偏移并不相同（wrap0 = 0x1000 / wrap1 = 0x6000；
+# 这两个值是从一份能工作的 sm8250 内核的 of_device_id data 字段里读出来的）。
+# 不补的话 wrap1 的 ee_base 算错，GPI 命令永远等不到完成：
+#   gpi a00000.dma-controller: cmd: EV ALLOCATE completion timeout:2
+#   geni_i2c a94000.i2c: error -ENODEV: Failed to setup GPI DMA mode
+if [ -f "$TREE/drivers/dma/qcom/gpi.c" ]; then
+	python3 "$WS/patches/gpi-sm8250-ee-offset.py" \
+		"$TREE/drivers/dma/qcom/gpi.c" || echo "   !! gpi 补丁没打上"
+fi
+
+MK=$TREE/arch/arm64/boot/dts/qcom/Makefilefor d in sm8250-xiaomi-umi sm8250-xiaomi-umi-plus; do
 	grep -q "$d\.dtb" "$MK" || \
 		printf 'dtb-$(CONFIG_ARCH_QCOM)\t+= %s.dtb\n' "$d" >> "$MK"
 	# ★ 必须用 -@ 编译：ABL 会往 base DTB 上打 dtbo overlay，overlay 靠 __symbols__

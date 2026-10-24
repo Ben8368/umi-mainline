@@ -196,6 +196,39 @@ static ssize_t fts_mode_active_show(struct device *dev,
 	return snprintf(buf, 14, "{ %08X }\n", info->mode);
 }
 
+/*
+ * umi: dump the first nodes of a mutual-sense RAW frame.
+ *
+ * This is the diagnostic that decides whether the analogue front end produces
+ * usable data at all.  Everything else on this unit already matches MIUI
+ * (same bring-up order, same CX data, same scan mask) yet every frame comes
+ * back rejected with STATUS/FRAME_DROP, so the raw numbers are what tells us
+ * whether the controller is sampling the panel.
+ */
+static ssize_t fts_raw_show(struct device *dev,
+			    struct device_attribute *attr, char *buf)
+{
+	MutualSenseFrame frame;
+	int res, i, n = 0, cnt;
+
+	memset(&frame, 0, sizeof(frame));
+	frame.node_data = NULL;
+
+	res = getMSFrame3(MS_RAW, &frame);
+	if (res < OK)
+		return snprintf(buf, PAGE_SIZE,
+				"raw: getMSFrame3 failed %08X\n", res);
+
+	cnt = frame.node_data_size;
+	n += snprintf(buf + n, PAGE_SIZE - n, "nodes=%d\n", cnt);
+	for (i = 0; i < cnt && i < 48; i++)
+		n += snprintf(buf + n, PAGE_SIZE - n, "%d ", frame.node_data[i]);
+	n += snprintf(buf + n, PAGE_SIZE - n, "\n");
+
+	kfree(frame.node_data);
+	return n;
+}
+
 /***************************************** FEATURES
  * ***************************************************/
 
@@ -1183,6 +1216,7 @@ static ssize_t fts_gesture_coordinates_show(struct device *dev,
 
 static DEVICE_ATTR(appid, (S_IRUGO), fts_appid_show, NULL);
 static DEVICE_ATTR(mode_active, (S_IRUGO), fts_mode_active_show, NULL);
+static DEVICE_ATTR(raw, (S_IRUGO), fts_raw_show, NULL);
 #ifdef USE_ONE_FILE_NODE
 static DEVICE_ATTR(feature_enable, (S_IRUGO | S_IWUSR | S_IWGRP),
 		   fts_feature_enable_show, fts_feature_enable_store);
@@ -1226,6 +1260,7 @@ static DEVICE_ATTR(gesture_coordinates, (S_IRUGO | S_IWUSR | S_IWGRP),
 static struct attribute *fts_attr_group[] = {
 	&dev_attr_appid.attr,
 	&dev_attr_mode_active.attr,
+	&dev_attr_raw.attr,
 #ifdef USE_ONE_FILE_NODE
 	&dev_attr_feature_enable.attr,
 #else
