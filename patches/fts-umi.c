@@ -84,6 +84,7 @@
 #define FTS_CMD_SYSTEM		0xa4
 #define FTS_SYS_CMD_SPECIAL	0x00
 #define FTS_SYS_CMD_LOAD_DATA	0x01
+#define FTS_SYS_CMD_FORCE_CAL	0x02
 #define FTS_SPECIAL_FIFO_FLUSH	0x01
 
 /* FTI register addresses, all inside the 0x2000_0000 window */
@@ -774,6 +775,7 @@ static ssize_t fts_cmd_store(struct device *dev, struct device_attribute *attr,
 	 */
 	if ((op == 'w' || op == 'W') && vals[0] == FTS_CMD_SYSTEM &&
 	    !(nvals >= 2 && vals[1] == FTS_SYS_CMD_LOAD_DATA) &&
+	    !(nvals >= 2 && vals[1] == FTS_SYS_CMD_FORCE_CAL) &&
 	    !(nvals >= 3 && vals[1] == FTS_SYS_CMD_SPECIAL &&
 	      vals[2] == FTS_SPECIAL_FIFO_FLUSH)) {
 		dev_warn(dev, "refusing 0xA4 system command, it blacks out the panel\n");
