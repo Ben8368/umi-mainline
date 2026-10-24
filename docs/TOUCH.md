@@ -416,3 +416,44 @@ echo 7 > .../enable    soft reset + read sysinfo + scan, no panel init
 
 which is the vendor's probe sequence, and keeps `enable 4/5/6` for comparison
 and for a controller that was already poked into a bad state.
+
+## p67 / p68 - vendor parity does not fix the frame
+
+p67 added
+
+```
+echo 7 > .../enable    soft reset (FA 20000024 80) + readSysInfo + scan
+```
+
+which is the vendor's whole probe sequence - no panel init. The system info
+comes back identical to MIUI's (FW 0132, TX 17, RX 37, same frame addresses),
+and the raw frame is still one repeated -13462 on all 629 nodes.
+
+p68 added two ways to read a frame:
+
+```
+echo 1 > .../raw    keep scanning, wait 200 ms, read   (vendor shape)
+echo 2 > .../raw    sense off, 50 ms, flush, read, resume
+```
+
+and a scan mask sweep (0x01, 0x03, 0x05, 0x09, 0xFF). Raw stays -13462 in
+every single combination, while the filter frame tracks it exactly
+(raw == baseline, filter == 0), which is what the controller believes.
+
+This is the same read procedure the vendor's own `ms_raw` attribute uses
+(`setScanMode(ACTIVE,01)`, 200 ms, `setScanMode(ACTIVE,00)`, 50 ms, flushFIFO,
+getMSFrame3(MS_RAW)), and on MIUI the same attribute returns a node specific
+matrix around -300..+340. So the procedure is not the difference; the AFE
+state at read time is.
+
+Poking the same framebuffer address with the other memory opcodes shows the
+two views are different engines: `FA 00009148` returns code-like repeats
+(`28 68 40 1c`), `A8 9148` returns zeros, `A6 9148` returns `6a cb`. The 0xA6
+window is the FW framebuffer and it is only meaningful for data the FW has
+actually produced.
+
+Open question, next measurement: MIUI can also be asked for its own CX data
+(`cat /sys/bus/i2c/devices/3-0049/ms_cx_total`). If that is populated on MIUI
+and the compensation it describes is what the AFE needs, the remaining step is
+to get the same CX data into the controller at boot - the one thing this
+driver has never done and never checked.
