@@ -355,3 +355,116 @@ gpio-reserved-ranges = <28 4>, <40 4>;     /* 只保留这两段，NORTH 全放 
    他的镜像里没有留下任何 WiFi 已连通的痕迹。
 
 **当前状态**：Arch + 串口 + SSH + USB 网卡可用，WiFi 待续。
+
+## 9. 第四轮：移植 7.2 的 LTSSM 诊断，找到时序死锁，但卡确实不在总线上
+
+作者镜像里 `/etc/NetworkManager/system-connections/ZZzzx.nmconnection`
+写着 `interface-name=wlp1s0` —— **他的 WiFi 是真用过的**，所以「主线做不到」这个
+结论被我推翻，重新查。
+
+### 9.1 从 v0 boot.img 里取出他真正的 dtb
+
+他的 `boot.img` 是 **v0 格式**（`dtb_size = 0`），dtb 追在 gzip 流后面
+（`Image.gz-dtb`）。用 `zlib.decompressobj().unused_data` 正好把 gzip 流和
+尾部 dtb 分开：
+
+```
+kernel blob 17142916 B -> Image 58690048 B + tail 135434 B (F04DFEED = FDT)
+```
+
+拿到的 dtb 和我们照抄的配置**逐项一致**（`perst-gpios 79` / `wake-gpios 81` /
+`pinctrl-0` / `wlan-enable-gpios 20` / `gpio-reserved-ranges = <28 4> <40 4>`），
+所以 dtb 这条线没有差异可找了。
+
+### 9.2 移植 7.2 的 LTSSM 读取（关键工具）
+
+7.2 在 link 超时时会读 LTSSM 状态，这是判断「卡死没死」的唯一直接手段。
+Qcom 的 ELBI 块把 LTSSM 放在 `ELBI_SYS_STTS[17:12]`：
+
+```c
+#define ELBI_SYS_STTS				0x08
+#define ELBI_SYS_STTS_LTSSM_STATE_MASK		GENMASK(17, 12)
+val = readl(pcie->elbi + ELBI_SYS_STTS);
+```
+
+6.12 的 `qcom_pcie` 里已经有 `elbi` 指针，所以只要加两个 define 和一次
+`dev_info` 就行。补丁：`patches/pcie-qcom-ltssm-debug.py`。
+（踩坑：注释里写了 `Config.*/L0`，`*/` 把注释提前闭合，报 `'L0' undeclared`。）
+
+**探针位置很重要**：一开始放在 reset deassert 之后，读到的永远是
+`Detect.Quiet` —— 因为那时训练还没开始。真正有意义的是
+`dw_pcie_host_init()` 返回之后（训练已超时）那个值。
+补丁：`patches/pcie-qcom-ltssm-after.py`。
+
+### 9.3 发现时序死锁
+
+LTSSM 第一次读数配合日志时间戳暴露了一个环：
+
+```
+41.48  LTSSM: state=0x0                     ← 训练时，卡沉默
+42.47  Phy link never came up
+42.55  pci 0000:00:00.0: Root Port          ← 枚举出来之后，wifi@0 才存在
+       → pci-pwrctl-pwrseq 才 probe → pwrseq_power_on() 才拉高 WLAN_EN
+```
+
+`gpio20 : out high` 是真的，**但那是在 link training 失败之后**。
+作者的 dtb 里 `wlan-default-state` 是 `output-low`，所以训练时它也是低的。
+
+修法：用 `gpio-hog` 在 tlmm gpiochip 注册时就拉高（远早于 PCIe 探针）。
+补丁：dts 里 `wlan_en_hog_early`。**但是——拉高之后 LTSSM 依然是 0x0**，
+所以时序不是瓶颈。
+
+### 9.4 PERST 后的等待从 1 ms 加到 120 ms
+
+主线 `qcom_ep_reset_deassert()` 在释放 PERST 后只 `usleep_range(1000, 1500)`
+就进训练，而 PCIe 规范 T_PVPERL 是「PERST 释放到参考时钟稳定」最多 100 ms。
+补丁：`patches/pcie-qcom-perst-delay.py` 改成 `msleep(120)`。
+**结果依旧是 0x0。**
+
+### 9.5 最终实测（三重证据都指向同一件事）
+
+```
+[41.89] LTSSM: raw=0x00000001 state=0x0                  ← 训练开始前
+[42.89] Phy link never came up                            ← 训练跑满 1 秒
+[43.40] LTSSM after training: raw=0x00000001 state=0x0    ← 训练结束后仍是 Detect.Quiet
+```
+
+``` 
+/sys/kernel/debug/pcie@1c00000/link_transition_count
+  L0s transition count: 0
+  L1  transition count: 0
+  L1.1 transition count: 0
+  L1.2 transition count: 0
+  L2  transition count: 0
+```
+
+同时确认这些**全部正常**：
+
+```
+gpio20  : out high 16mA          (WLAN_EN，hog 提前拉高)
+gpio79  : out high               (PERST 已释放)
+pcie_0_gdsc : on
+gcc_pcie_wifi_clkref_en  : 1     (by 1c06000.phy ref)
+gcc_pcie_phy_aux_clk     : 1
+gcc_pcie0_phy_refgen_clk : 1 @100 MHz
+gcc_pcie_0_pipe_clk      : 2
+vreg_l5a_0p88 / vreg_l9a_1p2 : enabled
+qcom-qmp-pcie-phy        : 已绑定
+```
+
+**LTSSM = Detect.Quiet 意味着：链路训练跑满一秒，总线上始终没有任何设备在应答。**
+
+### 9.6 结论
+
+软件侧已经穷尽：电源域、六路 regulator、四个时钟、PHY 驱动、RESET 时序、
+WLAN_EN 时序全部到位且用 debugfs 逐个核实过。卡依旧不出现。
+
+剩下只有三种可能，都不是改代码能解决的：
+
+1. **REFCLK 没有真正到达卡**（PHY 的参考时钟输出是硬件路径，主线没有可关/可开的开关）
+2. **这颗 QCA6390 在本机确实不工作**（作者那台能用，不排除批次/个体差异）
+3. **XPU/TZ 层面把 PCIe 端点挡在外面**
+
+**当前状态**：Arch + 串口 + SSH + USB 网卡可用，WiFi 判为硬件/固件层面受限。
+所有诊断工具（LTSSM 探针、PERST 延时补丁、WLAN_EN hog）都保留在仓库里，
+换机器或换固件后可以直接复测。
