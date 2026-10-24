@@ -125,14 +125,20 @@
 	 */
 	/delete-property/ pinctrl-names;
 	/delete-property/ pinctrl-0;
-	/delete-property/ perst-gpios;
 	/delete-property/ wake-gpios;
 
 	/*
-	 * perst-gpios 也不配：gpio79 同样在 NORTH tile 坏引脚里。
-	 * devm_gpiod_get_optional("perst") 返回 NULL，驱动就不去动复位脚，
-	 * 只能指望硬件上拉 / ABL 已经把它释放了。
+	 * perst-gpios 必须有：qcom_pcie_probe() 用
+	 *     devm_gpiod_get_optional(dev, "perst", GPIOD_OUT_HIGH)
+	 * 请求它 —— GPIOD_OUT_HIGH 对 active-low 的 PERST# 就是「释放复位」。
+	 * 删掉它 = 复位线永远拉着，QCA6390 永远不出 PCIe link，
+	 * 这正是之前一直看到 "Phy link never came up" 的直接原因。
+	 *
+	 * gpio79 只从 gpio-reserved-ranges 的 <77 8> 里单独放出来
+	 * （拆成 <77 2> + <80 5>），不再像上次那样整段放开。
+	 * 参考板 qrb5165-rb5 也是靠这个引脚。
 	 */
+	perst-gpios = <&tlmm 79 GPIO_ACTIVE_LOW>;
 
 	status = "okay";
 };
