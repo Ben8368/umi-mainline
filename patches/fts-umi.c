@@ -757,6 +757,25 @@ static ssize_t fts_cmd_store(struct device *dev, struct device_attribute *attr,
 	if (!nvals)
 		return -EINVAL;
 
+	/*
+	 * ★ 0xA4 (FTS_CMD_SYSTEM) can kill the display.
+	 *
+	 * Measured on umi:
+	 *   0xA4 00 01  SYS_CMD_SPECIAL/FIFO_FLUSH  harmless, used by flush
+	 *   0xA4 00 02  SYS_CMD_SPECIAL/PANEL_INIT  panel goes black
+	 *   0xA4 02     SYS_CMD_FORCE_CAL           panel goes black
+	 * 0xA4 00 02 and 0xA4 02 both survived the write, came back with the
+	 * echo event, and left the command mode AMOLED dark until reboot.
+	 * The controller drives the panel flex, so nothing here may touch the
+	 * panel init or the calibration path.
+	 */
+	if ((op == 'w' || op == 'W') && vals[0] == FTS_CMD_SYSTEM &&
+	    !(nvals >= 3 && vals[1] == FTS_SYS_CMD_SPECIAL &&
+	      vals[2] == FTS_SPECIAL_FIFO_FLUSH)) {
+		dev_warn(dev, "refusing 0xA4 system command, it blacks out the panel\n");
+		return -EPERM;
+	}
+
 	mutex_lock(&ts->lock);
 	if (op == 'w' || op == 'W') {
 		for (i = 0; i < nvals; i++)
