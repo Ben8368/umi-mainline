@@ -15,7 +15,7 @@
 #   4. USB gadget: CDC-ACM serial + mass storage (FAT image with the logs)
 #   5. optional: self-test the drm_panic QR screen via debugfs
 #
-# Output goes to: screen (fbcon), USB serial, and txt files on the USB drive.
+# Output goes to: screen (fbcon) and the USB serial port.
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 BB=/bin/busybox
@@ -73,7 +73,7 @@ say "############################################################"
 say "#  UMI MAINLINE BRING-UP INITRAMFS"
 say "#  If you can read this, the kernel booted, the console works"
 say "#  and user space is running."
-say "#  The log also goes to: USB serial + txt files on the USB drive"
+say "#  The log also goes to the USB serial port."
 say "############################################################"
 
 # ------------------------------------------------------------------ [1] info
@@ -249,26 +249,7 @@ fi
 # (mkinitramfs.sh --no-usb-console disables it).
 if [ -f /usb-console ]; then
 	say ""
-	say "==== [7] USB gadget: CDC-ACM serial + mass storage (logs on a drive) ===="
-
-	# ---- pack the logs into a FAT image so Windows shows a drive letter ----
-	LOGIMG=/tmp/usb-log.img
-	IMGOK=0
-	if dd if=/dev/zero of=$LOGIMG bs=1k count=16384 2>/dev/null \
-	   && $BB mkfs.vfat $LOGIMG >/dev/null 2>&1; then
-		if mount -t vfat -o loop $LOGIMG /mnt/usb 2>/dev/null; then
-			cp $LOGDIR/* /mnt/usb/ 2>/dev/null
-			sync
-			umount /mnt/usb 2>/dev/null
-			IMGOK=1
-			say "   FAT image ready (16 MiB, contains: $(ls $LOGDIR | tr '\n' ' '))"
-		else
-			IMGOK=1
-			say "   FAT image ready, but could not mount it (no loop device); serial only"
-		fi
-	else
-		say "   FAT image failed (dd/mkfs.vfat)"
-	fi
+	say "==== [7] USB gadget: RNDIS net + CDC-ACM serial ===="
 
 	# ---- wait for dwc3 ----
 	i=0
@@ -281,41 +262,103 @@ if [ -f /usb-console ]; then
 	mount -t configfs none /sys/kernel/config 2>/dev/null
 	G=/sys/kernel/config/usb_gadget/umi
 	if mkdir -p "$G" 2>/dev/null; then
+		# 0x0105 instead of 0x0104 on purpose: Windows caches USB descriptors
+		# per VID/PID, and it had already cached the old (non-RNDIS) ones.
+		# A new product id forces a clean re-enumeration.
 		echo 0x1d6b >"$G/idVendor"
-		echo 0x0104 >"$G/idProduct"
+		echo 0x0105 >"$G/idProduct"
 		mkdir -p "$G/strings/0x409"
 		echo "umi-mainline" >"$G/strings/0x409/serialnumber"
 		echo "Xiaomi" >"$G/strings/0x409/manufacturer"
-		echo "Mi 10 bring-up logs" >"$G/strings/0x409/product"
+		echo "Mi 10" >"$G/strings/0x409/product"
 		mkdir -p "$G/configs/c.1/strings/0x409"
-		echo "ACM + logs" >"$G/configs/c.1/strings/0x409/configuration"
+		echo "RNDIS + ACM" >"$G/configs/c.1/strings/0x409/configuration"
+
+		# RNDIS goes in FIRST on purpose. The interface number (MI_xx in the
+		# USB hardware id) is assigned in link order, and the Windows RNDIS
+		# INF on the desktop (rndis11.inf) matches
+		#     USB\VID_1d6b&PID_0104&MI_00
+		# RNDIS itself consumes two interfaces (control + data), so the
+		# serial port lands on MI_02.
+		#
+		# That INF does not rely on Microsoft OS descriptors -- which is
+		# exactly why the generic netrndis.inf route failed earlier: it
+		# wants compatible_id "RNDIS" advertised through os_desc, and
+		# writing that at runtime tore the UDC down.
+		mkdir -p "$G/functions/rndis.usb0"
+		echo "02:1d:6b:01:04:01" >"$G/functions/rndis.usb0/dev_addr" 2>/dev/null
+		echo "02:1d:6b:01:04:02" >"$G/functions/rndis.usb0/host_addr" 2>/dev/null
+
+		# f_rndis defaults to class 02/06/00 (CDC-ECM style). Windows sees
+		# exactly that, finds no driver for it, and the interface sits
+		# there driverless. RNDIS proper is EF/04/01, which is what
+		# Windows' in-box netrndis.inf matches.
+		#
+		# BARE HEX, NO 0x PREFIX. The configfs setter is
+		#     sscanf(page, "%02hhx", &val)
+		# so "0xef" is parsed as the two characters "0x" -> 0, and the
+		# attribute silently becomes 00. That is exactly what happened on
+		# the first attempt: class read back as 00/00/00.
+		echo ef >"$G/functions/rndis.usb0/class"
+		echo 04 >"$G/functions/rndis.usb0/subclass"
+		echo 01 >"$G/functions/rndis.usb0/protocol"
+
+		# Microsoft OS descriptor, FUNCTION level. f_rndis creates
+		# functions/rndis.usb0/os_desc/interface.rndis by itself -- it is
+		# NOT creatable under the gadget's own os_desc/ directory (that
+		# one has no group ops, mkdir there always fails with EPERM;
+		# cost me a round trip to find out).
+		echo RNDIS >"$G/functions/rndis.usb0/os_desc/interface.rndis/compatible_id"
+		echo 5162001 >"$G/functions/rndis.usb0/os_desc/interface.rndis/sub_compatible_id"
+		ln -sf "$G/configs/c.1" "$G/functions/rndis.usb0/os_desc/interface.rndis/config" 2>/dev/null
+
+		ln -sf "$G/functions/rndis.usb0" "$G/configs/c.1/" 2>/dev/null
 
 		mkdir -p "$G/functions/acm.usb0"
 		ln -sf "$G/functions/acm.usb0" "$G/configs/c.1/" 2>/dev/null
 
-		# RNDIS: give the PC a network interface next to the serial port.
-		# This is the file-transfer channel: 115200 baud serial tops out at
-		# 11 KB/s, which is useless for boot images, and it chokes above
-		# ~24 KB because of terminal echo. Over RNDIS we get a few MB/s and
-		# the card gets 192.168.42.1/24 (configured on the Arch side by
-		# /etc/systemd/network/10-usb0.network).
-		mkdir -p "$G/functions/rndis.usb0"
-		echo "02:1d:6b:01:04:01" >"$G/functions/rndis.usb0/dev_addr" 2>/dev/null
-		echo "02:1d:6b:01:04:02" >"$G/functions/rndis.usb0/host_addr" 2>/dev/null
-		ln -sf "$G/functions/rndis.usb0" "$G/configs/c.1/" 2>/dev/null
+		# ---- Microsoft OS descriptors ------------------------------------
+		# This is what makes Windows bind its in-box netrndis.inf to the
+		# RNDIS interface by itself: no third-party INF, no test-signing
+		# mode, no reboot of the PC.
+		#
+		# Without os_desc Windows sees only a CDC interface with
+		# compatible-id USB\Class_02&SubClass_06&Prot_00, which matches no
+		# driver at all. The desktop RNDIS.inf / rndis11.inf do match by
+		# VID/PID (USB\VID_1d6b&PID_0104&MI_00), but they carry no digital
+		# signature, so pnputil refuses them:
+		#     "The third-party INF does not contain digital signature
+		#      information."
+		#
+		# "RNDIS" is the magic compatible_id Microsoft's driver looks for;
+		# 0xcd is the vendor request code and MSFT100 the signature string,
+		# both fixed by the Microsoft spec.
+		#
+		# MUST happen before the UDC is bound: doing it at runtime means
+		# unbinding the gadget first, and that is what tore the UDC down.
+		#
+		# ORDER MATTERS: os_desc/use has to be 1 *before* the per-interface
+		# directory is created. With the two lines swapped, mkdir
+		# os_desc/interface.rndis silently fails and the descriptor is
+		# never advertised -- verified on the device: os_desc/ contained
+		# only use/qw_sign/b_vendor_code and Windows still saw the plain
+		# CDC interface.
+		echo 1 >"$G/os_desc/use"
+		echo 0xcd >"$G/os_desc/b_vendor_code"
+		echo MSFT100 >"$G/os_desc/qw_sign"
+		mkdir -p "$G/os_desc/interface.rndis"
+		echo RNDIS >"$G/os_desc/interface.rndis/compatible_id"
+		echo 5162001 >"$G/os_desc/interface.rndis/sub_compatible_id"
+		ln -sf "$G/configs/c.1" "$G/os_desc/interface.rndis/config" 2>/dev/null
 
-		if [ "$IMGOK" = 1 ]; then
-			mkdir -p "$G/functions/mass_storage.usb0"
-			echo "$LOGIMG" >"$G/functions/mass_storage.usb0/lun.0/file" 2>/dev/null
-			echo 1 >"$G/functions/mass_storage.usb0/lun.0/removable" 2>/dev/null
-			echo 0 >"$G/functions/mass_storage.usb0/lun.0/ro" 2>/dev/null
-			ln -sf "$G/functions/mass_storage.usb0" "$G/configs/c.1/" 2>/dev/null
-		fi
+		# mass storage deliberately dropped: the bring-up phase is over, the
+		# log dump on a fake USB drive is no longer useful, and it only
+		# added a third interface for Windows to mis-enumerate.
 
 		if [ -n "$UDC" ]; then
 			echo "$UDC" >"$G/UDC"
 			say "   bound UDC=$UDC (waited ${i}s)"
-			say "   -> PC should now show: a serial port (COMx / ttyACM0) + a USB drive with the logs"
+			say "   -> PC should now show: an RNDIS network card + a serial port (COMx / ttyACM0)"
 			say "   on the serial port you can run: dmesg / cat /sys/fs/pstore/* / cat /proc/cmdline"
 			if [ -c /dev/ttyGS0 ]; then
 				(

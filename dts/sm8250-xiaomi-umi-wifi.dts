@@ -52,12 +52,17 @@
 		vddio-supply = <&vreg_s4a_1p8>;
 
 		/*
-		 * gpio20 = WLAN_EN。它同样从 gpio-reserved-ranges 的 <13 11>
-		 * 里单独放出来了（拆成 <13 7> + <21 3>）。
-		 * 没有它 qca6390-pmu 不会给芯片上电，PCIe 那边就是
-		 * "Phy link never came up"。
+		 * 没有 wlan-enable-gpios：gpio20 在 NORTH tile 里访问不了
+		 * （一放开 gpio-reserved-ranges 整机就起不来）。
+		 *
+		 * 好消息：drivers/power/sequencing/pwrseq-qcom-wcn.c 用的是
+		 *     devm_gpiod_get_optional(dev, "wlan-enable", ...)
+		 * 所以 GPIO 是**可选**的 —— 不配它驱动照样 probe，照样把
+		 * 那 10 路 LDO 注册出来并使能，只是不去拉那个使能脚。
+		 *
+		 * 这个实验要回答的就是：QCA6390 的电到底是由 LDO 直接给的，
+		 * 还是被 wlan-en 这个 GPIO 当门卡着？
 		 */
-		wlan-enable-gpios = <&tlmm 20 GPIO_ACTIVE_HIGH>;
 
 		regulators {
 			vreg_pmu_rfa_cmn: ldo0 { regulator-name = "vreg_pmu_rfa_cmn"; };
@@ -120,13 +125,14 @@
 	 */
 	/delete-property/ pinctrl-names;
 	/delete-property/ pinctrl-0;
+	/delete-property/ perst-gpios;
 	/delete-property/ wake-gpios;
 
-	/* gpio79 = PERST#。它现在从 gpio-reserved-ranges 的 <77 8> 里单独
-	 * 放出来了（拆成 <77 2> + <80 5>），所以能 request。
-	 * 这是让 QCA6390 上电的关键一步：不释放复位，PCIe 上永远
-	 * "Phy link never came up"（已经实测到这个日志）。*/
-	perst-gpios = <&tlmm 79 GPIO_ACTIVE_LOW>;
+	/*
+	 * perst-gpios 也不配：gpio79 同样在 NORTH tile 坏引脚里。
+	 * devm_gpiod_get_optional("perst") 返回 NULL，驱动就不去动复位脚，
+	 * 只能指望硬件上拉 / ABL 已经把它释放了。
+	 */
 
 	status = "okay";
 };
