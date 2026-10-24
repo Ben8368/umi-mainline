@@ -136,3 +136,159 @@ comfortably within what the datasheet allows and keeps the probe fast.
 * Only the `st,fts` variant is driven. A Goodix GT9889 unit needs a different
   driver (mainline `goodix_berlin*` is a reasonable starting point, but the
   firmware/config handling will have to be adapted).
+
+## Where the bring-up actually stands
+
+Everything below was measured on umi with a serial console, not inferred.
+Three protocol mistakes had been keeping the whole thing down, and once they
+were fixed the AFE finally came up.
+
+### 1. Three protocol facts
+
+| what | wrong before | right |
+|---|---|---|
+| load-data selector | `0xA4 01 <type>` | **`0xA4 06 <type>`** |
+| framebuffer address width | 32 bit after `0xA6` | **16 bit after `0xA6`** |
+| register address width | 16 bit | **32 bit after `0xFA`** |
+
+The vendor map for the `0xA4` selector byte is `0x00` special, `0x01` FW
+interrupt control, `0x02` force cal, `0x03` CX tuning, **`0x06` load data**.
+Every early raw-frame request went to the interrupt-control command instead,
+which is also what first blacked the panel.
+
+The framebuffer is a *different address space* from the `0xFA` registers.
+Handing `0xA6` a 32 bit address still returns something that parses like a
+header, so the mistake is silent — the tell is a frame counter that never
+moves.
+
+### 2. FULL panel init, not panel init
+
+`A4 00 03`, not `A4 00 02`. The whole vendor function is:
+
+```
+reset the chip (GPIO 38 low 10 ms, high)
+A4 00 03
+A4 06 01          then read the system info back
+```
+
+The vendor picks which one from the AFE versions in the system info:
+
+```
+cfgAfeVer != cxAfeVer        -> SPECIAL_FULL_PANEL_INIT   0x03
+cfgAfeVer != panelCfgAfeVer  -> SPECIAL_PANEL_INIT        0x02
+```
+
+This unit reads `cfgAfeVer 0x00 / cxAfeVer 0x05`, so it needs the **full**
+one. `A4 00 02` alone changes nothing, which is why it looked like a dead end.
+
+Measured effect (`echo 4 > enable`):
+
+```
+before:  sysinfo res 0x0        tx 0  rx 0   raw@0000
+after:   sysinfo res 2339x1079  tx 17 rx 37 raw@9148
+```
+
+`2339x1079` is the panel minus one; `17x37` are the real TX/RX channel
+counts. The three AFE versions also settle from `00/05/05` to `05/05/05`.
+
+### 3. IER is read-only, and writing it causes the interrupt storm
+
+`0x20000029` reads `0x40` on a freshly reset chip and the FW overwrites
+whatever is written to it. Writing `0x41` after every interrupt produced
+**1370 interrupts per second with an empty FIFO behind them** and made the
+console crawl. The vendor's `fts_enableInterrupt()` only enables the Linux
+irq; it never touches the register. Removing the write drops the counter to
+2 and the line releases.
+
+### 4. Frame addresses and what the data says
+
+Frame addresses live in the system info at these offsets:
+
+```
+[136] raw      0x9148
+[138] filter   0x4904
+[140] strength 0x4f40
+[142] baseline 0x5d82
+```
+
+Sampled on this unit:
+
+```
+raw      @ 9148:  6a cb 6a cb ...    (0xCB6A = -13462)
+baseline @ 5d82:  6a cb 6a cb ...    identical
+filter   @ 4904:  00 00 00 ...       delta when nothing touches the panel
+strength @ 4f40:  00 00 00 ...
+```
+
+So the `EVT_TYPE_STATUS_FORCE_CAL` / subtype `0x01` ("mutual negative
+detect") that kept firing was **not** a broken baseline — the baseline had
+correctly absorbed the `-13462` offset.
+
+### 5. The remaining problem, stated plainly
+
+`raw` stays exactly `6a cb`, sample after sample, while the frame counter
+keeps incrementing. Real sampling has noise; a value that never moves one
+LSB means the AFE is not receiving a real signal. With the baseline equal to
+it, `filter` is a constant zero, no finger can cross the detection
+threshold, and no ENTER event is ever generated.
+
+Related observations:
+
+* `A0 00 01` really starts the scan — `0x2000004a` goes `00 -> 50`. But if
+  the gesture write `A2 03 00 00 00 03` follows it, the register drops back
+  to `00`. Sending `A0 00 01` by hand afterwards brings it to `50` again, so
+  the scan command is fine and something after it is not.
+* Two error events show up after the full panel init,
+  `f374010000000000` and `f384100000000000`. Neither type is in the vendor
+  table, so they are firmware extensions, most likely reporting the same
+  thing measured above.
+
+The two explanations left are a Cx/panel dataset that does not match this
+unit's routing, or excitation the vendor stack sets up somewhere still
+unaccounted for. Either one wants a logic analyser capture of the working
+MIUI stack on SDA/SCL (GPIO36/GPIO37) to diff against — guessing further has
+stopped paying.
+
+### 6. Controls that exist in this driver
+
+```
+/sys/devices/platform/4900000003.touchscreen/enable
+    0  controller unpowered (display safest)
+    1  powered and handshaked, sensing off
+    2  sensing on
+    3  panel init (A4 00 02) then sensing on
+    4  full panel init (A4 00 03) then sensing on   <-- the one that works
+
+/sys/devices/platform/4900000003.touchscreen/frame
+    echo 30|31|32|33   request raw|filter|baseline|strength frame and report
+                       whether the frame counter moved
+
+/sys/devices/platform/4900000003.touchscreen/dbg
+    echo 1             log every event, past the boot budget
+
+/sys/devices/platform/4900000003.touchscreen/cmd
+    w <bytes...>       raw write          (0xA4 is filtered, see below)
+    r <op> <len>       write one byte, read len
+    x <bytes...> <len> write, then read
+    h <addr32> <len>   read a 32 bit addressed hardware register
+
+/sys/devices/platform/soc@0/ae00000.display-subsystem/ae94000.dsi/ae94000.dsi.0/repower
+    echo 1             re-send the 59 packet panel on-sequence
+```
+
+`repower` matters: poking the touch controller can leave the command mode
+AMOLED dark while the SoC keeps scanning, and this brings it back without a
+reboot.
+
+### 7. Display safety
+
+`0xA4` is filtered in the `cmd` poke box because it can kill the panel:
+
+```
+A4 00 01  FIFO flush      harmless, used by the driver
+A4 00 02  panel init      did not black the panel in the end
+A4 00 03  full panel init did black it once, `repower` recovered it
+A4 01 xx  interrupt ctrl  the old "load data" mistake, do not send
+A4 06 xx  load data       safe, this is how frames are requested
+```
+
