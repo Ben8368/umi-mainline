@@ -163,6 +163,15 @@ if [ -f "$TREE/drivers/dma/qcom/gpi.c" ]; then
 		"$TREE/drivers/dma/qcom/gpi.c" || echo "   !! gpi 补丁没打上"
 fi
 
+# ---- shared-GPIO：7.x 不能对 reserved 行做代理 ----
+# sm8250 的 NORTH tile 在这块板子上读不了，DTS 里用 gpio-reserved-ranges 标掉。
+# 7.x 新增的 shared-GPIO 机制仍会去 request 其中被引用到的行（GPIO66），拿到
+# -EINVAL 后整个 gpiochip 注册失败，GPIO/i2c/触摸全挂。
+if [ -f "$TREE/drivers/gpio/gpiolib-shared.c" ]; then
+	python3 "$WS/patches/gpiolib-shared-reserved-guard.py" \
+		"$TREE/drivers/gpio/gpiolib-shared.c" || echo "   !! shared-gpio 补丁没打上"
+fi
+
 MK=$TREE/arch/arm64/boot/dts/qcom/Makefile
 for d in sm8250-xiaomi-umi sm8250-xiaomi-umi-plus; do
 	grep -q "$d\.dtb" "$MK" || \
