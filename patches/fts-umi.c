@@ -83,6 +83,7 @@
 
 #define FTS_CMD_SYSTEM		0xa4
 #define FTS_SYS_CMD_SPECIAL	0x00
+#define FTS_SYS_CMD_LOAD_DATA	0x01
 #define FTS_SPECIAL_FIFO_FLUSH	0x01
 
 /* FTI register addresses, all inside the 0x2000_0000 window */
@@ -767,9 +768,12 @@ static ssize_t fts_cmd_store(struct device *dev, struct device_attribute *attr,
 	 * 0xA4 00 02 and 0xA4 02 both survived the write, came back with the
 	 * echo event, and left the command mode AMOLED dark until reboot.
 	 * The controller drives the panel flex, so nothing here may touch the
-	 * panel init or the calibration path.
+	 * panel init or the calibration path.  SYS_CMD_LOAD_DATA (0xA4 01 xx)
+	 * only asks the FW to fill a memory buffer and is allowed, it is how a
+	 * touch frame gets requested.
 	 */
 	if ((op == 'w' || op == 'W') && vals[0] == FTS_CMD_SYSTEM &&
+	    !(nvals >= 2 && vals[1] == FTS_SYS_CMD_LOAD_DATA) &&
 	    !(nvals >= 3 && vals[1] == FTS_SYS_CMD_SPECIAL &&
 	      vals[2] == FTS_SPECIAL_FIFO_FLUSH)) {
 		dev_warn(dev, "refusing 0xA4 system command, it blacks out the panel\n");
