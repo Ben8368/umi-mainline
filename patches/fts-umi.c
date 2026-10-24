@@ -734,27 +734,46 @@ static void fts_frame_stats(struct fts_data *ts, const char *name, u16 addr,
 }
 
 /*
- * Read the raw, filter and baseline frames the way the vendor does it: sense
- * off, wait WAIT_AFTER_SENSEOFF, flush the FIFO, then read the memory.
+ * Read the raw, filter and baseline frames.
  *
- * This is the one thing the earlier builds got wrong: they asked for a sync
- * frame while the scan was running.  The FW then does answer with a counter
- * bump, but the frame buffer it hands out is not the fresh matrix.
+ *   echo 1 > .../raw    vendor parity: keep scanning, wait a fresh frame, read
+ *   echo 2 > .../raw    sense off, WAIT_AFTER_SENSEOFF, flush, read
+ *
+ * Mode 1 is what the vendor's own frame dumps do:
+ *
+ *     fts_disableInterrupt();
+ *     mdelay(WAIT_FOR_FRESH_FRAMES);   // 200 ms
+ *     getMSFrame3(MS_RAW, &frame);
+ *     fts_enableInterrupt();
+ *
+ * i.e. it reads the matrix *while the scan is running* and never asks for a
+ * sync frame.  Mode 2 is the shape the earlier builds used and it is kept for
+ * comparison, because it is the one that keeps handing out -13462 on every
+ * node.
  */
 static ssize_t fts_raw_store(struct device *dev, struct device_attribute *attr,
 			     const char *buf, size_t count)
 {
 	struct fts_data *ts = dev_get_drvdata(dev);
 	int nodes = ts->tx * ts->rx;
-	bool resume;
+	int mode = 1;
+	bool resume = false;
+
+	if (sscanf(buf, "%d", &mode) != 1)
+		mode = 1;
 
 	mutex_lock(&ts->lock);
 
-	resume = ts->scanning;
-	if (resume) {
-		fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, 0x00);
-		msleep(50);	/* WAIT_AFTER_SENSEOFF */
-		fts_flush_fifo(ts);
+	if (mode == 2) {
+		resume = ts->scanning;
+		if (resume) {
+			fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, 0x00);
+			msleep(50);	/* WAIT_AFTER_SENSEOFF */
+			fts_flush_fifo(ts);
+		}
+	} else {
+		/* WAIT_FOR_FRESH_FRAMES */
+		msleep(200);
 	}
 
 	fts_frame_stats(ts, "raw", ts->raw_addr, nodes);
@@ -769,6 +788,52 @@ static ssize_t fts_raw_store(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 static DEVICE_ATTR(raw, 0200, NULL, fts_raw_store);
+
+/*
+ * fts_system_reset(): write 0x80 to ADDR_SYSTEM_RESET, wait for the FW to
+ * announce itself with a 0x03 CONTROLLER_READY event, then read the system
+ * info straight out of the framebuffer (readSysInfo(0), no A4 06 01 request).
+ *
+ * This is the vendor's whole fts_init(), and a real MIUI probe log shows that
+ * it is all the vendor ever does:
+ *
+ *     [ FTS ] fts_probe: Probe start
+ *     [ FTS ] FW VER = 0132   CONFIG VER = 004C   CX VER = FFFF
+ *     [ FTS ] AFE VER: CFG = 05 - CX = 05 - PANEL = 05
+ *     [ FTS ] fts_mode_handler: Sense ON
+ *
+ * No panel init, no full panel init, no ioff trim - ever.  The controller
+ * comes out of its own flash in a working state, which is why the panel init
+ * this driver used to insist on is the prime suspect for the AFE reading
+ * -13462 on every node and the FW reporting "mutual negative detect".
+ */
+static int fts_soft_reset(struct fts_data *ts)
+{
+	u8 val = SYSTEM_RESET_VALUE;
+	u8 ev[FTS_EVENT_SIZE];
+	int ret, i, ready = 0;
+
+	ret = fts_hw_write(ts, ADDR_SYSTEM_RESET, &val, 1);
+	dev_info(ts->dev, "soft reset: FA %08x 80 -> %d\n", ADDR_SYSTEM_RESET,
+		 ret);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < 30; i++) {
+		msleep(10);
+		if (!fts_read_one_event(ts, ev) &&
+		    ev[0] == FTS_EV_CONTROLLER_READY) {
+			ready = 1;
+			break;
+		}
+	}
+	dev_info(ts->dev, "soft reset: controller %s after %d ms\n",
+		 ready ? "ready" : "NOT ready", (i + 1) * 10);
+
+	fts_read_sysinfo(ts);
+
+	return 0;
+}
 
 /* ---------------- input ---------------- */
 
@@ -1294,7 +1359,7 @@ static ssize_t fts_enable_store(struct device *dev,
 	int val, ret = 0;
 	bool kick = false;
 
-	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 6)
+	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 7)
 		return -EINVAL;
 
 	/*
@@ -1400,6 +1465,27 @@ static ssize_t fts_enable_store(struct device *dev,
 			kick = true;
 		}
 		dev_info(dev, "enable 6: full init + ioff + gesture + scan %s\n",
+			 ret ? "FAILED" : "ok");
+		break;
+	case 7:
+		/*
+		 * Vendor parity: the controller is only soft reset and asked
+		 * for its system info, exactly like MIUI's probe does it.  No
+		 * panel init.  This is the configuration the AFE is supposed to
+		 * come up in.
+		 */
+		if (!ts->powered)
+			ret = fts_power_on(ts);
+		if (!ret)
+			ret = fts_soft_reset(ts);
+		if (!ret)
+			ret = fts_start_scan(ts);
+		if (!ret) {
+			ts->scanning = true;
+			ts->awake = true;
+			kick = true;
+		}
+		dev_info(dev, "enable 7: vendor parity reset + scanning %s\n",
 			 ret ? "FAILED" : "ok");
 		break;
 	}

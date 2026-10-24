@@ -359,3 +359,60 @@ getevent -p  ->  /dev/input/event5 name "fts"
 i.e. the vendor reports the panel resolution, not the 37x17 sensor matrix,
 and touch events do reach the framework. The controller, the panel and the
 flex are fine; the difference is on our side.
+
+## The vendor's own boot log (root on MIUI)
+
+MIUI is `user`/non-debuggable, but Magisk's `su` is present, so a direct
+`adb shell su -c dmesg` works - the earlier "no root" conclusion was wrong
+(PowerShell 5.1 mangles nested quotes in `su -c "..."`, which is what made it
+look like `su` was missing; a single-token command needs no quoting at all).
+
+What a real probe looks like:
+
+```
+[ FTS ] fts_probe: Probe start
+[ FTS ] parse_dt:fw_name: st_fts_j2_1.ftb / j2_2.ftb / j2_3.ftb
+[ FTS ] FW VER = 0132
+[ FTS ] CONFIG VER = 004C
+[ FTS ] CX VER = FFFF
+[ FTS ] AFE VER: CFG = 05 - CX = 05 - PANEL = 05
+[ FTS ] Lockdown:0x53,0x42,0x32,0x01,0x74,0x02,0x32,0x01
+[ FTS ] parseBinFile: FILE Fw Version = 0132
+[ FTS ] parseBinFile: FILE Config Version = 0000004C
+[ FTS ] parseBinFile: CX Version = FFFF
+[ FTS ] fts_mode_handler: Sense ON
+```
+
+Three things fall out of it:
+
+1. **`CX VER = FFFF` is normal.** MIUI reads the same value, so the CX data
+   is not missing on this unit. Our log printed `d[22..23]` as `cfg`; the real
+   CONFIG VER is `d[20..21]` = `004C` and `d[22..23]` is the config project id.
+2. **Our system info read matches MIUI byte for byte** - FW 0132, CFG 004C,
+   AFE 05/05/05, same lockdown code. The protocol side of this driver is done.
+3. **The probe does no panel init at all.** The whole sequence is
+   `fts_init` = soft reset (`FA 20000024 80`) + `readSysInfo(0)` (plain
+   framebuffer read, no `A4 06 01`) followed by
+   `fts_mode_handler` = `setScanMode(ACTIVE, 0x01)` + gesture feature.
+   There is no `A4 00 02`, no `A4 00 03`, no ioff trim.
+
+## The reference frame
+
+`cat /sys/bus/i2c/devices/3-0049/ms_raw` with root returns the vendor's own
+`MsTouchRaw,17,37` matrix. It is node specific and small, roughly -300..+340,
+with the first two columns larger (865..2201). That is what a healthy raw
+frame on this panel looks like - against the single repeated `-13462` this
+driver reads on every node.
+
+## Why this points at the panel init
+
+The full panel init is the one thing this driver does that the vendor does not,
+and the "mutual negative detect" storm plus the frozen raw frame both started
+right after the first one. p67 therefore adds
+
+```
+echo 7 > .../enable    soft reset + read sysinfo + scan, no panel init
+```
+
+which is the vendor's probe sequence, and keeps `enable 4/5/6` for comparison
+and for a controller that was already poked into a bad state.
