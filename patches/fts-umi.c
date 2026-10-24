@@ -77,6 +77,9 @@
 #define FTS_CMD_HW_REG		0xfa	/* read and write share the op code */
 #define FTS_CMD_READALL		0x86	/* + read FIFO_EVENT_SIZE bytes */
 #define FTS_CMD_SCAN_MODE	0xa0	/* + mode + scan mask */
+#define FTS_CMD_FEATURE		0xa2	/* + feature id + settings */
+
+#define FTS_FEAT_GESTURE	0x03
 
 #define FTS_CMD_SYSTEM		0xa4
 #define FTS_SYS_CMD_SPECIAL	0x00
@@ -119,16 +122,6 @@
 #define FTS_POLL_MS		20
 #define FTS_EVENTS_PER_POLL	6
 
-/*
- * The touch controller sits on the panel flex and shares the 3.3 V
- * "touch_vddio" rail with it.  Bringing it up while the command mode AMOLED is
- * still running its own power-on sequence leaves the panel black - seen twice,
- * both times when the controller was programmed early (probe here lands at
- * 6.6 s, the panel only sends its on-sequence at 7.3 s).  Probing the display
- * is done well before 10 s, so hold the controller off until past that.
- */
-#define FTS_BRINGUP_DELAY_MS	3000
-
 #define FTS_RAW_DUMP_DEFAULT	48
 
 struct fts_data {
@@ -147,7 +140,9 @@ struct fts_data {
 	unsigned int err_count;
 	u8 buf[FTS_DATA_SIZE];
 	struct delayed_work poll_work;
-	struct delayed_work bringup_work;
+	bool powered;
+	bool scanning;
+	bool irq_on;
 	bool awake;
 };
 
@@ -331,6 +326,38 @@ static int fts_read_one_event(struct fts_data *ts, u8 *ev)
 	return fts_xfer_n(ts, &cmd, 1, ev, FTS_EVENT_SIZE);
 }
 
+/*
+ * Drain the FIFO the way the vendor's fts_event_handler() does.
+ *
+ * This is the whole trick of the protocol: byte 7 of the *first* event carries
+ * the number of events still queued in its low 5 bits.  Reading a single event
+ * and walking away leaves the rest in the FIFO, and the controller keeps the
+ * interrupt line asserted until the FIFO has been emptied - which shows up as
+ * an interrupt storm and as touch events that never surface.
+ */
+static int fts_read_events(struct fts_data *ts, int *count)
+{
+	u8 cmd = FTS_CMD_READALL;
+	int ret, rest;
+
+	ret = fts_xfer_n(ts, &cmd, 1, ts->buf, FTS_EVENT_SIZE);
+	if (ret) {
+		*count = 0;
+		return ret;
+	}
+
+	rest = ts->buf[FTS_EVENT_SIZE - 1] & 0x1f;
+	if (rest > FTS_STACK_DEPTH - 1)
+		rest = FTS_STACK_DEPTH - 1;
+
+	if (rest)
+		ret = fts_xfer_n(ts, &cmd, 1, &ts->buf[FTS_EVENT_SIZE],
+				 FTS_EVENT_SIZE * rest);
+
+	*count = rest + 1;
+	return ret;
+}
+
 static int fts_set_scan_mode(struct fts_data *ts, u8 mode, u8 mask)
 {
 	u8 cmd[3] = { FTS_CMD_SCAN_MODE, mode, mask };
@@ -394,8 +421,16 @@ static void fts_parse_event(struct fts_data *ts, const u8 *ev)
 		dev_warn_ratelimited(ts->dev, "controller error %8phN\n", ev);
 		return;
 	default:
-		/* status / echo / user report / debug: not a touch, skip it so
-		 * the raw dump below is not eaten by command echoes */
+		/*
+		 * Status / echo / user report / debug.  These were silenced
+		 * while hunting log noise, but the controller reports at a few
+		 * hundred events a second and none of them is a touch, so the
+		 * content is exactly what has to be seen now.
+		 */
+		if (ts->dump_left > 0) {
+			ts->dump_left--;
+			dev_info(ts->dev, "ev %8phN\n", ev);
+		}
 		return;
 	}
 
@@ -422,21 +457,23 @@ static void fts_parse_event(struct fts_data *ts, const u8 *ev)
 static void fts_poll_work(struct work_struct *work)
 {
 	struct fts_data *ts = container_of(work, struct fts_data, poll_work.work);
-	u8 ev[FTS_EVENT_SIZE];
 	bool any = false;
-	int i, ret;
+	int i, ret, count = 0;
 
 	mutex_lock(&ts->lock);
 
-	for (i = 0; i < FTS_EVENTS_PER_POLL; i++) {
-		ret = fts_read_one_event(ts, ev);
-		if (ret) {
-			if (++ts->err_count <= 5)
-				dev_err(ts->dev, "event read failed: %d (%u)\n",
-					ret, ts->err_count);
-			break;
-		}
+	ret = fts_read_events(ts, &count);
+	if (ret) {
+		if (++ts->err_count <= 5)
+			dev_err(ts->dev, "event read failed: %d (%u)\n",
+				ret, ts->err_count);
+		count = 0;
+	} else {
 		ts->err_count = 0;
+	}
+
+	for (i = 0; i < count; i++) {
+		u8 *ev = &ts->buf[i * FTS_EVENT_SIZE];
 
 		if (ts->dbg_polls < 4) {
 			dev_info(ts->dev, "poll%u: %8phN\n", ts->dbg_polls, ev);
@@ -444,7 +481,7 @@ static void fts_poll_work(struct work_struct *work)
 		}
 
 		if (ev[0] == FTS_EV_NOEVENT)
-			break;
+			continue;
 
 		fts_parse_event(ts, ev);
 		any = true;
@@ -457,38 +494,67 @@ static void fts_poll_work(struct work_struct *work)
 
 	mutex_unlock(&ts->lock);
 
-	schedule_delayed_work(&ts->poll_work, msecs_to_jiffies(FTS_POLL_MS));
+	if (ts->scanning)
+		schedule_delayed_work(&ts->poll_work,
+				      msecs_to_jiffies(FTS_POLL_MS));
 }
 
 static irqreturn_t fts_irq_thread(int irq, void *data)
 {
-	static const u8 ier[] = { IER_ENABLE };
 	struct fts_data *ts = data;
-	u8 ev[FTS_EVENT_SIZE];
-	int ret;
+	bool any = false;
+	int i, ret, count = 0;
 
 	mutex_lock(&ts->lock);
 
-	ret = fts_read_one_event(ts, ev);
+	/* drain the whole FIFO, exactly like the vendor handler */
+	ret = fts_read_events(ts, &count);
 	if (ret) {
 		/*
-		 * A dead bus with a level-low interrupt means the handler would
-		 * be re-entered forever.  Complain a few times, then shut the
-		 * interrupt off so the log survives.
+		 * A dead bus with a level-low interrupt means the handler
+		 * would be re-entered forever.  Complain a few times, then
+		 * shut the interrupt off so the log survives.
 		 */
 		ts->err_count++;
+		count = 0;
 		if (ts->err_count <= 5)
 			dev_err(ts->dev, "event read failed: %d (%u)\n",
 				ret, ts->err_count);
 		else if (ts->err_count == 6) {
-			dev_err(ts->dev, "bus is not answering, disabling irq %d\n",
+			dev_err(ts->dev,
+				"bus is not answering, disabling irq %d\n",
 				ts->irq);
 			disable_irq_nosync(ts->irq);
 		}
 	} else {
 		ts->err_count = 0;
+	}
+
+	for (i = 0; i < count; i++) {
+		u8 *ev = &ts->buf[i * FTS_EVENT_SIZE];
+
+		if (ev[0] == FTS_EV_NOEVENT)
+			continue;
+
 		fts_parse_event(ts, ev);
-		fts_hw_write(ts, ADDR_IER, ier, sizeof(ier));
+		any = true;
+	}
+
+	if (any) {
+		input_mt_sync_frame(ts->input);
+		input_sync(ts->input);
+	}
+
+	/*
+	 * The FW clears IER itself once it has an event to hand over and then
+	 * waits for the host; without this re-arm it stops producing events
+	 * after the very first one.  Reading IER back after an enable always
+	 * returned 0x00, which is what made the missing re-arm visible.
+	 */
+	if (ts->powered) {
+		u8 en = IER_ENABLE;
+
+		fts_hw_write(ts, ADDR_IER, &en, 1);
 	}
 
 	mutex_unlock(&ts->lock);
@@ -560,38 +626,91 @@ static int fts_power_on(struct fts_data *ts)
 	/* drop whatever the controller queued while it was booting */
 	fts_flush_fifo(ts);
 
-	/* vendor mode_handler(): active scanning, multi touch mask */
-	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, FTS_SCAN_MT);
-	dev_info(ts->dev, "scan mode active: %d\n", ret);
-
+	ts->powered = true;
 	dev_info(ts->dev, "powered on\n");
 	return 0;
 }
 
 /*
- * Deferred bring-up.
+ * Powering the controller and enabling its sensing are two separate steps, and
+ * the second one is the one the panel objects to: the controller and the
+ * command mode AMOLED sit on the same flex and share the 3.3 V touch/vddio rail
+ * (vendor name disp_vddio_vreg).  Every build that let the controller actually
+ * run left the panel black, and deferring it until after the panel was up did
+ * not help, so the armed/dead distinction is exposed here instead of being
+ * guessed at with one reflash per attempt:
  *
- * The display has to own the flex and the 3.3 V rail while it powers itself up;
- * only after that is it safe to power and program the controller.  Doing this
- * from probe() - which runs a full second before the panel's on-sequence - was
- * what left the panel black.
+ *   echo 0 > .../enable    controller unpowered (the p43 state, panel safe)
+ *   echo 1 > .../enable    controller powered and handshaked, sensing off
+ *   echo 2 > .../enable    sensing on, events and input reporting active
  */
-static void fts_bringup_work(struct work_struct *work)
+static int fts_enable_interrupt(struct fts_data *ts)
 {
-	struct fts_data *ts = container_of(work, struct fts_data, bringup_work.work);
+	u8 en = IER_ENABLE;
+
+	return fts_hw_write(ts, ADDR_IER, &en, 1);
+}
+
+/*
+ * Bring sensing up the way the vendor's fts_init_sensing() does it:
+ *
+ *     mode_handler()            -> scan on, then the gesture feature
+ *     setScanMode(ACTIVE, 00)   -> sense off
+ *     WAIT_AFTER_SENSEOFF
+ *     setScanMode(ACTIVE, 01)   -> sense on
+ *     fts_enableInterrupt()     -> IER last
+ *
+ * A single 0xA0 00 01 does flip a controller register (0x2000004a goes 00 to
+ * 50), but the FW never produces touch events that way - it wants the explicit
+ * off/on cycle, and the interrupt armed only after that.
+ */
+static int fts_start_scan(struct fts_data *ts)
+{
+	static const u8 gesture[] = { FTS_CMD_FEATURE, FTS_FEAT_GESTURE,
+				      0x00, 0x00, 0x00, 0x03 };
 	int ret;
 
-	mutex_lock(&ts->lock);
-	ret = fts_power_on(ts);
-	mutex_unlock(&ts->lock);
+	fts_flush_fifo(ts);
 
-	if (ret) {
-		dev_err(ts->dev, "bring-up failed: %d\n", ret);
-		return;
+	/* vendor fts_mode_handler(), screen-on case: sense on, then gesture */
+	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, FTS_SCAN_MT);
+	if (ret)
+		return ret;
+	fts_send(ts, gesture, sizeof(gesture));
+
+	/*
+	 * vendor fts_init_sensing(): the FOD build always cycles the sensing
+	 * off and on again after the mode handler and waits
+	 * WAIT_AFTER_SENSEOFF (50 ms) in between.  Note it uses ACTIVE with a
+	 * zero mask here, not the low power mode.
+	 */
+	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, 0x00);
+	if (ret)
+		return ret;
+	msleep(50);
+	ret = fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, FTS_SCAN_MT);
+	if (ret)
+		return ret;
+
+	ret = fts_enable_interrupt(ts);
+	dev_info(ts->dev, "scan on: %d\n", ret);
+
+	return ret;
+}
+
+static void fts_power_off(struct fts_data *ts)
+{
+	if (ts->scanning) {
+		fts_set_scan_mode(ts, FTS_SCAN_MODE_LOW_POWER, 0);
+		ts->scanning = false;
 	}
 
-	ts->awake = true;
-	schedule_delayed_work(&ts->poll_work, msecs_to_jiffies(FTS_POLL_MS));
+	if (ts->powered) {
+		regulator_bulk_disable(ARRAY_SIZE(ts->supplies), ts->supplies);
+		ts->powered = false;
+	}
+
+	ts->awake = false;
 }
 
 /*
@@ -620,7 +739,7 @@ static ssize_t fts_cmd_store(struct device *dev, struct device_attribute *attr,
 		p++;
 	op = *p++;
 	if (op != 'w' && op != 'W' && op != 'r' && op != 'R' &&
-	    op != 'h' && op != 'H')
+	    op != 'h' && op != 'H' && op != 'x' && op != 'X')
 		return -EINVAL;
 	while (*p == ' ')
 		p++;
@@ -652,6 +771,25 @@ static ssize_t fts_cmd_store(struct device *dev, struct device_attribute *attr,
 		else
 			dev_info(dev, "hw r %08x len %d -> %*ph\n", vals[0],
 				 rdlen, rdlen, in);
+	} else if (op == 'x' || op == 'X') {
+		/* x <byte> [<byte>...] <readlen>: write, then read */
+		int wlen = nvals - 1, rdlen = vals[nvals - 1];
+
+		if (wlen < 1)
+			return -EINVAL;
+		if (rdlen < 1 || rdlen > (int)sizeof(in))
+			rdlen = sizeof(in);
+		if (wlen > (int)sizeof(out))
+			wlen = sizeof(out);
+		for (i = 0; i < wlen; i++)
+			out[i] = vals[i];
+
+		ret = fts_xfer_n(ts, out, wlen, in, rdlen);
+		if (ret)
+			dev_info(dev, "cmd x %d/%d -> %d\n", wlen, rdlen, ret);
+		else
+			dev_info(dev, "cmd x %d/%d -> %*ph\n", wlen, rdlen,
+				 rdlen, in);
 	} else {
 		int rdlen = nvals > 1 ? vals[1] : 8;
 
@@ -671,6 +809,70 @@ static ssize_t fts_cmd_store(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 static DEVICE_ATTR(cmd, 0200, NULL, fts_cmd_store);
+
+static ssize_t fts_enable_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct fts_data *ts = dev_get_drvdata(dev);
+	int val, ret = 0;
+	bool kick = false;
+
+	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 2)
+		return -EINVAL;
+
+	/*
+	 * The poll work and the irq thread both take this mutex, so they have
+	 * to be stopped before the lock is taken.
+	 */
+	if (val == 0) {
+		cancel_delayed_work_sync(&ts->poll_work);
+		ts->scanning = false;
+		if (ts->irq_on) {
+			disable_irq(ts->irq);
+			ts->irq_on = false;
+		}
+	}
+
+	mutex_lock(&ts->lock);
+
+	switch (val) {
+	case 0:
+		fts_power_off(ts);
+		dev_info(dev, "enable 0: controller unpowered\n");
+		break;
+	case 1:
+		if (!ts->powered) {
+			ret = fts_power_on(ts);
+			ts->awake = !ret;
+		}
+		dev_info(dev, "enable 1: powered %s\n", ret ? "FAILED" : "ok");
+		break;
+	case 2:
+		if (!ts->powered)
+			ret = fts_power_on(ts);
+		if (!ret)
+			ret = fts_start_scan(ts);
+		if (!ret) {
+			ts->scanning = true;
+			ts->awake = true;
+			kick = true;
+		}
+		dev_info(dev, "enable 2: scanning %s\n", ret ? "FAILED" : "ok");
+		break;
+	}
+
+	mutex_unlock(&ts->lock);
+
+	if (kick) {
+		enable_irq(ts->irq);
+		ts->irq_on = true;
+		schedule_delayed_work(&ts->poll_work, 0);
+	}
+
+	return ret ? ret : count;
+}
+static DEVICE_ATTR(enable, 0200, NULL, fts_enable_store);
 
 static int fts_probe(struct platform_device *pdev)
 {
@@ -741,12 +943,26 @@ static int fts_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to register input\n");
 
+	/*
+	 * The FW is interrupt driven: it raises the level-low line, clears IER
+	 * and waits for the host to drain the FIFO and re-arm it.  Polling
+	 * alone therefore never gets touch events.  The handler is installed
+	 * here but kept disabled until the controller is actually started, so
+	 * a floating or held line cannot storm the GIC while nothing is
+	 * powered.
+	 */
+	ret = devm_request_threaded_irq(dev, ts->irq, NULL, fts_irq_thread,
+					IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+					"fts-umi", ts);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to request irq %d\n",
+				     ts->irq);
+	disable_irq(ts->irq);
+
 	INIT_DELAYED_WORK(&ts->poll_work, fts_poll_work);
-	INIT_DELAYED_WORK(&ts->bringup_work, fts_bringup_work);
-	schedule_delayed_work(&ts->bringup_work,
-			      msecs_to_jiffies(FTS_BRINGUP_DELAY_MS));
 
 	device_create_file(dev, &dev_attr_cmd);
+	device_create_file(dev, &dev_attr_enable);
 
 	dev_info(dev, "%ux%u, %d slots, irq %d\n",
 		 ts->prop.max_x + 1, ts->prop.max_y + 1, FTS_MAX_FINGERS,
@@ -760,7 +976,15 @@ static void fts_remove(struct platform_device *pdev)
 	struct fts_data *ts = platform_get_drvdata(pdev);
 
 	cancel_delayed_work_sync(&ts->poll_work);
-	cancel_delayed_work_sync(&ts->bringup_work);
+
+	if (ts->irq_on) {
+		disable_irq(ts->irq);
+		ts->irq_on = false;
+	}
+
+	mutex_lock(&ts->lock);
+	fts_power_off(ts);
+	mutex_unlock(&ts->lock);
 }
 
 static int fts_suspend(struct device *dev)
@@ -768,7 +992,6 @@ static int fts_suspend(struct device *dev)
 	struct fts_data *ts = dev_get_drvdata(dev);
 
 	cancel_delayed_work_sync(&ts->poll_work);
-	cancel_delayed_work_sync(&ts->bringup_work);
 
 	mutex_lock(&ts->lock);
 	if (ts->awake) {
@@ -784,15 +1007,22 @@ static int fts_suspend(struct device *dev)
 static int fts_resume(struct device *dev)
 {
 	struct fts_data *ts = dev_get_drvdata(dev);
-	int ret;
+	int ret = 0;
 
 	mutex_lock(&ts->lock);
-	ret = fts_power_on(ts);
-	if (!ret)
-		ts->awake = true;
+	if (ts->powered) {
+		ret = fts_power_on(ts);
+		if (!ret)
+			ts->awake = true;
+	}
 	mutex_unlock(&ts->lock);
 
-	schedule_delayed_work(&ts->poll_work, msecs_to_jiffies(FTS_POLL_MS));
+	if (ts->scanning) {
+		enable_irq(ts->irq);
+		ts->irq_on = true;
+		schedule_delayed_work(&ts->poll_work,
+				      msecs_to_jiffies(FTS_POLL_MS));
+	}
 
 	return ret;
 }

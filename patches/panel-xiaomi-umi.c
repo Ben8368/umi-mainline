@@ -511,6 +511,56 @@ static const struct backlight_ops umi_panel_bl_ops = {
 	.update_status = umi_panel_bl_update,
 };
 
+/*
+ * 面板 IC 的调试口。
+ *
+ *   echo 52     > dbg    用 DCS 回读面板寄存器（0x52 是当前亮度）
+ *   echo da     > dbg    回读面板 ID
+ *   echo 1      > kick   强制重发一次亮度命令
+ *
+ * 背光是走 DCS 0x51 写进面板 IC 的，没有外部 PWM/WLED，所以 sysfs 里的
+ * brightness 只是软件值，并不证明命令送达。屏幕黑的时候必须能读到面板里
+ * 到底存了什么，才能分清「亮度没写进去」和「面板根本没工作」。
+ */
+static ssize_t umi_panel_dbg_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
+	struct umi_panel *ctx = mipi_dsi_get_drvdata(dsi);
+	unsigned int cmd = 0, cnt = 1;
+	u8 tmp[16] = { 0 };
+	int ret, len;
+
+	if (sscanf(buf, "%x %x", &cmd, &cnt) < 1 || cmd > 0xff)
+		return -EINVAL;
+	if (cnt < 1 || cnt > sizeof(tmp))
+		cnt = 1;
+
+	ret = mipi_dsi_dcs_read(ctx->dsi, cmd, tmp, cnt);
+	len = ret > 0 ? ret : 0;
+	dev_info(dev, "dcs r %02x -> %d %*ph\n", cmd, ret, len, tmp);
+
+	return count;
+}
+static DEVICE_ATTR(dbg, 0200, NULL, umi_panel_dbg_store);
+
+static ssize_t umi_panel_kick_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
+	struct umi_panel *ctx = mipi_dsi_get_drvdata(dsi);
+	int level, ret;
+
+	level = backlight_get_brightness(ctx->bl);
+	ret = mipi_dsi_dcs_set_display_brightness(ctx->dsi, level);
+	dev_info(dev, "kick brightness %d -> %d\n", level, ret);
+
+	return count;
+}
+static DEVICE_ATTR(kick, 0200, NULL, umi_panel_kick_store);
+
 /* ------------------------------------------------------------------ DT */
 
 static int umi_panel_parse_dt(struct umi_panel *ctx)
@@ -734,6 +784,10 @@ static int umi_panel_probe(struct mipi_dsi_device *dsi)
 	}
 
 	dev_info(&dsi->dev, "panel attached (4 lane, cmd mode, RGB888)\n");
+
+	device_create_file(&dsi->dev, &dev_attr_dbg);
+	device_create_file(&dsi->dev, &dev_attr_kick);
+
 	return 0;
 }
 
