@@ -64,6 +64,7 @@
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
 #include <linux/interrupt.h>
+#include <linux/math64.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -94,9 +95,27 @@
 #define FTS_SYS_CMD_FORCE_CAL	0x02
 #define FTS_SYS_CMD_CX_TUNING	0x03
 #define FTS_SYS_CMD_LOAD_DATA	0x06	/* + one byte of load type */
+#define FTS_SYS_CMD_SPECIAL_TUNING	0x08	/* + two byte option */
 #define FTS_SPECIAL_FIFO_FLUSH	0x01
 #define FTS_SPECIAL_PANEL_INIT	0x02
 #define FTS_SPECIAL_FULL_INIT	0x03
+
+/*
+ * Options for FTS_SYS_CMD_SPECIAL_TUNING.  0x02 is SPECIAL_TUNING_IOFF, the
+ * per channel input offset trim of the analog front end.
+ *
+ * The vendor runs it in front of every raw frame dump (production_test_ito(),
+ * fts_mutual_raw_ito_show(), hover autotune) but never on the normal boot path,
+ * because a controller whose compensation is intact does not need it.  This
+ * unit reads -13462 on every single mutual node and the FW itself flags that as
+ * FORCE_CAL / 0x01 "mutual negative detect", which is what a missing or
+ * mismatched offset trim looks like.
+ *
+ * This is an internal DAC calibration, not a supply setting: no rail, current
+ * limit or OPP is touched.  The result lives in RAM only - nothing is saved to
+ * the controller flash - so a power cycle throws it away again.
+ */
+#define FTS_TUNING_IOFF		0x02
 
 /*
  * Load types for FTS_SYS_CMD_LOAD_DATA (ftsSoftware.h load_opt).  This is a
@@ -183,6 +202,13 @@ struct fts_data {
 	bool scanning;
 	bool irq_on;
 	bool awake;
+	/* panel geometry and frame addresses, filled in from the FW sys info */
+	u16 tx;
+	u16 rx;
+	u16 raw_addr;
+	u16 filt_addr;
+	u16 str_addr;
+	u16 base_addr;
 };
 
 /* ---------------- bit-banged I2C ---------------- */
@@ -457,10 +483,21 @@ static void fts_read_sysinfo(struct fts_data *ts)
 		 d[22] | (d[23] << 8), d[24] | (d[25] << 8),
 		 d[28], d[29], d[30]);
 
+	ts->tx = d[84];
+	ts->rx = d[85];
+	ts->raw_addr = d[136] | (d[137] << 8);
+	ts->filt_addr = d[138] | (d[139] << 8);
+	ts->str_addr = d[140] | (d[141] << 8);
+	ts->base_addr = d[142] | (d[143] << 8);
+
 	dev_info(ts->dev,
-		 "sysinfo res %ux%u tx %u rx %u key %u force %u raw@%04x\n",
+		 "sysinfo res %ux%u tx %u rx %u key %u force %u protocol %02x\n",
 		 d[80] | (d[81] << 8), d[82] | (d[83] << 8),
-		 d[84], d[85], d[86], d[87], d[136] | (d[137] << 8));
+		 d[84], d[85], d[86], d[87], d[31]);
+
+	dev_info(ts->dev,
+		 "sysinfo frames raw@%04x flt@%04x str@%04x base@%04x\n",
+		 ts->raw_addr, ts->filt_addr, ts->str_addr, ts->base_addr);
 }
 
 /* one 8 byte event out of the FIFO: { 0x86 } then a read */
@@ -587,6 +624,151 @@ static int fts_panel_init(struct fts_data *ts, u8 type)
 	/* IER is left alone here too, same as everywhere else in this driver */
 	return 0;
 }
+
+/*
+ * SPECIAL_TUNING_IOFF - trim the analog front end input offset.
+ *
+ * The vendor's own frame dump helpers all start with this, and then read a raw
+ * frame whose nodes differ from each other.  Ours come back as one repeated
+ * value, which is the difference this call is meant to make.
+ */
+static int fts_ioff_trim(struct fts_data *ts)
+{
+	u8 cmd[4] = { FTS_CMD_SYSTEM, FTS_SYS_CMD_SPECIAL_TUNING,
+		      FTS_TUNING_IOFF, 0x00 };
+	int ret;
+
+	ret = fts_send(ts, cmd, sizeof(cmd));
+	dev_info(ts->dev, "ioff trim: A4 08 02 00 -> %d\n", ret);
+	if (!ret)
+		msleep(100);
+
+	return ret;
+}
+
+/*
+ * The gesture feature the vendor writes right after sense on:
+ *
+ *     u8 gesture_cmd[6] = { 0xA2, 0x03, 0x00, 0x00, 0x00, 0x03 };
+ *     setScanMode(SCAN_MODE_ACTIVE, 0x01);
+ *     fts_write_dma_safe(gesture_cmd, 6);
+ *
+ * i.e. FTS_CMD_FEATURE, FEAT_SEL_GESTURE, four bytes of gesture mask.  Earlier
+ * builds sent it too, but always together with the interrupt-enable writes
+ * that were flooding the FW, so the combination has not been measured on its
+ * own yet.
+ */
+static int fts_gesture_on(struct fts_data *ts)
+{
+	u8 cmd[6] = { FTS_CMD_FEATURE, FTS_FEAT_GESTURE, 0x00, 0x00, 0x00, 0x03 };
+	int ret;
+
+	ret = fts_send(ts, cmd, sizeof(cmd));
+	dev_info(ts->dev, "gesture feature: A2 03 00 00 00 03 -> %d\n", ret);
+
+	return ret;
+}
+
+/* the framebuffer read is a repeated start per chunk, like READ_CHUNK does */
+static int fts_fb_read_chunks(struct fts_data *ts, u16 addr, u8 *buf, int len)
+{
+	int done = 0, ret;
+
+	while (done < len) {
+		int chunk = min(len - done, 256);
+
+		ret = fts_fb_read(ts, addr + done, buf + done, chunk);
+		if (ret)
+			return ret;
+		done += chunk;
+	}
+
+	return 0;
+}
+
+/*
+ * Print one mutual frame as min / max / average plus its first samples.
+ *
+ * A live capacitance matrix never has min == max: every node sits at its own
+ * offset.  One repeated value over all 629 nodes is the signature of a frame
+ * that nothing sampled, and that is the whole question this attribute answers.
+ */
+static void fts_frame_stats(struct fts_data *ts, const char *name, u16 addr,
+			    int nodes)
+{
+	char head[80];
+	int i, ret, off = 0;
+	s16 v, lo = 32767, hi = -32768;
+	s64 sum = 0;
+	u8 *buf;
+
+	if (!nodes || !addr)
+		return;
+
+	buf = kzalloc(nodes * 2, GFP_KERNEL);
+	if (!buf)
+		return;
+
+	ret = fts_fb_read_chunks(ts, addr, buf, nodes * 2);
+	if (ret) {
+		dev_info(ts->dev, "%s @%04x read failed %d\n", name, addr, ret);
+		kfree(buf);
+		return;
+	}
+
+	for (i = 0; i < nodes; i++) {
+		v = (s16)(buf[i * 2] | (buf[i * 2 + 1] << 8));
+		if (v < lo)
+			lo = v;
+		if (v > hi)
+			hi = v;
+		sum += v;
+		if (i < 8)
+			off += scnprintf(head + off, sizeof(head) - off, " %d",
+					 v);
+	}
+
+	dev_info(ts->dev, "%s @%04x n %d min %d max %d avg %lld head%s\n",
+		 name, addr, nodes, lo, hi, div_s64(sum, nodes), head);
+	kfree(buf);
+}
+
+/*
+ * Read the raw, filter and baseline frames the way the vendor does it: sense
+ * off, wait WAIT_AFTER_SENSEOFF, flush the FIFO, then read the memory.
+ *
+ * This is the one thing the earlier builds got wrong: they asked for a sync
+ * frame while the scan was running.  The FW then does answer with a counter
+ * bump, but the frame buffer it hands out is not the fresh matrix.
+ */
+static ssize_t fts_raw_store(struct device *dev, struct device_attribute *attr,
+			     const char *buf, size_t count)
+{
+	struct fts_data *ts = dev_get_drvdata(dev);
+	int nodes = ts->tx * ts->rx;
+	bool resume;
+
+	mutex_lock(&ts->lock);
+
+	resume = ts->scanning;
+	if (resume) {
+		fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, 0x00);
+		msleep(50);	/* WAIT_AFTER_SENSEOFF */
+		fts_flush_fifo(ts);
+	}
+
+	fts_frame_stats(ts, "raw", ts->raw_addr, nodes);
+	fts_frame_stats(ts, "flt", ts->filt_addr, nodes);
+	fts_frame_stats(ts, "base", ts->base_addr, nodes);
+
+	if (resume)
+		fts_set_scan_mode(ts, FTS_SCAN_MODE_ACTIVE, FTS_SCAN_MT);
+
+	mutex_unlock(&ts->lock);
+
+	return count;
+}
+static DEVICE_ATTR(raw, 0200, NULL, fts_raw_store);
 
 /* ---------------- input ---------------- */
 
@@ -903,8 +1085,6 @@ static int fts_power_on(struct fts_data *ts)
  */
 static int fts_start_scan(struct fts_data *ts)
 {
-	static const u8 gesture[] = { FTS_CMD_FEATURE, FTS_FEAT_GESTURE,
-				      0x00, 0x00, 0x00, 0x03 };
 	int ret;
 
 	fts_flush_fifo(ts);
@@ -941,8 +1121,22 @@ static int fts_start_scan(struct fts_data *ts)
 	if (ret)
 		return ret;
 
-	fts_send(ts, gesture, sizeof(gesture));
-
+	/*
+	 * ★ No gesture write here.
+	 *
+	 * The vendor sends A2 03 00 00 00 03 right after turning sensing on,
+	 * but on this unit that write knocks the scan back down: measured on
+	 * the register at 0x2000004a,
+	 *
+	 *     A0 00 00 -> A0 00 01 alone        0x2000004a = 0x50  (scanning)
+	 *     A0 00 00 -> A0 00 01 -> A2 03 ... 0x2000004a = 0x00  (stopped)
+	 *     then A0 00 01 again by hand       0x2000004a = 0x50  (scanning)
+	 *
+	 * so the scan command is fine and the gesture feature write is what
+	 * turns it back off.  Gestures are not supported by this driver yet,
+	 * so dropping the write costs nothing and keeps the controller in the
+	 * only state that can produce touch events.
+	 */
 	dev_info(ts->dev, "scan on\n");
 
 	return 0;
@@ -1100,7 +1294,7 @@ static ssize_t fts_enable_store(struct device *dev,
 	int val, ret = 0;
 	bool kick = false;
 
-	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 4)
+	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 6)
 		return -EINVAL;
 
 	/*
@@ -1170,6 +1364,42 @@ static ssize_t fts_enable_store(struct device *dev,
 			kick = true;
 		}
 		dev_info(dev, "enable 4: full panel init + scanning %s\n",
+			 ret ? "FAILED" : "ok");
+		break;
+	case 5:
+		if (!ts->powered)
+			ret = fts_power_on(ts);
+		if (!ret)
+			ret = fts_panel_init(ts, FTS_SPECIAL_FULL_INIT);
+		if (!ret)
+			ret = fts_ioff_trim(ts);
+		if (!ret)
+			ret = fts_start_scan(ts);
+		if (!ret) {
+			ts->scanning = true;
+			ts->awake = true;
+			kick = true;
+		}
+		dev_info(dev, "enable 5: full init + ioff trim + scanning %s\n",
+			 ret ? "FAILED" : "ok");
+		break;
+	case 6:
+		if (!ts->powered)
+			ret = fts_power_on(ts);
+		if (!ret)
+			ret = fts_panel_init(ts, FTS_SPECIAL_FULL_INIT);
+		if (!ret)
+			ret = fts_ioff_trim(ts);
+		if (!ret)
+			ret = fts_start_scan(ts);
+		if (!ret)
+			ret = fts_gesture_on(ts);
+		if (!ret) {
+			ts->scanning = true;
+			ts->awake = true;
+			kick = true;
+		}
+		dev_info(dev, "enable 6: full init + ioff + gesture + scan %s\n",
 			 ret ? "FAILED" : "ok");
 		break;
 	}
@@ -1358,6 +1588,7 @@ static int fts_probe(struct platform_device *pdev)
 	device_create_file(dev, &dev_attr_enable);
 	device_create_file(dev, &dev_attr_frame);
 	device_create_file(dev, &dev_attr_dbg);
+	device_create_file(dev, &dev_attr_raw);
 
 	dev_info(dev, "%ux%u, %d slots, irq %d\n",
 		 ts->prop.max_x + 1, ts->prop.max_y + 1, FTS_MAX_FINGERS,

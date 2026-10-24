@@ -292,3 +292,70 @@ A4 01 xx  interrupt ctrl  the old "load data" mistake, do not send
 A4 06 xx  load data       safe, this is how frames are requested
 ```
 
+
+## p66 - ioff trim, gesture feature, frame statistics
+
+Three new tools, all driven from `enable` and one new attribute, so a whole
+experiment fits into a single boot:
+
+```
+echo 4 > .../enable   full panel init + scan          (unchanged)
+echo 5 > .../enable   full init + ioff trim + scan
+echo 6 > .../enable   full init + ioff trim + gesture + scan
+echo 1 > .../raw      stop scan, read raw/flt/base, restart scan
+```
+
+`raw` prints one line per frame: node count, min, max, average and the first
+eight samples. `min == max` over all 629 nodes is the whole story of this
+bring-up: a live capacitance matrix never looks like that.
+
+### What the build measured
+
+```
+sysinfo frames raw@9148 flt@4904 str@4f40 base@5d82
+raw  @9148 n 629 min -13462 max -13462 avg -13462 head -13462 -13462 ...
+base @5d82 n 629 min -13462 max -13462 avg -13462 head -13462 -13462 ...
+flt  @4904 n 629 min -32742 max  32751 avg    470 head 19997 4045 20475 ...
+```
+
+Both SYS_CMD_SPECIAL_TUNING / SPECIAL_TUNING_IOFF (`A4 08 02 00`) and the
+gesture feature the vendor writes right after sense on (`A2 03 00 00 00 03`)
+are accepted by the controller (both return 0) and change nothing: raw and
+baseline stay at one repeated -13462, which is also what the FW complains
+about as FORCE_CAL / 0x01 "mutual negative detect". The filter frame is
+uninitialised memory - it does not change between reads either, so it is not
+a live matrix.
+
+So the analog front end is not the lever. What is left is the FW's own panel
+(CX) data, i.e. whether it ever ran a real mutual scan for this panel.
+
+### New display safety fact
+
+Running the full panel init **twice in one boot** wedges the DSI:
+
+```
+[drm:dpu_encoder_frame_done_timeout] [dpu error]enc32 frame done timeout
+dsi_cmds2buf_tx: cmd dma tx failed, type=0x15, data0=0xfc, len=4, ret=-110
+panel-xiaomi-umi: on-sequence: packet 37 dtype 0x15 failed (-110)
+```
+
+and this time `repower` did **not** recover it - the re-sent on-sequence dies
+with -110 because the command DMA is already stuck. Only a reboot brought the
+panel back. Rule for the next builds: at most one panel init per boot, and
+`repower` is not a general escape hatch any more.
+
+### Vendor reference, from a booted MIUI
+
+MIUI is locked down (`ro.build.type=user`, `ro.debuggable=0`, no `su`, dmesg
+and sysfs touch nodes denied to the `shell` user), so the vendor's raw frame
+dump is out of reach. What could be read without root:
+
+```
+getevent -p  ->  /dev/input/event5 name "fts"
+                 ABS 0x35 X 0..1079      ABS 0x36 Y 0..2339
+                 ABS 0x30/0x31 area, ABS 0x39 tracking id
+```
+
+i.e. the vendor reports the panel resolution, not the 37x17 sensor matrix,
+and touch events do reach the framework. The controller, the panel and the
+flex are fine; the difference is on our side.
