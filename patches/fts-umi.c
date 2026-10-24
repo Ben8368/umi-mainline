@@ -581,6 +581,23 @@ static int fts_power_on(struct fts_data *ts)
 		dev_err(ts->dev, "failed to enable supplies: %d\n", ret);
 		return ret;
 	}
+
+	/*
+	 * The vendor driver does not stop at enabling the rails, it also calls
+	 * regulator_set_load() on both of them (62000 uA on avdd, 20000 uA on
+	 * vdd).  On Qualcomm that is a vote that moves the regulator out of its
+	 * low power mode.  Enabling only is what mainline would do naturally,
+	 * and that may well be why the analog front end never starts sampling:
+	 * the digital side answers perfectly while no frame is ever produced.
+	 * No voltage is programmed here, only the operating mode.
+	 */
+	ret = regulator_set_mode(ts->supplies[1].consumer, REGULATOR_MODE_FAST);
+	if (ret)
+		dev_info(ts->dev, "vdd set_mode: %d\n", ret);
+	ret = regulator_set_mode(ts->supplies[0].consumer, REGULATOR_MODE_FAST);
+	if (ret)
+		dev_info(ts->dev, "avdd set_mode: %d\n", ret);
+
 	msleep(20);
 
 	/*
