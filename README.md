@@ -189,14 +189,24 @@ are enabled and left at the value the bootloader programmed.
 ## 中文速览
 
 小米 10（umi / SM8250）主线内核移植。目前已经能启动、点亮 1080×2340 屏幕、
-调亮度、熄屏再亮、**触摸可用**、**Adreno 650 初始化成功**（devfreq 305–587 MHz）。
-全程只 `fastboot boot`，不写任何分区。
+调亮度、熄屏再亮、**触摸可用**、**Adreno 650 可用**（GL 4.6 / Vulkan 1.3，
+devfreq 305–587 MHz）、**WiFi 可用**（MAC 固定）、**KDE Plasma Mobile 开机直入**，
+另有电量计 / 充电 / 快充驱动。全程只 `fastboot boot`，不写任何分区。
 
-编译：`wsl -d umi -u root -e sh scripts/build.sh`
-initramfs（GPU 固件要打进去）：`wsl -d umi -u root -e sh scripts/mkinitramfs.sh`
-打包：`python tools/pack-umi.py --name p16-touch`
-上机：`adb reboot bootloader` → `fastboot boot out/boot-umi-p16-touch.img`
+**一张镜像搞定，别再按功能分镜像：**
 
-踩坑记录在 `docs/`：`DISPLAY.md`（面板/DSC/DSI 包格式）、`TOUCH.md`（触摸，
-含 §12 的 boost 电源定案）、`GPU.md`（Adreno 650 + 固件/initramfs）、
-`TESTLOG.md`（每一次上机的实测日志）、`DIAGNOSIS.md`、`HARDWARE.md`。
+```sh
+wsl -d umi -u root -- sh /mnt/d/project/UMI-mainline/scripts/mkimage.sh
+# -> out/boot-umi.img
+
+fastboot boot out\boot-umi.img
+```
+
+`scripts/mkimage.sh` = `build.sh`（编内核 + DTB）+ `pack-umi.py`（打包），
+里面同时含面板 / 触摸 / GPU / WiFi / 电量计充电。`out/archive/` 里那些
+`boot-umi-*.img` 是历史实验对照，平时不用管。
+
+踩坑记录在 `docs/`：`BUILD.md`（构建与引导）、`DISPLAY.md`（面板/DSC/DSI）、
+`TOUCH.md`（触摸，§12 boost 电源 / §13 fb-blank 死锁 / §14 厂商驱动）、
+`GPU.md`（Adreno 650 + 固件/initramfs + fastfetch）、`WIFI.md`、`KDE.md`、
+`BATTERY.md`、`TESTLOG.md`（每次上机的实测日志）、`DIAGNOSIS.md`、`HARDWARE.md`。
