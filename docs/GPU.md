@@ -135,16 +135,46 @@ OpenGL ES profile version:   OpenGL ES 3.2 Mesa 26.2.5-arch1.1
 
 即 **GL 4.6 / GLES 3.2 硬件加速可用**（`kgsl_dri.so` + `renderD128`）。
 
+### 5.1 Vulkan：turnip 也在仓库里，装完就能用
+
+Arch Linux ARM 的 `extra` 里**有** `vulkan-freedreno`（就是我一开始以为没有的那个）：
+
+```sh
+pacman -S --needed --disable-sandbox vulkan-freedreno vulkan-tools vkmark
+```
+
+`vulkaninfo --summary`：
+
+```
+GPU0:
+    apiVersion    = 1.3.354
+    driverVersion = 26.2.5
+    vendorID      = 0x5143          (Mesa)
+    deviceID      = 0x6050002
+    deviceType    = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+    deviceName    = Turnip Adreno (TM) 650
+    driverID      = DRIVER_ID_MESA_TURNIP
+    driverName    = turnip Mesa driver
+    driverInfo    = Mesa 26.2.5-arch1.1
+```
+
+`/usr/share/vulkan/icd.d/freedreno_icd.json` 已就位，**Vulkan 1.3 可用**。
+
+一个小坑：`vkmark 2025.01` 在 Vulkan 1.4 的 loader 下会直接
+`Error: given UUID representation has wrong size!`（vkmark 自己解析
+`VkPhysicalDeviceIDProperties` 的 bug，不是 GPU 的问题），想要跑分用别的
+工具（`vkpeak`、`vkcube` 等）。
+
 ## 6. 还没有的
 
-- **Vulkan（turnip）没装**：Arch 仓库里没有 `vulkan-freedreno`，`/usr/share/vulkan/icd.d/`
-  是空的；要 `vulkaninfo` 得自己编 mesa 的 turnip 或者等包。
 - **没有 GPU cooling device**：devfreq 不会因为过热降频，满载请自己盯温度。
   上游 `sm8250.dtsi` 里 `gpu` 有 `#cooling-cells`，但没接 thermal zone。
 - 超频档（670/800/900 MHz）没开：`gpu_opp_table` 里 670 MHz 需要
   `opp-supported-hw = <0xa>`，取决 `gpu_speed_bin` 熔丝；默认 587 MHz 是
   原厂最稳档（和 misaka 那边 `umi-gpu-maxfreq` 的结论一致：别钉 800）。
 - GMU 的 `rscc`/`gmu_pdc` 走的是 `sm8250.dtsi` 里的地址，未做额外校验。
+- 没有合成器/桌面，`vkcube` 这类要 surface 的程序暂时没有地方画（用
+  `--winsys=headless` 或等 Wayland 起来）。
 
 ## 7. fastfetch 里看不到 GPU 的原因
 
