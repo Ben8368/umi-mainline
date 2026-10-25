@@ -6,7 +6,7 @@
 #   ... --no-usb-console            不带 USB 串口 + U盘（默认带）
 #   ... --reboot 60                 到点自动重启（方便反复试；默认不重启）
 #   ... --dump-partition sda15      把 log 也写进 /dev/sda15（用 TWRP 读回来，谨慎使用）
-#   ... --test-panic 60             N 秒后自动画一次 panic 屏（二维码自测，默认 60 秒）
+#   ... --test-panic 60             N 秒后自动画一次 panic 屏（二维码自测；默认不做）
 #   ... --no-panic-test             不做这个自测
 #   ... --root /dev/sda34           切根到真正的 rootfs（默认就是这个，Arch 装在 userdata）
 #   ... --rootfstype ext4           根文件系统类型（默认 ext4）
@@ -22,7 +22,10 @@ BB=${BB:-/tmp/armroot/bin/busybox.static}
 USB=1
 REBOOT=""
 DUMPPART=""
-PANICTEST="60"
+# 默认**不做** panic 屏自测：那会在启动后 N 秒把整块屏刷成 drm_panic 的二维码
+# （看起来就是满屏色块），日常使用/给别人看都不合适。要看就显式传
+# `--test-panic 60`。
+PANICTEST=""
 ROOTDEV="/dev/sda34"
 ROOTFSTYPE="ext4"
 while [ $# -gt 0 ]; do
