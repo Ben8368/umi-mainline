@@ -674,6 +674,20 @@ static int umi_panel_parse_dt(struct umi_panel *ctx)
 	of_property_read_u32(np, "xiaomi,v-pulse-width", &c->vpw);
 	of_property_read_u32(np, "xiaomi,physical-width-mm", &c->width_mm);
 	of_property_read_u32(np, "xiaomi,physical-height-mm", &c->height_mm);
+	/*
+	 * 下游 DT 里这两个属性的单位是 **0.1 mm**，不是 mm：本机这块 6.67" 的
+	 * AMOLED 是真的 71.0 x 153.7 mm，而 dump 出来的值是 710 / 1537。
+	 *
+	 * 直接当 mm 用的话 connector->display_info 会报 710x1537 mm，也就是
+	 * 「67 寸屏」—— KWin/kscreen 按这个算 DPI，于是默认缩放 1.0，桌面上的
+	 * 东西小到点不动。除以 10 之后 Plasma Mobile 的默认缩放就正常了。
+	 *
+	 * 小于 100 的值当成已经是 mm（防止有人手写 DT 时直接写 71）。
+	 */
+	if (c->width_mm >= 100)
+		c->width_mm /= 10;
+	if (c->height_mm >= 100)
+		c->height_mm /= 10;
 	of_property_read_u32(np, "xiaomi,clockrate", &c->clockrate);
 	of_property_read_u32(np, "xiaomi,bl-min", &c->bl_min);
 	of_property_read_u32(np, "xiaomi,bl-max", &c->bl_max);

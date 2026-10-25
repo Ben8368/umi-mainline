@@ -32,8 +32,10 @@ partition — the kernel is always loaded into RAM with `fastboot boot`.
 | pstore / ramoops | **works** | last crash survives a reboot |
 | CPU / clock / regulator | **partial** | boots with `clk_ignore_unused`, `pd_ignore_unused`, `regulator_ignore_unused` |
 | GPU (Adreno 650) | **works** | `gpu-initialized: 1`, devfreq 305–587 MHz; `a650_*` firmware must be in the initramfs, see `docs/GPU.md` |
-| Wi-Fi / BT | no | pins live in the TLMM *north* tile, not reachable yet |
-| Rootfs on UFS | no | needs a partition write, deliberately not done |
+| Wi-Fi (QCA6390) | **works** | `sm8250-xiaomi-umi-wifi.dts` + `ath11k`, MAC pinned `00:03:7f:12:a4:a4`, see `docs/WIFI.md` §14 |
+| Vulkan / OpenGL | **works** | turnip (`vulkan-freedreno`) + freedreno: Vulkan 1.3.354, GL 4.6 / GLES 3.2 (`FD650`), see `docs/GPU.md` §5.1 |
+| KDE Plasma Mobile | **works** | 6.8.1 on Wayland (kwin_wayland, scale 2.5), boot straight into it; see `docs/KDE.md` |
+| Rootfs on UFS | **works** | 223 GiB ext4 on userdata (`/dev/sda34`) |
 | 90 Hz mode | no | second timing exists in the panel node, not enabled |
 
 ## Hardware
