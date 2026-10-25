@@ -25,11 +25,20 @@
  *   - irq   : GPIO39, level low
  *             vendor: fts,irq-gpio = <&tlmm 0x27 0x2008>
  *
- * Supply mapping copied from the working DTS:
- *   vdd  (bus / IO)  -> touch_vddio_vreg   (GPIO69 gated rail)
- *   avdd (power)     -> vreg_l1c_1p8       (1.8 V)
- * The driver enables vdd first, then avdd, and only ever programs avdd, so
- * this is the order the working stack ends up with.
+ * Supply mapping, re-verified against the vendor DT (dump/downstream.dts,
+ * fts@49) and against the running kernel:
+ *
+ *   vdd  (bus / IO, 1.8 V) -> vreg_l1c_1p8
+ *       = RPMH resource LDOc1.  The vendor DT calls the very same resource
+ *       pm8150a_l1 (aliases L1C = ".../rpmh-regulator-ldoc1/regulator-
+ *       pm8150a-l1"); mainline simply labels pmic-id "c" as PM8150L.  At
+ *       runtime the consumer shows up as "13-0049-vdd" on vreg_l1c_1p8.
+ *   avdd (power, 3.3 V)    -> touch_vddio_vreg  (GPIO69 gated rail)
+ *       = the vendor's disp_vddio_vreg (gpio = <&tlmm 0x45>), shared with
+ *       the display flex.  The vendor driver sets it to 3300000 uV.
+ *
+ * The vendor power-up order is enable(vdd) -> set_voltage(avdd) ->
+ * enable(avdd); fts_power_on() in fts521/fts.c does exactly that.
  */
 
 #include <dt-bindings/gpio/gpio.h>
@@ -60,6 +69,25 @@
 		drive-strength = <2>;
 		bias-pull-down;
 		input-enable;
+	};
+
+	/*
+	 * Reset is driven through gpiod (fts,reset-gpio / reset-gpios), so the
+	 * pin state only has to put the pad into GPIO mode - no output-* here,
+	 * that would fight the descriptor.
+	 */
+	ts_rst_active: ts-rst-active-state {
+		pins = "gpio38";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	ts_rst_sleep: ts-rst-sleep-state {
+		pins = "gpio38";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
 	};
 };
 
@@ -105,9 +133,33 @@
 		interrupt-parent = <&tlmm>;
 		interrupts = <39 IRQ_TYPE_LEVEL_LOW>;
 
-		pinctrl-names = "pmx_ts_active", "pmx_ts_suspend";
-		pinctrl-0 = <&ts_int_active>;
-		pinctrl-1 = <&ts_int_sleep>;
+		/*
+		 * Name the states after what the drivers actually look up.
+		 *
+		 * fts521/fts.h redefines the kernel's state names:
+		 *
+		 *     #define PINCTRL_STATE_ACTIVE  "default"
+		 *     #define PINCTRL_STATE_SUSPEND "sleep"
+		 *
+		 * so fts521/fts.c looks up "default" and "sleep" (not
+		 * "active"/"suspend").  The "default" lookup is a dev_err and
+		 * used to print "Can not lookup default pinstate -19"; the
+		 * "sleep" one is a dev_dbg, so it failed silently and only
+		 * "[ FTS ] fts_probe: Failed to init pinctrl" was left behind.
+		 *
+		 * pinctrl_bind_pins() in drivers/base/pinctrl.c also wants a
+		 * "default" state.  The vendor (Xiaomi) driver spelling
+		 * "pmx_ts_active"/"pmx_ts_suspend" is kept as well.
+		 */
+		pinctrl-names = "default", "sleep",
+				"active", "suspend",
+				"pmx_ts_active", "pmx_ts_suspend";
+		pinctrl-0 = <&ts_int_active &ts_rst_active>;	/* default */
+		pinctrl-1 = <&ts_int_sleep &ts_rst_sleep>;	/* sleep */
+		pinctrl-2 = <&ts_int_active &ts_rst_active>;
+		pinctrl-3 = <&ts_int_sleep &ts_rst_sleep>;
+		pinctrl-4 = <&ts_int_active &ts_rst_active>;
+		pinctrl-5 = <&ts_int_sleep &ts_rst_sleep>;
 
 		/*
 		 * Supply mapping taken from MIUI, not from the other working DTS.
@@ -153,10 +205,11 @@
 };
 
 /*
- * Touch 1.8 V rail (vendor: pm8150a_l1). Mainline has no PM8150A regulator
- * driver, so the reference driver enables it and always-on is the fallback.
- * Enable only, no voltage is programmed.
+ * No regulator-always-on on vreg_l1c_1p8 any more.
+ *
+ * The old note claimed this rail is the vendor's pm8150a_l1 and that mainline
+ * cannot drive it, so it had to be pinned on.  That was wrong twice over: it
+ * IS the same RPMH resource (LDOc1), and the vendor driver enables it itself
+ * (consumer "13-0049-vdd").  Pinning it always-on only kept the touch rail
+ * powered across suspend, where fts_power_off() does disable it on purpose.
  */
-&vreg_l1c_1p8 {
-	regulator-always-on;
-};
