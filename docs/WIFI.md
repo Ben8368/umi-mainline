@@ -654,3 +654,85 @@ wlp1s0  DOWN     00:03:7f:12:e7:e7    ← WiFi 接口
 - 没有 `/lib/firmware/regulatory.db`（`cfg80211: failed to load regulatory.db`），
   需要 `wireless-regdb`；缺它时按 world regdomain 走，5 GHz 会受限。
 
+## 12. 第七轮：真的连上网了（iwd + 内核 crypto）
+
+### 12.1 为什么最后选了 iwd，又为什么先改内核
+
+先用 `wpa_supplicant`：它自己带 openssl，理论上不依赖内核 crypto，但
+Arch 的 `wpa_supplicant` 包硬依赖 `pcsclite` → `polkit` → `duktape` 一整条链，
+而 `pcsclite` 的 `libpcsclite.so.1` 又必须在运行期解析到 `libpolkit-gobject-1.so.0`。
+
+`iwd` 只要 `iwd + ell` 两个包，但它启动时会逐个检查内核配置，缺一个就
+`status=1` 退出：
+
+```
+CONFIG_KEY_DH_OPERATIONS is not set
+CONFIG_CRYPTO_{ECB,MD5,CBC,SHA256,AES,DES,CMAC,HMAC,SHA512,SHA1} / CONFIG_CRYPTO_USER_API*
+```
+
+这些默认大多是 `=m`，rootfs 里又没装 crypto 模块。**正解是把它们编进内核**
+（比往 rootfs 里塞模块、或者装一整条 polkit 链都干净）：
+
+```
+CONFIG_KEY_DH_OPERATIONS=y
+CONFIG_CRYPTO_DH=y
+CONFIG_CRYPTO_DES=y
+CONFIG_CRYPTO_CBC=y
+CONFIG_CRYPTO_CMAC=y
+CONFIG_CRYPTO_MD5=y
+CONFIG_CRYPTO_USER_API=y
+CONFIG_CRYPTO_USER_API_HASH=y
+CONFIG_CRYPTO_USER_API_SKCIPHER=y
+CONFIG_CRYPTO_USER_API_AEAD=y
+CONFIG_CRYPTO_USER_API_RNG=y
+```
+
+（`CONFIG_CRYPTO_AES/ECB/HMAC/SHA1/SHA256/SHA512` 本来就是 `=y`，只补缺的。）
+
+### 12.2 联网步骤
+
+```sh
+# 包：iwd + ell（外加 iw / wireless-regdb）
+pacman -U --noconfirm --disable-sandbox ell-*.pkg.tar.xz iwd-*.pkg.tar.xz
+
+printf '[General]\nEnableNetworkConfiguration=true\n\n[Network]\nNameResolvingService=systemd\n' \
+	> /etc/iwd/main.conf
+
+systemctl enable --now iwd
+iwctl station wlan0 connect 'SSID' --passphrase 'PASS'
+```
+
+`EnableNetworkConfiguration=true` 让 iwd 自己跑内置 DHCP，地址/路由/ DNS
+都自动下来，不用再拉 `dhcpcd`。
+
+### 12.3 结果
+
+```
+iwctl station wlan0 show
+    State                 connected
+    Connected network     HUAWEI-SVTYH4_5G
+    IPv4 address          192.168.3.169
+
+ip route
+    default via 192.168.3.1 dev wlan0 proto dhcp src 192.168.3.169 metric 304
+    192.168.3.0/24 dev wlan0 proto dhcp scope link
+    192.168.42.0/24 dev usb0 proto kernel scope link src 192.168.42.1   ← USB 网卡还在
+
+ping 1.1.1.1 → 0% packet loss
+```
+
+然后 `pacman -Sy fastfetch` 直接从仓库装上了（之前卡死的 `yyjson` 依赖这次
+由 pacman 正常解析成 `yyjson-0.13.0-1`）。
+
+### 12.4 踩坑记录
+
+- **接口名不固定**：某次启动叫 `wlp1s0`，某次叫 `wlan0`。用之前先
+  `iwctl device list` 看实际名字，别写死。
+- **pacman 密钥环是空的**：直接装包报
+  `error: keyring is not writable / required key missing`。
+  先 `pacman-key --init && pacman-key --populate archlinuxarm`（需要 `gnupg`，
+  rootfs 里有）。
+- `pacman` 在这个内核上仍然要 `--disable-sandbox`（Landlock 没开）。
+- 凭据只存在 `/var/lib/iwd/<ssid>.psk`（root 可读），没有写进仓库。
+
+
