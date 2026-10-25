@@ -909,3 +909,42 @@ VTX/VRX 未连），或 MIUI 在别处开启了某个我们还没打开的硬件
 剩下的缺口在模拟前端拿不到信号，而动驱动之前 `raw` 就已经是 `-13462`，
 说明这一环从 bring-up 第一天起就没通。下一步只能靠「跑一次 MIUI」来判定
 是硬件/工厂数据问题，还是仍有我们没对齐的初始化步骤。
+
+### 11.7 与 LineageOS 的 umi 移植逐项对照（结论：驱动侧已完全对齐）
+
+参考树：`AstideLabs/android_kernel_xiaomi_sm8250`（LineageOS sm8250 的 fork，
+`arch/arm64/boot/dts/vendor/qcom/umi-sm8250.dtsi` 里有 umi 的 `fts@49`）。
+（`sm8250-mainline/linux` 里**没有 umi**，那棵树帮不上忙。）
+
+| 项目 | LineageOS umi | 我们 | 结果 |
+|---|---|---|---|
+| 触摸供电/GPIO | `avdd=<&touch_vddio_vreg>`、`vdd=<&pm8150a_l1>`、rst 38、irq 39 | 同 | 一致 |
+| 触摸调参表 | up-threshold 40/120/80、tolerance 5/35/25、各 zone 矩形 | 同 | 一致 |
+| 面板 | `xiaomi 42 02 0b`（mp 变体 `j2-mp-42-02-0b`）| `j2_mp_42_02_0b` | 一致 |
+| 面板 on-command | **653 字节** | **652 字节**（DT 存储少 1 字节）| 一致 |
+| 初始化流程 | `fts_fw_update()`：crc_check → flashProcedure → reset → CX/panel CRC → 依 AFE 版本选 init → chip_init → init_sensing | 同 | 一致 |
+| `PRE_SAVED_METHOD` / `FW_UPDATE_ON_PROBE` | 都定义 | 都定义 | 一致 |
+| `fts_init_sensing` | threaded irq → mode_handler → sense off/50ms/on → enable_irq | 同（§11.6 补齐）| 一致 |
+| 中断方式 | `request_threaded_irq(NULL, handler, IRQF_ONESHOT)` | 同 | 一致 |
+| I2C opcode | 头文件里同样被 SPI 值覆盖（0xFB/0x87/0xA7）| 已修正 | 对方的坑 |
+| 编进内核的 FW | 100476 B，实测刷入是 **2559x1439 / 15x30**（别的面板）| 试过，不可用 | 不可用 |
+| `.ftb` 固件文件 | TheMuppets 的 umi blobs 里 **没有**（firmware/ 只有音频/IPA/相机 31 个文件）| 我们也没有 | 拿不到 |
+
+### 11.8 代码段 / 配置段混搭实验：固件拒绝
+
+`j2_2` 的 code（113996 B）+ MIUI 镜像的 config（3480 B, cfg 0x004F, AFE 08）
+拼成 `hybridA.ftb` 刷入：
+
+    flashProcedure -> 0x8219xxxx (失败)
+    之后 sysinfo: fw 0x0000, txrx 0x0
+
+说明**固件会校验 code 与 config 的配对**，不能混用。已恢复 `j2_2` 全套：
+
+    chip 3639 / fw 0x0124 / cfg 0x0048 / cx 0xFFFF / afe 05/05/05 / 17x37 / 2339x1079
+
+（两份 config 前 3480 字节有 **23.9%** 不同；cfg 头部 byte14-15 是 cfg 版本
+`48 00` vs `4f 00`，byte17 是 AFE 版本 `05` vs `08`。）
+
+至此驱动、DT、面板时序、中断方式与 MIUI/LineageOS **已无可对比的差异**，
+剩下的缺口是出厂烧在芯片里的 FW 与 CX 内容 —— MIUI 和 LineageOS 都因为
+"芯片版本更新就不刷"而从未写过它，公开渠道也没有。
