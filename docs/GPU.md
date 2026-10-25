@@ -120,13 +120,39 @@ cat /sys/class/devfreq/3d00000.gpu/cur_freq    # 空闲 305 MHz
 cat /sys/class/devfreq/3d00000.gpu/available_frequencies   # .. 587 MHz
 ```
 
-## 5. 还没有的
+## 5. 用户态：freedreno 已经跑起来了
 
+WiFi 修好之后直接从仓库装了 mesa（`pacman -S --disable-sandbox mesa mesa-utils
+vulkan-icd-loader`），`eglinfo -B` 已经认到 GPU：
+
+```
+GBM platform:
+EGL version string: 1.5
+OpenGL core profile vendor/renderer: freedreno / FD650
+OpenGL core profile version: 4.6 (Core Profile) Mesa 26.2.5-arch1.1
+OpenGL ES profile version:   OpenGL ES 3.2 Mesa 26.2.5-arch1.1
+```
+
+即 **GL 4.6 / GLES 3.2 硬件加速可用**（`kgsl_dri.so` + `renderD128`）。
+
+## 6. 还没有的
+
+- **Vulkan（turnip）没装**：Arch 仓库里没有 `vulkan-freedreno`，`/usr/share/vulkan/icd.d/`
+  是空的；要 `vulkaninfo` 得自己编 mesa 的 turnip 或者等包。
 - **没有 GPU cooling device**：devfreq 不会因为过热降频，满载请自己盯温度。
   上游 `sm8250.dtsi` 里 `gpu` 有 `#cooling-cells`，但没接 thermal zone。
-- 用户态还没装：测 `glxinfo -B` 需要 mesa/freedreno，`vulkaninfo` 需要
-  turnip。内核侧已经就绪（`renderD128` 可用）。
 - 超频档（670/800/900 MHz）没开：`gpu_opp_table` 里 670 MHz 需要
   `opp-supported-hw = <0xa>`，取决 `gpu_speed_bin` 熔丝；默认 587 MHz 是
-  原厂最稳档。
+  原厂最稳档（和 misaka 那边 `umi-gpu-maxfreq` 的结论一致：别钉 800）。
 - GMU 的 `rscc`/`gmu_pdc` 走的是 `sm8250.dtsi` 里的地址，未做额外校验。
+
+## 7. fastfetch 里看不到 GPU 的原因
+
+fastfetch 在 Linux 上靠 `/sys/class/drm/card*/device/{vendor,device}` 的 PCI ID
+认显卡；SM8250 的 Adreno 是 **platform device**（`3d00000.gpu`），没有 PCI ID，
+所以内置的 `gpu` 模块永远输出空。用 `command` 模块读 devfreq 即可：
+
+- `contrib/fastfetch/umi-gpu-info` → `/usr/local/bin/umi-gpu-info`
+- `contrib/fastfetch/config.jsonc` → `~/.config/fastfetch/config.jsonc`
+  （`fastfetch --gen-config` 的原版模块表，只把 `"gpu"` 换成上面那个脚本，
+  布局和以前一模一样，只多一行）
