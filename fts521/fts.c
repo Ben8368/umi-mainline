@@ -3224,35 +3224,28 @@ static int fts_fb_state_chg_callback(struct notifier_block *nb,
 	if (val != FB_EVENT_BLANK)
 		return 0;
 
-	logError(0, "%s %s: fts notifier begin!\n", tag, __func__);
-
-	if (evdata && evdata->data && info) {
-		int blank = *(int *)evdata->data;
-		pr_info("%s %s: blank value: %d", tag, __func__, blank);
-		switch (blank) {
-		case FB_BLANK_POWERDOWN:
-			if (info->sensor_sleep)
-				break;
-
-			logError(0, "%s %s: FB_BLANK_POWERDOWN\n", tag,
-				 __func__);
-
-			queue_work(info->event_wq, &info->suspend_work);
-
-			break;
-
-		case FB_BLANK_UNBLANK:
-			if (!info->sensor_sleep)
-				break;
-
-			logError(0, "%s %s: FB_BLANK_UNBLANK\n", tag, __func__);
-
-			queue_work(info->event_wq, &info->resume_work);
-			break;
-		default:
-			break;
-		}
-	}
+	/*
+	 * umi: 屏的亮灭现在由合成器（KWin / Wayland）直接操作 DRM 完成，
+	 * 不再经过 fbdev 的 blank 接口。所以这里只会偶尔收到一次
+	 * FB_BLANK_POWERDOWN，之后永远等不到对应的 FB_BLANK_UNBLANK：
+	 *
+	 *   fts_suspend_work()  ->  fts_disableInterrupt()
+	 *                          pinctrl 切到 sleep（IRQ 脚下拉）
+	 *                          fts_mode_handler(resume_bit=0) => sense off
+	 *                          sensor_sleep = true
+	 *                          只有 gesture_enabled 时才重新 enable IRQ
+	 *
+	 * 结果就是**触摸彻底没反应**（中断计数冻结、FIFO 里一个事件都没有），
+	 * 只有重开会话/重启内核才好 —— 这正是"用一阵子就点不动"的根因。
+	 *
+	 * 我们不做系统 suspend（真省电应该走 PM 回调），所以干脆不跟 fb blank
+	 * 走：sensing 一直开。真机上代价只是灭屏时多耗一点电。
+	 */
+	logError(1,
+		 "%s %s: fb blank event ignored (compositor drives DPMS, keep sensing on)\n",
+		 tag, __func__);
+	(void)info;
+	(void)evdata;
 	return NOTIFY_OK;
 #endif
 }

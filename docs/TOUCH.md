@@ -1067,3 +1067,85 @@ boost 没开时 4096 死在 `MS RAW MIN MAX TEST`（全节点 `-13462` 超出
 §11 的结论"差的是出厂 FW 与 CX"**是错的**。真正的缺口是**一颗板级电源
 使能**：`PM8150B GPIO5`（`vdd_boost_vreg`）。有它，自算的 CX 和
 `j2_2`/出厂 `0x0132` 都能正常出帧；没它，任何 FW/CX 组合都只有 `-13462`。
+
+## 13. "用一阵子就点不动"：fb blank 把驱动永久停在 suspend（已修）
+
+上一节解决的是"一点都点不动"，这一节是另一个更阴的问题：**刚开机触摸好的，
+用一会儿（尤其是屏幕灭过一次之后）就彻底没反应了**，中断计数冻结，FIFO 里一个
+事件都没有，只能重开会话/重启内核。
+
+### 13.1 现象量化
+
+```
+# 用户在正常点屏幕，中断计数一动不动
+$ grep fts /proc/interrupts
+165:       4321  ...  fts        # 15 秒里点了 20 下，4321 还是 4321
+$ cat /sys/class/graphics/fb0/blank   # 空
+$ cat /sys/class/drm/card1-DSI-1/dpms # On   ← 屏其实是亮的
+$ cat /sys/class/i2c/devices/13-0049/mode_active
+{ 00010000 }                          # 驱动自己认为 sense on
+```
+
+而芯片本身是活的：`echo 512 > fwupdate` 能读出 `fw 0x0132 / cfg 0x004C`，
+`raw` 帧数据也还在（只是不再更新）。
+
+### 13.2 根因
+
+drivers/input/touchscreen/fts521/fts.c 的 fb notifier：
+
+```c
+case FB_BLANK_POWERDOWN:
+        queue_work(info->event_wq, &info->suspend_work);
+case FB_BLANK_UNBLANK:
+        queue_work(info->event_wq, &info->resume_work);
+```
+
+`fts_suspend_work()` 里做了三件致命的事：
+
+```c
+fts_disableInterrupt();                  // 关 IRQ
+pinctrl_select_state(..., suspend);      // IRQ 脚下拉
+fts_mode_handler(info, 0);               // resume_bit=0 → sense off
+info->sensor_sleep = true;
+if (info->gesture_enabled)               // 我们没开 gesture
+        fts_enableInterrupt();           // ← 所以 IRQ 一直关着
+```
+
+问题在于**屏的亮灭现在由合成器（KWin/Wayland）直接操作 DRM**，根本不再走
+fbdev 的 blank 接口 —— 驱动只偶尔收到一次 `FB_BLANK_POWERDOWN`，之后
+永远等不到 `FB_BLANK_UNBLANK`，于是永久卡在 suspend：IRQ 关、sensing 关。
+
+修复前后（`fts_fb_state_chg_callback`）：
+
+```
+- 按 FB_BLANK_* 派发 suspend_work / resume_work
++ 直接忽略 FB_EVENT_BLANK（只打日志）：
++   fb blank event ignored (compositor drives DPMS, keep sensing on)
+```
+
+反正我们不做系统 suspend（真省电该走 PM 回调），sensing 一直开着代价只是
+灭屏时多耗一点电。
+
+### 13.3 验证
+
+`tmp/verify-touch.sh`：正常点 10 下 → 脚本自己 `blank=4 → blank=0` 模拟灭屏亮屏
+→ 再点 10 下，比对中断增量。
+
+```
+正常点 10 下        ->  497 次中断
+灭屏亮屏后点 10 下  ->   35 次中断      （旧版这里是 0）
+驱动日志：fts_fb_state_chg_callback: fb blank event ignored ...
+```
+
+### 13.4 还没解决的：极短按（< ~40 ms）偶尔丢
+
+实测：让用户"极短按 10 次"，evdev 只收到 2 次（44 ms / 56 ms 的那两次），
+其余的时间太短，触摸 IC 在低活动状态下的一帧扫描没抓到。这只是"手感"问题，
+不是失效：
+
+- 正常按（≥60 ms）100% 有事件；
+- 拖动时上报 ~6.5 ms 一个点（≈150 Hz），说明链路本身不慢；
+- 芯片在"一段时间没摸"之后会降扫描率，第一个短按容易漏。
+
+要做的话得动 FW 的 scan/idle 参数（厂商配置里 `touch-idletime` 那一组），
+主线驱动目前没接。
