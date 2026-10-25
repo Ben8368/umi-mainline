@@ -3706,6 +3706,22 @@ static void fts_remove(struct spi_device *client)
 	fts_enable_reg(info, false);
 	fts_get_reg(info, false);
 
+	/*
+	 * umi: release the legacy gpio_request()s taken in fts_set_gpio().
+	 * Without this a rebind of 13-0049 fails with EBUSY:
+	 *
+	 *     fts_gpio_setup: Failed to get gpio 589 (code: -16)
+	 *
+	 * which also means a full rail power cycle (unbind -> wait -> bind)
+	 * cannot be used to bring a blank IC back.
+	 */
+	if (info->board) {
+		if (info->board->irq_gpio != GPIO_NOT_DEFINED)
+			fts_gpio_setup(info->board->irq_gpio, false, 0, 0);
+		if (info->board->reset_gpio != GPIO_NOT_DEFINED)
+			fts_gpio_setup(info->board->reset_gpio, false, 0, 0);
+	}
+
 	/* free all */
 	kfree(info);
 }

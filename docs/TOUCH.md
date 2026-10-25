@@ -736,3 +736,29 @@ python3（pacman -S python；/dev/i2c-13 来自 i2c-dev）。
 另外注意：lush 后 load program DONE/load config DONE 说明当初那次刷写
 是成功的（代码页写进去了），所以现在芯片里是**有效代码 + 空 CX**；它之所以
 不再响应，是 FW 在 CX 无效时不会启动应用层，而 ROM 又不实现 HW 寄存器读。
+
+### 10.7 彻底断电重上电（unbind → 等 10 s → bind）也无效
+
+先修了一个真 bug：ts_remove() 不释放 ts_set_gpio() 里用 legacy API
+gpio_request() 拿的引脚，导致重新 bind 时报
+ts_gpio_setup: Failed to get gpio 589 (code: -16)（EBUSY）。补上
+ts_gpio_setup(gpio, false, 0, 0) 之后，unbind/bind 可以正常重来了。
+
+但即使这样：**拔掉两路电源 10 秒再上电**，初始化后仍然是
+
+`
+[ FTS ] Device Initialization:
+[ FTS ] chip id: FF FF!
+[ FTS ] wrong chip id detected!
+...
+[ FTS ] fts_system_reset...failed after 3 attempts: ERROR 80000B07
+`
+
+也就是说芯片的固件确实起不来，ROM 也不吐事件/不实现寄存器读。软件侧到此为止。
+
+备份信息：D:\project\UMIBackup 是这台机器的 TWRP 全分区备份
+（HyperOS 1.0.5 / MIUI v816）：oot.emmc.win、dtbo.emmc.win、
+ecovery.emmc.win、super.emmc.win（9.1 GB，里面是 system 1148 MiB /
+vendor 1661 MiB / product 4120 MiB / odm 128 MiB / system_ext 634 MiB /
+mi_ext 3 MiB）。super 里没有 .ftb 文件（HyperOS 的 vendor 是压缩 erofs），
+FW 是编在内核里的（ts_fw.h）。
