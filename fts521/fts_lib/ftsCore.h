@@ -228,6 +228,9 @@ int fts_disableInterruptNoSync(void);
 int fts_resetDisableIrqCount(void);
 int fts_enableInterrupt(void);
 int requestSyncFrame(u8 type);
+/* Set while a recovery command has to go through even though the IC queues
+ * error events (a blank CX area) ahead of the command echo. */
+extern int fts_lenient_echo;
 
 #endif /* FTS_CORE_H */
 

@@ -34,6 +34,14 @@
 #define FLASH_RETRY_COUNT				20	/*number of attemps to read the flash status*/
 #define FLASH_WAIT_BEFORE_RETRY         50	/*time to wait in ms between one status reading and another*/
 
+/*Recovery flashing: when the application FW is gone the 0x200000xx window
+ * answers 0xFF, so the flash ready bit can never be polled.  In that case the
+ * erase/DMA commands (plain writes) are still accepted, so wait blindly for
+ * this long after each of them instead of polling.*/
+#define BLIND_FLASH_WAIT				2500
+
+extern int fts_flash_blind;
+
 #ifdef FW_H_FILE
 #define PATH_FILE_FW			"NULL"
 #else

@@ -762,3 +762,95 @@ gpio_request() 拿的引脚，导致重新 bind 时报
 vendor 1661 MiB / product 4120 MiB / odm 128 MiB / system_ext 634 MiB /
 mi_ext 3 MiB）。super 里没有 .ftb 文件（HyperOS 的 vendor 是压缩 erofs），
 FW 是编在内核里的（ts_fw.h）。
+## 11. 2026-10-25 深夜：控制器完全救活（真凶是两个 SPI/I2C opcode + 缺一条存盘命令）
+
+### 11.1 根因一：硬件寄存器读用的是 SPI 的 opcode
+
+`fts_lib/ftsHardware.h` 里有两份常量表：上面一份按 `#ifdef I2C_INTERFACE`
+区分 I2C/SPI，下面（第 340 行往后）还有一份 V521 的"统一"表，**无条件**重新
+定义同名宏，把 I2C 的值覆盖成 SPI 的值：
+
+| 宏 | I2C 正确值 | 被覆盖成（SPI） | 后果 |
+|---|---|---|---|
+| `FTS_CMD_HW_REG_R` | `0xFA` | `0xFB` | 所有 HW 寄存器读（chip id / fw ver / 状态位）全部返回 0x00 或 0xFF |
+| `FIFO_CMD_READALL` | `0x86` | `0x87` | 事件 FIFO 读错命令 → 触摸报文从来没被解析过 |
+| `FTS_CMD_FRAMEBUFFER_R` | `0xA6` | `0xA7` | raw 帧读错命令 |
+| `FTS_CMD_CONFIG_R` | `0xA8` | `0xA9` | 配置区读错命令 |
+
+删掉下面那份里的这四条（保留同值的写命令）后：
+
+    chip id: 36 39!                    <- 之前永远是 FF FF / 00 00
+    Screen Resolution = 2339 x 1079
+
+用 `tmp/fts_hw.py raw "fa 20 00 00 00" 4` 可以现场验证：`0xFA <addr>` 读回
+`36 39 03 00`，`0xFB <addr>` 读回全 0。**这颗芯片的 I2C 读就是 0xFA**（和
+新版权威头文件 `I2C_INTERFACE` 分支一致）。
+
+### 11.2 救砖：写-only 盲刷（FW 全丢时也能刷）
+
+FW 被擦掉后 `0x200000xx` 状态寄存器读不回来，`wait_for_flash_ready()` 永远
+超时，于是 `flash_burn()` 在擦除后就 abort，**再也没有人把代码写回去**。
+
+按 `fts_flash_blind` 开关走盲刷：`wait_for_flash_ready()` 超时后改成固定等
+2.5 s 继续，因为擦除/DMA 全是纯写命令，状态位只是"确认"用。整条链路：
+
+    system reset -> hold_m3 -> uvlo/autopowerdown -> flash_unlock
+    -> erase_unlock -> 按页擦除 -> fillFlash(code) -> fillFlash(config)
+    -> DMA -> system reset
+
+刷完 `chip id` 立刻变回 `36 39`（`echo 256 > fwupdate`）。
+
+### 11.3 根因二：全屏初始化算完 CX 不写 flash
+
+`production_test_initialization(SPECIAL_FULL_PANEL_INIT)` 只让 FW 在 RAM 里
+算补偿数据，**厂商代码里没有落盘那一步**，于是每次复位又是 CX CRC 错：
+
+    echo found after 3 error event(s)      <- CX CRC 事件排在 echo 前面
+    after PI cx 0x0000 afe cfg 0x05 cx 0x00 panel 0x00
+
+补上一条 `SYS_CMD_SAVE_FLASH (0xA4 0x05)` + `SAVE_CX|SAVE_PANEL_CONF (0x06)`
+之后：
+
+    after save: cx 0xFFFF  afe cfg/cx/panel = 08/08/08
+
+`0xFFFF` 正是原厂 CX 版本号。这条命令已经写进 `fwupdate` 的 `mode 2`。
+
+### 11.4 原厂固件从 HyperOS boot 里挖出来
+
+`D:\project\UMIBackup\boot.emmc.win` 的内核里编着 `fts_fw.h`，用
+`tools/extract-boot-fw.py` 可以直接把 `.ftb` 抠出来（magic
+`55 aa 55 aa 01 00 00 00 36 39`）：
+
+| | `st_fts_j2_2.ftb`（镜像作者给的） | `st_fts_umi.ftb`（从 stock boot 提取） |
+|---|---|---|
+| fw ver | 0x0124 | 0x0123 |
+| cfg ver | 0x0048 | **0x004F** |
+| svn | 0x3444 | 0x3956 |
+| 文件内 CX ver | 无 CX 段 | **0xFFFF**（和芯片原状一致）|
+| AFE ver | 05 | 08 |
+| 传感器节点 | 629 | 560 |
+
+super 里的 system/vendor/product/odm/system_ext 全部是 ext4，**没有任何
+`.ftb`**（只有 product 里一处 `.ftb` 字样，落在压缩流里，是假命中），所以
+触控固件唯一的来源就是内核里那个数组。
+
+### 11.5 现在的状态
+
+    6.12.94-umi-dirty, boot-umi-touchfix7.img
+    chip 3639 / fw 0x0123 / cfg 0x004F / cx 0xFFFF / afe 08/08/08
+    初始化一次通过，零 CRC 错误，mode_active = 00FF0000, IRQ 正常
+
+**唯一剩下的问题**：AFE 采到的 raw 帧是常数。
+
+    nodes=560  min=-15774 max=0 mean=-7887
+    head: -15774 0 -15774 0 ...        (16x35 节点，奇数节点恒为 0)
+    addr raw=0x8AB0 filt=0x4274 stren=0x48B0
+
+也就是每两个 16bit 字里只有一个有值、且 560 个节点**全同一个值**，等于前台
+模拟前端没有任何信号进；FIFO 里每秒只有 3 个 `43 03`(STATUS/FRAME_DROP)，
+没有任何 `0x13/0x23/0x33`（进入/移动/离开）触摸报文。这个症状和**动驱动
+之前**完全一样，说明它不是我们刷坏的，而是从 bring-up 第一天就在的。
+
+供电已排除：`vreg_l1c_1p8` 1800 mV、`touch_vddio_vreg` 3300 mV 都是 enabled
+且带负载。剩下只能是传感器/AFE 侧的硬件问题（触控 FPC、面板换过、或
+VTX/VRX 未连），或 MIUI 在别处开启了某个我们还没打开的硬件使能。

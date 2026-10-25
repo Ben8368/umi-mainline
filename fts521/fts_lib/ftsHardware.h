@@ -392,8 +392,6 @@
 #define DUMMY_FIFO								0					/*1 if the first byte read from FIFO is dummy*/
 #define DUMMY_FRAMEBUFFER						0					/*1 if the first byte read from Frame buffer is dummy*/
 #define DUMMY_HW_REG							0					/*1 if the first byte read from HW register is dummy*/
-#define FIFO_CMD_READALL						0x87				/*command to read all the events in the FIFO*/
-#define FIFO_CMD_READONE						FIFO_CMD_READALL	/*commad to read one event from FIFO*/
 #define FIFO_DEPTH								32					/*max number of events that the FIFO can collect before going in overflow in FTM5*/
 #define FLASH_ADDR_CODE							0x00000000			/*starting address (words) in the flash of the code in FTI*/
 #define FLASH_ADDR_CONFIG						0x00007C00			/*starting address (words) in the flash of the config in FTI*/
@@ -403,11 +401,7 @@
 #define FLASH_NUM_PAGE							32					/*number of pages in main flash*/
 #define FLASH_PANEL_PAGE_END					27					/*last page which contain Panel Init data*/
 #define FLASH_PANEL_PAGE_START					26					/*starting page which contain Panel Init data*/
-#define FTS_CMD_CONFIG_R						0xA9				/*command to read the config memory if FTI*/
 #define FTS_CMD_CONFIG_W						0xA8				/*command to write the config memory if FTI*/
-#define FTS_CMD_FRAMEBUFFER_R					0xA7				/*command to read the framebuffer if FTI*/
-#define FTS_CMD_HW_REG_R						0xFB				/*command to read an hw register if FTI*/
-#define FTS_CMD_HW_REG_W						0xFA				/*command to write an hw register if FTI*/
 #define FW_BIN_CONFIG_ID_OFFSET					20					/*offset of the config id in the .ftb file*/
 #define FW_BIN_VER_OFFSET						16					/*offset of the fw version in the .ftb file*/
 #define FW_CX_VERSION							(16 + 4)				/*offset of CX version in the sec2 of FW file*/

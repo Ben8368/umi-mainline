@@ -46,6 +46,15 @@ SysInfo systemInfo; /* /< Global System Info variable, accessible in all the
 			 * driver */
 /** @}*/
 
+/*
+ * Recovery mode: a blank CX area makes the IC report a CX CRC error event for
+ * every command until a full panel initialisation has completed, so the echo
+ * of the command always arrives *after* error events.  checkEcho() treats that
+ * as a failure by design; while this flag is set the error events are logged
+ * and ignored so the recovery command can actually go through.
+ */
+int fts_lenient_echo;
+
 static int reset_gpio = GPIO_NOT_DEFINED; /* /< gpio number of the rest
 						 * pin, the value is
 						 *  GPIO_NOT_DEFINED if the
@@ -228,7 +237,7 @@ int pollForEvent(int *event_to_search, int event_bytes, u8 *readData,
 				 DUMMY_FIFO) >= OK) {
 		/* Log of errors */
 		if (readData[0] == EVT_ID_ERROR) {
-			logError(0, "%s %s\n", tag,
+			logError(1, "%s %s\n", tag,
 				 printHex("ERROR EVENT = ", readData,
 					  FIFO_EVENT_SIZE, temp));
 			memset(temp, 0, 128);
@@ -333,6 +342,8 @@ int checkEcho(u8 *cmd, int size)
 		    ((cmd[2] == SPECIAL_FULL_PANEL_INIT) ||
 		     (cmd[2] == SPECIAL_PANEL_INIT)))
 			ret = pollForEvent(event_to_search, size + 2, readData,
+					   fts_lenient_echo ?
+					   TIMEOUT_ECHO_FPI_RECOVERY :
 					   TIMEOUT_ECHO_FPI);
 		else if ((cmd[0] == FTS_CMD_SYSTEM) &&
 			 (cmd[1] == SYS_CMD_CX_TUNING))
@@ -349,6 +360,13 @@ int checkEcho(u8 *cmd, int size)
 				tag, ret);
 			return ret | ERROR_CHECK_ECHO_FAIL;
 		} else if (ret > OK) {
+			if (fts_lenient_echo) {
+				logError(
+					1,
+					"%s checkEcho: echo found after %d error event(s) - tolerated during recovery\n",
+					tag, ret);
+				return OK;
+			}
 			logError(
 				1,
 				"%s checkEcho: Echo Event found but with some error events before! num_error = %d\n",

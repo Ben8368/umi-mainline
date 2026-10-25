@@ -51,6 +51,15 @@
 #include <linux/uaccess.h>
 #include <linux/firmware.h>
 
+/*
+ * Recovery flashing switch.  Set while a burn has to be performed on an IC
+ * whose application FW is gone: the flash status register is unreadable then,
+ * but the erase/DMA commands are write-only and still work, so the burn can be
+ * driven blind with fixed waits instead of status polling.
+ */
+int fts_flash_blind;
+EXPORT_SYMBOL_GPL(fts_flash_blind);
+
 #ifdef FW_H_FILE
 #include "../fts_fw.h"
 #endif
@@ -278,6 +287,21 @@ int wait_for_flash_ready(u8 type)
 	}
 
 	if (i == FLASH_RETRY_COUNT && res != 0) {
+		if (fts_flash_blind) {
+			/*
+			 * Recovery path.  The IC has no runnable application FW,
+			 * so the whole 0x200000xx window answers 0xFF and the
+			 * ready bit never clears.  The erase and DMA commands are
+			 * plain writes and are still accepted, so give the
+			 * controller the same wall time the polling would have
+			 * taken and carry on instead of aborting the burn.
+			 */
+			logError(1,
+				 "%s flash status unreadable (blind flash, reg 0x%02X) - waiting %d ms and continuing\n",
+				 tag, type, BLIND_FLASH_WAIT);
+			msleep(BLIND_FLASH_WAIT);
+			return OK;
+		}
 		logError(1, "%s Wait for flash TIMEOUT! ERROR %08X \n", tag,
 			 ERROR_TIMEOUT);
 		return ERROR_TIMEOUT;
@@ -969,7 +993,11 @@ start:
 	res = fts_system_reset();
 	if (res < 0) {
 		MI_TOUCH_LOGE(1, "%s %s: system reset FAILED!\n", tag, __func__);
-		if (res != (ERROR_SYSTEM_RESET_FAIL | ERROR_TIMEOUT))
+		/* A dead FW always fails here; the vendor flow already tolerates
+		 * the timeout, and in blind (recovery) mode any failure is
+		 * expected - the whole point is to burn without the FW. */
+		if (!fts_flash_blind &&
+		    res != (ERROR_SYSTEM_RESET_FAIL | ERROR_TIMEOUT))
 			return (res | ERROR_FLASH_BURN_FAILED);
 	} else
 		MI_TOUCH_LOGI(0, "%s %s: system reset COMPLETED!\n", tag, __func__);

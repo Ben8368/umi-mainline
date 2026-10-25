@@ -58,6 +58,11 @@
 /* /< timeout of the echo command,*/
 #define TIMEOUT_ECHO_FPI (200 * TIMEOUT_RESOLUTION)
 /* /< timeout of the Full panel Init echo command */
+#define TIMEOUT_ECHO_FPI_RECOVERY (900 * TIMEOUT_RESOLUTION)
+/* /< same, but used only by the manual recovery path (fts_lenient_echo).  A
+ * full panel init on a blank CX area regularly takes 17 s or more before the IC
+ * echoes the command, well past the 10 s the vendor value allows - it must not
+ * be used during probe, where a slow wait would stall the boot. */
 #define TIMEOUT_ECHO_SINGLE_ENDED_SPECIAL_AUTOTUNE (100 * TIMEOUT_RESOLUTION)
 /* /< timeout of the Single ended special Autotune echo command */
 /** @}*/

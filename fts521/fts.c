@@ -223,6 +223,8 @@ static ssize_t fts_raw_show(struct device *dev,
 {
 	MutualSenseFrame frame;
 	int res, i, n = 0, cnt;
+	int mn = 0, mx = 0;
+	long long sum = 0;
 
 	memset(&frame, 0, sizeof(frame));
 	frame.node_data = NULL;
@@ -234,8 +236,36 @@ static ssize_t fts_raw_show(struct device *dev,
 
 	cnt = frame.node_data_size;
 	n += snprintf(buf + n, PAGE_SIZE - n, "nodes=%d\n", cnt);
-	for (i = 0; i < cnt && i < 48; i++)
-		n += snprintf(buf + n, PAGE_SIZE - n, "%d ", frame.node_data[i]);
+
+	if (cnt > 0) {
+		mn = mx = frame.node_data[0];
+		for (i = 0; i < cnt; i++) {
+			int v = frame.node_data[i];
+
+			sum += v;
+			if (v < mn)
+				mn = v;
+			if (v > mx)
+				mx = v;
+		}
+		n += snprintf(buf + n, PAGE_SIZE - n,
+			      "min=%d max=%d mean=%lld spread=%d\n", mn, mx,
+			      sum / cnt, mx - mn);
+	}
+
+	n += snprintf(buf + n, PAGE_SIZE - n, "head:");
+	for (i = 0; i < cnt && i < 24; i++)
+		n += snprintf(buf + n, PAGE_SIZE - n, " %d", frame.node_data[i]);
+	n += snprintf(buf + n, PAGE_SIZE - n, "\nspread:");
+	for (i = 0; i < cnt; i += (cnt / 8 ? cnt / 8 : 1))
+		n += snprintf(buf + n, PAGE_SIZE - n, " %d", frame.node_data[i]);
+	n += snprintf(buf + n, PAGE_SIZE - n,
+		      "\naddr raw=0x%04X filt=0x%04X stren=0x%04X "
+		      "txrx=%ux%u\n",
+		      systemInfo.u16_msTchRawAddr,
+		      systemInfo.u16_msTchFilterAddr,
+		      systemInfo.u16_msTchStrenAddr,
+		      systemInfo.u8_scrTxLen, systemInfo.u8_scrRxLen);
 	n += snprintf(buf + n, PAGE_SIZE - n, "\n");
 
 	kfree(frame.node_data);
@@ -1380,15 +1410,140 @@ static ssize_t fwupdate_store(struct device *dev,
 			 tag, name, ret);
 	}
 
+	if (mode & 256) {
+		/*
+		 * Blind recovery reflash.  The IC has no runnable application
+		 * FW (the previous burn erased it and then aborted because the
+		 * flash status register could no longer be polled), so the whole
+		 * reflash is driven with fixed waits around the write-only
+		 * erase/DMA commands.  See fts_flash_blind in fts_lib/ftsFlash.c.
+		 */
+		fts_flash_blind = 1;
+		ret = flashProcedure(name, 1, 0);
+		fts_flash_blind = 0;
+		logError(1, "%s fwupdate: BLIND flashProcedure(%s) -> %d\n",
+			 tag, name, ret);
+
+		/* If the burn worked the FW runs again and answers a reset. */
+		ret = fts_system_reset();
+		logError(1, "%s fwupdate: reset after blind burn -> %d\n",
+			 tag, ret);
+		ret = getFirmwareVersion(&fw_vers, &config_id);
+		logError(1,
+			 "%s fwupdate: after blind burn fw=0x%04X cfg=0x%04X ret %d\n",
+			 tag, fw_vers, config_id, ret);
+		{
+			u8 id[2] = { 0xEE, 0xEE };
+
+			ret = fts_writeReadU8UX(FTS_CMD_HW_REG_R,
+						ADDR_SIZE_HW_REG,
+						ADDR_DCHIP_ID, id, 2, 0);
+			logError(1,
+				 "%s fwupdate: chip id after blind burn ret %d -> %02X %02X\n",
+				 tag, ret, id[0], id[1]);
+		}
+	}
+
+	if (mode & 1024) {
+		/*
+		 * FIFO histogram: with the interrupt disabled nothing consumes the
+		 * event FIFO, so this shows what the controller actually produces.
+		 * Touch reports are EVT_ID_ENTER/MOTION/LEAVE_POINT (0x13/0x23/
+		 * 0x33), so if only 0x43 (STATUS) shows up the AFE is not seeing
+		 * the panel at all regardless of what the driver does.
+		 */
+		u8 ev[FIFO_EVENT_SIZE];
+		u16 hist[NUM_EVT_ID];
+		int k;
+
+		memset(hist, 0, sizeof(hist));
+		/* drain whatever was queued before we took the FIFO over */
+		for (k = 0; k < 128; k++) {
+			if (fts_writeReadU8UX(FIFO_CMD_READONE, 0, 0, ev,
+					      FIFO_EVENT_SIZE, DUMMY_FIFO) < OK)
+				break;
+			if (ev[0] == EVT_ID_NOEVENT)
+				break;
+		}
+
+		mdelay(1000);
+		for (k = 0; k < 128; k++) {
+			if (fts_writeReadU8UX(FIFO_CMD_READONE, 0, 0, ev,
+					      FIFO_EVENT_SIZE, DUMMY_FIFO) < OK)
+				break;
+			if (ev[0] == EVT_ID_NOEVENT)
+				break;
+			hist[ev[0] >> 4]++;
+			if (k < 12)
+				logError(1,
+					 "%s fwupdate: fifo %02X %02X %02X %02X %02X %02X %02X %02X\n",
+					 tag, ev[0], ev[1], ev[2], ev[3], ev[4],
+					 ev[5], ev[6], ev[7]);
+		}
+		for (k = 0; k < NUM_EVT_ID; k++)
+			if (hist[k])
+				logError(1,
+					 "%s fwupdate: event id 0x%X0 count %u\n",
+					 tag, k, hist[k]);
+		logError(1, "%s fwupdate: mode_active = %08X resume_bit %d\n",
+			 tag, info->mode, info->resume_bit);
+	}
+
 	if (mode & 4) {
 		ret = fts_system_reset();
 		logError(1, "%s fwupdate: system_reset -> %d\n", tag, ret);
 	}
 
+	if (mode & 512) {
+		/* Report what the IC currently holds; also re-read the system
+		 * info so the CX/AFE versions are fresh. */
+		ret = readSysInfo(0);
+		logError(1,
+			 "%s fwupdate: sysinfo ret %d chip0 0x%04X fw 0x%04X svn 0x%04X cfg 0x%04X cx 0x%04X\n",
+			 tag, ret, systemInfo.u16_chip0Id,
+			 systemInfo.u16_fwVer, systemInfo.u16_svnRev,
+			 systemInfo.u16_cfgVer, systemInfo.u16_cxVer);
+		logError(1,
+			 "%s fwupdate: afe cfg 0x%02X cx 0x%02X panel 0x%02X res %ux%u\n",
+			 tag, systemInfo.u8_cfgAfeVer, systemInfo.u8_cxAfeVer,
+			 systemInfo.u8_panelCfgAfeVer, systemInfo.u16_scrResX,
+			 systemInfo.u16_scrResY);
+	}
+
 	if (mode & 2) {
+		/*
+		 * A blank CX area makes the IC queue a CX CRC error event ahead
+		 * of every command echo, so checkEcho() would refuse the full
+		 * panel init that is supposed to rebuild it.  Tolerate that for
+		 * the duration of the recovery.
+		 */
+		fts_lenient_echo = 1;
 		ret = production_test_initialization(SPECIAL_FULL_PANEL_INIT);
 		logError(1, "%s fwupdate: production_test_initialization -> %d\n",
 			 tag, ret);
+		fts_lenient_echo = 0;
+		logError(1,
+			 "%s fwupdate: after PI cx 0x%04X afe cfg 0x%02X cx 0x%02X panel 0x%02X\n",
+			 tag, systemInfo.u16_cxVer, systemInfo.u8_cfgAfeVer,
+			 systemInfo.u8_cxAfeVer, systemInfo.u8_panelCfgAfeVer);
+		if (ret >= OK) {
+			/*
+			 * The panel init and CX data are only computed in the IC's
+			 * RAM.  Without this command they never reach the flash, so
+			 * the next reset finds an empty CX area again and the whole
+			 * init has to be redone - that is the difference between a
+			 * touch that reports something and one that only emits
+			 * STATUS/FRAME_DROP for ever.
+			 */
+			u8 save = SAVE_CX | SAVE_PANEL_CONF;
+			int sret = writeSysCmd(SYS_CMD_SAVE_FLASH, &save, 1);
+
+			logError(1,
+				 "%s fwupdate: save to flash (cx|panel) -> %d\n",
+				 tag, sret);
+			if (sret < OK)
+				ret = sret;
+		}
 		if (ret >= OK) {
 			ret = cleanUp(0x01);
 			logError(1, "%s fwupdate: cleanUp -> %d\n", tag, ret);
@@ -2240,6 +2395,15 @@ static int fts_init_flow(struct fts_ts_info *info)
 			logError(1, "%s %s: Select Full Panel Init...\n", tag,
 				 __func__);
 			init_type = SPECIAL_FULL_PANEL_INIT;
+			/*
+			 * A bad CX area makes the IC queue that CRC error event
+			 * again ahead of the echo of *every* command, including
+			 * the full panel init that is supposed to repair it, so
+			 * checkEcho() rejects the command it just successfully
+			 * delivered.  Tolerate the leading error events from now
+			 * on; they are logged.
+			 */
+			fts_lenient_echo = 1;
 		}
 	} else
 		logError(
