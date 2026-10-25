@@ -107,6 +107,9 @@
 
 #include "sm8250-xiaomi-umi-touch.dtsi"
 
+/* 电量计 + 充电（PM8150B fg/smb5 + TI bq25970），见 docs/BATTERY.md */
+#include "xiaomi-umi-battery.dtsi"
+
 /* ------------------------------------------------------------ GPIO 保留区
  * 作者只保留 28-31 和 40-43。NORTH tile（20/21/79/81 所在）**全部放开**。
  * 这正是他那边 WiFi 能起来的前提。

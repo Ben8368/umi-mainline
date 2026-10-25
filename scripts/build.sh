@@ -58,7 +58,7 @@ fi
 mkdir -p "$WS/out"
 
 echo "== [1/6] 同步 DTS 和面板驱动到内核树"
-for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi sm8250-xiaomi-umi-wifi.dts; do
+for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi sm8250-xiaomi-umi-wifi.dts xiaomi-umi-battery.dtsi; do
 	[ -f "$WS/dts/$f" ] || continue
 	cp -f "$WS/dts/$f" "$TREE/arch/arm64/boot/dts/qcom/$f"
 done
@@ -175,6 +175,53 @@ EOF
 	grep -q 'umi-i2c' "$FTS_MK" || \
 		printf 'obj-$(CONFIG_I2C_UMI_BITBANG)\t+= umi-i2c.o\n' >> "$FTS_MK"
 fi
+# ---- 电量计 / 充电：power/*.c -> drivers/power/supply/ ----
+# 驱动来源：zhaoyuanwang123/armbian 的 sm8250-7.2 补丁 0024/0025（qcom_fg）、
+# 0028/0037/0039/0041（qcom_pm8150b_charger）、0511（bq25970）。
+# 0037 还要求 power_supply 核心多一个 POWER_SUPPLY_PROP_CHARGING_ENABLED，
+# 用一个 python 补丁加上（幂等）。
+PWR_SRC="$WS/power"
+if [ -d "$PWR_SRC" ]; then
+	PWR_DST="$TREE/drivers/power/supply"
+	cp -f "$PWR_SRC/qcom_fg.c" "$PWR_SRC/qcom_pm8150b_charger.c" \
+	      "$PWR_SRC/bq25970_charger.c" "$PWR_SRC/bq25970_reg.h" "$PWR_DST"/ 2>/dev/null || true
+	PWR_K="$PWR_DST/Kconfig"
+	PWR_MK="$PWR_DST/Makefile"
+	if ! grep -q 'BATTERY_QCOM_FG' "$PWR_K"; then
+		cat >> "$PWR_K" <<'EOF'
+
+config BATTERY_QCOM_FG
+	tristate "Qualcomm PMIC fuel gauge driver"
+	depends on IIO
+	help
+	  Qualcomm PMIC fuel gauge (PM8150B gen3), from the sm8250-mainline
+	  bring-up.  Reports capacity/voltage/current of the battery.
+
+config CHARGER_QCOM_SMB5
+	tristate "Qualcomm PM8150B PMIC charger driver"
+	depends on IIO
+	help
+	  PM8150B SMB5 charger: VBUS/ICL/FCC control and charger status.
+
+config CHARGER_BQ25970
+	tristate "TI BQ25970 battery charger driver"
+	depends on I2C
+	help
+	  TI BQ25970 40W fast charger found in the Mi 10.
+EOF
+	fi
+	grep -q 'qcom_fg' "$PWR_MK"        || printf 'obj-$(CONFIG_BATTERY_QCOM_FG)\t+= qcom_fg.o\n' >> "$PWR_MK"
+	grep -q 'qcom_pm8150b_charger' "$PWR_MK" || \
+		printf 'obj-$(CONFIG_CHARGER_QCOM_SMB5)\t+= qcom_pm8150b_charger.o\n' >> "$PWR_MK"
+	grep -q 'bq25970_charger' "$PWR_MK" || \
+		printf 'obj-$(CONFIG_CHARGER_BQ25970)\t+= bq25970_charger.o\n' >> "$PWR_MK"
+	python3 "$WS/patches/power-supply-charging-enabled.py" \
+		"$TREE/include/linux/power_supply.h" \
+		"$PWR_DST/power_supply_sysfs.c" || echo "   !! power_supply 属性补丁没打上"
+fi
+
+# ---- 电量计 / 充电 ---- end
+
 # ---- GPI DMA：补上 sm8250 的两个 EE 偏移变体 ----
 # 6.12.94 的 gpi_of_match 只有 "qcom,sm8250-gpi-dma"（ee_offset 0），而 sm8250
 # 的两个 GPI 控制器 EE 窗口偏移并不相同（wrap0 = 0x1000 / wrap1 = 0x6000；

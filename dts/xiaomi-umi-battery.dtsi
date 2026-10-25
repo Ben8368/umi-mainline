@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * 电量计 + 充电（小米 10 / umi）
+ *
+ * 来源：zhaoyuanwang123/armbian 的 sm8250-7.2 补丁序列
+ *   0024 power: supply: Qualcomm PMIC fuel gauge      -> qcom_fg.c
+ *   0025 qcom_fg: pm8150b 支持
+ *   0028/0037/0039/0041 qcom_pm8150b_charger（smb5）  -> qcom_pm8150b_charger.c
+ *   0511 TI bq25970 快充                              -> bq25970_charger.c
+ *   0044 板级 DT 里的 battery / pm8150b_fg / pm8150b_charger / bq25970 节点
+ *
+ * 说明：
+ *   - 电芯参数（4.68Ah / 4.4V）抄他们的 simple-battery，属于「够用」的近似值；
+ *     原厂 BMS 的真实曲线在 mi,mdss…/bms 里，主线没有对应驱动。
+ *   - bq25970（40W 快充，地址 0x66）单独一颗，irq 走 GPIO68；它 probe 失败
+ *     不影响主充电和电量计。
+ *   - pm8150b_charger 需要 IIO 通道 usb_in_v_div_16 / usb_in_i_uv，
+ *     所以 CONFIG_QCOM_SPMI_ADC5 必须是 =y（我们 config 里已经改）。
+ */
+
+#include <dt-bindings/iio/qcom,spmi-vadc.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	battery: battery {
+		compatible = "simple-battery";
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4400000>;
+		charge-full-design-microamp-hours = <4680000>;
+		energy-full-design-microwatt-hours = <18400000>;
+		constant-charge-current-max-microamp = <1500000>;
+	};
+};
+
+&spmi_bus {
+	pmic@2 {
+		/* 电量计：PM8150B 的 gen3 fg，寄存器 0x4000 */
+		pm8150b_fg: fuel-gauge@4000 {
+			compatible = "qcom,pm8150b-fg";
+			reg = <0x4000>;
+			interrupts = <0x2 0x40 0x0 IRQ_TYPE_EDGE_BOTH>;
+			interrupt-names = "soc-delta";
+			monitored-battery = <&battery>;
+			power-supplies = <&pm8150b_charger>;
+			status = "okay";
+		};
+
+		/* 充电器：SMB5（qcom_pm8150b_charger.c 只用到 bat-ov /
+		 * usbin-icl-change / wdog-bark 这三个 IRQ，其余名字留着对齐厂商 DT） */
+		pm8150b_charger: charger@1000 {
+			compatible = "qcom,pm8150b-charger";
+			reg = <0x1000>;
+			interrupts = <0x2 0x13 0x0 IRQ_TYPE_EDGE_BOTH>,
+				     <0x2 0x13 0x1 IRQ_TYPE_EDGE_BOTH>,
+				     <0x2 0x13 0x2 IRQ_TYPE_EDGE_BOTH>,
+				     <0x2 0x13 0x3 IRQ_TYPE_EDGE_BOTH>,
+				     <0x2 0x13 0x4 IRQ_TYPE_EDGE_BOTH>,
+				     <0x2 0x13 0x5 IRQ_TYPE_EDGE_BOTH>,
+				     <0x2 0x13 0x6 IRQ_TYPE_EDGE_BOTH>,
+				     <0x2 0x13 0x7 IRQ_TYPE_EDGE_BOTH>;
+			interrupt-names = "bat-ov",
+					  "usbin-plugin",
+					  "usbin-icl-change",
+					  "wdog-bark",
+					  "usb-plugin",
+					  "usb-icl-change",
+					  "dc-plugin",
+					  "dc-icl-change";
+			io-channels = <&pm8150b_adc ADC5_USB_IN_V_16>,
+				      <&pm8150b_adc ADC5_USB_IN_I>;
+			io-channel-names = "usb_in_v_div_16", "usb_in_i_uv";
+			monitored-battery = <&battery>;
+			status = "okay";
+		};
+	};
+};
+
+/* VBUS：主充电器要能报 vbus 电压/限流 */
+&pm8150b_vbus {
+	regulator-min-microamp = <500000>;
+	regulator-max-microamp = <3000000>;
+	status = "okay";
+};
+
+/* 40W 快充（TI bq25970，@0x66）。irq = GPIO68，下降沿 */
+&i2c15 {
+	status = "okay";
+
+	bq25970: bq25970-standalone@66 {
+		compatible = "ti,bq2597x-standalone";
+		reg = <0x66>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <68 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&bq2597x_master_int_default>;
+
+		ti,bq2597x,bat-ovp-alarm-disable;
+		ti,bq2597x,bat-ocp-disable;
+		ti,bq2597x,bat-ocp-alarm-disable;
+		ti,bq2597x,bat-ucp-alarm-disable;
+		ti,bq2597x,bat-ucp-disable;
+		ti,bq2597x,bat-therm-disable;
+		ti,bq2597x,bus-therm-disable;
+		ti,bq2597x,die-therm-disable;
+
+		ti,bq2597x,bat-ovp-threshold = <4450>;
+		ti,bq2597x,bat-ovp-alarm-threshold = <4450>;
+		ti,bq2597x,bus-ovp-threshold = <12000>;
+		ti,bq2597x,bus-ovp-alarm-threshold = <11000>;
+		ti,bq2597x,bus-ocp-threshold = <3750>;
+		ti,bq2597x,bus-ocp-alarm-threshold = <3500>;
+
+		ti,bq2597x,bat-therm-threshold = <0x15>;	/* 4.1% */
+		ti,bq2597x,bus-therm-threshold = <0x15>;	/* 4.1% */
+		ti,bq2597x,die-therm-threshold = <145>;
+		ti,bq2597x,ac-ovp-threshold = <14>;
+
+		status = "okay";
+	};
+};
+
+&tlmm {
+	bq2597x_master_int_default: bq2597x-master-int-default {
+		pins = "gpio68";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+		input-enable;
+	};
+};
