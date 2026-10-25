@@ -1,11 +1,13 @@
 # PR：给 misaka-link/umi-linux 补上面板驱动
 
-两个补丁已经生成好，直接可以提 PR：
+**已提交：<https://github.com/misaka-link/umi-linux/pull/1>**
+（fork `colorgarden/umi-linux`，分支 `panel-xiaomi-umi`）
 
 | 文件 | 内容 |
 |---|---|
 | `0001-drm-panel-xiaomi-umi.patch` | 内核补丁：新增 `drivers/gpu/drm/panel/panel-xiaomi-umi.c`（931 行）+ Kconfig/Makefile。**基于 v6.18 的 panel Kconfig/Makefile 生成**，能直接 `git am` |
-| `0002-dt-sm8250-xiaomi-umi-panel.patch` | 设备树 + 文档：打开 `&mdss`/`&mdss_dsi0`/`&mdss_dsi0_phy`，加 `dt/xiaomi-umi-panels.dtsi`，新增 `docs/05-面板驱动.md` |
+| `misaka-pull-1.patch` | PR 分支那一个 commit 的完整导出（= `git format-patch -1`），含 DT/dtsi/文档 + 上面的内核补丁文件 |
+| `PR-body.md` | PR 正文（`gh pr edit 1 --body-file` 用的就是它） |
 
 ## 这条 PR 能给他们什么
 
@@ -17,28 +19,30 @@
 - `bl_ctrl_dcs` 背光，亮度 1..2047，`/sys/class/backlight/umi-panel`
 - 息屏再亮、**面板级 repower**（`echo 1 > …/repower` 重发 on 序列，偶发
   开机黑屏不用重启）
-- 数据驱动：`xiaomi-umi-panels.dtsi` 里 22 个 `panel-id` 变体（Samsung J2 /
-  CSOT / …），换机器只改 DT，不改驱动
+- 数据驱动：驱动只认 `xiaomi,umi-panel`，时序/DCS 序列/panel-id 全在 DT 里，
+  所以一个驱动覆盖 umi 的全部变体（华星 `42` / 三星 `38` / …）；本 PR 里
+  的 dtsi 是**本机 CSOT `j2_mp_42_02_0b`** 那一份
 - 附带 `dsi` 调试节点：可以直接往 DSI 发原始 DCS 包，做面板实验不用重编内核
 
-实测环境：小米 10（umi / M2008J2C，SM8250，Samsung `j2_mp_42_02_0b` 面板），
-主线 6.12.94。日志与踩坑记录在
+实测环境：小米 10（umi / M2008J2C，SM8250，**CSOT（华星光电）
+`j2_mp_42_02_0b`** 面板），主线 6.12.94。日志与踩坑记录在
 <https://github.com/colorgarden/umi-mainline>（`docs/DISPLAY.md`、
 `docs/TOUCH.md`）。
 
 ## 怎么提
 
-我没有他们仓库的写权限，下面几条命令在本地跑完就会把 PR 建起来：
+已经提好了（`gh pr create` 成功，输出 `https://github.com/misaka-link/umi-linux/pull/1`），
+下面是重现步骤，供以后改版/重开 PR 用：
 
 ```sh
 # 1. fork + clone
 gh repo fork misaka-link/umi-linux --clone
 cd umi-linux
 
-# 2. 建分支并应用补丁
+# 2. 建分支并应用补丁（misaka-pull-1.patch 是已经提上去的完整 commit；
+#    只想要内核部分就单独 git am 0001-drm-panel-xiaomi-umi.patch）
 git checkout -b panel-xiaomi-umi
-git am /path/to/0001-drm-panel-xiaomi-umi.patch
-git am /path/to/0002-dt-sm8250-xiaomi-umi-panel.patch
+git am /path/to/misaka-pull-1.patch
 
 # 3. 推到自己的 fork
 git push -u origin panel-xiaomi-umi
@@ -61,8 +65,9 @@ gh pr create --repo misaka-link/umi-linux \
 1. `drivers/gpu/drm/panel/panel-xiaomi-umi.c`：数据驱动的 AMOLED 面板驱动
    （compatible `xiaomi,umi-panel`），命令模式 + DSC 1.1，背光走
    `bl_ctrl_dcs`（1..2047），带 `repower` / `kick` / `dsi` 三个调试节点。
-2. `dt/xiaomi-umi-panels.dtsi`：22 个面板变体的时序与 DCS on/off 序列
-   （从原厂 DTB 生成），换面板只改 DT。
+2. `dt/xiaomi-umi-panels.dtsi`：本机 **CSOT `j2_mp_42_02_0b`** 的时序与
+   652 字节 DCS on/off 序列（从原厂 DTB 生成）；其它 21 个变体用生成器
+   重新导出，驱动不用改。
 3. `dt/sm8250-xiaomi-umi-common.dtsi`：把原来注释掉的
    `&mdss` / `&mdss_dsi0` / `&mdss_dsi0_phy` 真正打开，接上面板节点。
 4. `docs/05-面板驱动.md`：选项、换面板、已知问题。
@@ -76,7 +81,7 @@ gh pr create --repo misaka-link/umi-linux \
 
 ### 测试
 
-- 设备：小米 10（umi / SM8250 / Samsung `j2_mp_42_02_0b` 面板）
+- 设备：小米 10（umi / SM8250 / **CSOT（华星光电）** `j2_mp_42_02_0b` 面板）
 - 内核：主线 6.12.94；本 PR 的 Kconfig/Makefile 段是基于 v6.18 生成的
 - 结果：fbcon 在 1080×2340 下正常，`/sys/class/backlight/umi-panel`
   亮度 1..2047 生效，息屏再亮正常，`repower` 能把黑屏救回来

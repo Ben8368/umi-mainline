@@ -6,20 +6,22 @@
 | 文件 | 内容 |
 |---|---|
 | `rootfs-build/patch/kernel/archive/sm8250-6.18/0001-drm-panel-xiaomi-umi.patch` | 内核补丁：新增 `drivers/gpu/drm/panel/panel-xiaomi-umi.c`（931 行，compatible `xiaomi,umi-panel`）+ Kconfig/Makefile。**基于 v6.18 的 `drivers/gpu/drm/panel/` 生成**，可以直接 `git am` |
-| `rootfs-build/patch/kernel/archive/sm8250-6.18/dt/xiaomi-umi-panels.dtsi` | 22 个面板变体的时序与 DCS on/off 序列（从原厂 DTB 生成），换面板只改 DT |
+| `rootfs-build/patch/kernel/archive/sm8250-6.18/dt/xiaomi-umi-panels.dtsi` | 本机这块 **CSOT（华星光电）** 面板 `j2_mp_42_02_0b` 的时序与 652 字节 DCS on/off 序列（从原厂 DTB 生成）。换面板 = 用生成器重新导出这一份 |
 | `rootfs-build/patch/kernel/archive/sm8250-6.18/dt/sm8250-xiaomi-umi-common.dtsi` | 打开 `&mdss` / `&mdss_dsi0` / `&mdss_dsi0_phy`，接上面板节点 |
 | `docs/05-面板驱动.md` | 内核选项、换面板、已知问题 |
 
 ## 实测
 
-设备：小米 10（umi / SM8250 / Samsung `j2_mp_42_02_0b` 面板），主线 **6.12.94**。
+设备：小米 10（umi / SM8250 / **CSOT（华星光电）** `j2_mp_42_02_0b` 面板），主线 **6.12.94**。
 
 - 1080×2340 命令模式 + **DSC 1.1**（652 字节 on 序列），fbcon 正常
 - 背光 `bl_ctrl_dcs`：`/sys/class/backlight/umi-panel`，亮度 1..2047
 - 息屏再亮正常
 - **偶发开机黑屏有救援开关**：`echo 1 > …/ae94000.dsi.0/repower` 重发 on
   序列（59 包/652 字节），不用重启 —— 这条对 DSC cmd mode 挺有用
-- 数据驱动：`xiaomi,panel-id` 选变体，22 种面板共用一个驱动
+- 数据驱动：驱动只认 `xiaomi,umi-panel`，时序/DCS 序列/panel-id 全在 DT 里，
+  所以一个驱动能覆盖 umi 出厂的全部面板变体（华星 42 / 三星 38 / …）；
+  本 PR 里的 dtsi 是**本机这块 CSOT `j2_mp_42_02_0b`** 那一份
 
 日志与踩坑记录：<https://github.com/colorgarden/umi-mainline>（`docs/DISPLAY.md`）
 

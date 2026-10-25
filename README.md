@@ -40,7 +40,7 @@ partition — the kernel is always loaded into RAM with `fastboot boot`.
 
 * SoC: Qualcomm SM8250 (Snapdragon 865), 8 cores
 * Display: 1080×2340 AMOLED, command mode, DSC 8bpc/8bpp, slice 540×12
-* Panel variant on the test device: `j2_mp_42_02_0b__dsc_cmd` (Samsung J2)
+* Panel variant on the test device: `j2_mp_42_02_0b__dsc_cmd` (**CSOT / 华星光电**, vendor code `42`)
 * Touch: **STMicroelectronics FTS** at `i2c@a94000` (QUPV3 wrap1 SE5), address
   `0x49`, reset GPIO38, IRQ GPIO39, level low
 * Power: pm8150 / pm8150l / pm8150b / pm8009
