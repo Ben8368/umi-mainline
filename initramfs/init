@@ -449,55 +449,18 @@ else
 	N_RB=""
 fi
 
-# ------------------------------------------------------------------ [8] panic screen self-test
-# The kernel has CONFIG_DRM_PANIC with the "qr_code" screen: on a real panic it
-# draws the compressed kmsg as a QR code on the panel. This self-test draws it
-# WITHOUT crashing, so you can check that it is scannable and that the decoder
-# works. Triggered from debugfs (CONFIG_DRM_PANIC_DEBUG).
+# ------------------------------------------------------------------ [8] panic screen
 #
-# *** THIS MUST BE THE LAST THING THE SCRIPT DOES. ***
-# Anything printed after the QR code has been drawn makes fbcon repaint the
-# screen, which erases the QR code within milliseconds -- the self-test would
-# then look like it "did nothing". So:
-#   * all the explanation is printed BEFORE the sleep,
-#   * on success we print NOTHING at all afterwards (silence keeps the QR),
-#   * only a failure may print (there is no QR to protect in that case).
-# ------------------------------------------------------------------ [8a] early boot log
-# The drm_panic QR payload only holds the TAIL of the ring buffer (~110 lines).
-# The errors that matter (rpmh / clock / regulator probe failures) happen in the
-# first few seconds and get scrolled out. So re-inject the HEAD of dmesg into
-# kmsg right here, as the very last thing before the screen capture: then the
-# early boot log IS the tail, and the QR will contain it.
-if [ -f /panic-test ]; then
-	say ""
-	say "==== [8a] re-injecting dmesg HEAD so the QR can hold it ===="
-	dmesg 2>/dev/null | head -70 | while IFS= read -r l; do
-		echo "<6>$l" >>/dev/kmsg 2>/dev/null
-	done
-	say "==== [8a] end of early log ===="
-fi
-
-if [ -f /panic-test ]; then
-	N=$(cat /panic-test)
-	say ""
-	say "==== [8] panic screen self-test ===="
-	say "   in ${N}s the screen will switch to the drm_panic QR code."
-	say "   This looks exactly like a real panic. It is NOT a crash."
-	say "   Nothing will be printed after that on purpose: any further console"
-	say "   output would make the screen repaint and erase the QR code."
-	say "   Scan it, then: python tools\\\\decode-panic-qr.py \"<pasted string>\""
-	sleep "$N"
-	mount -t debugfs none /sys/kernel/debug 2>/dev/null
-	F=$(ls /sys/kernel/debug/dri/*/drm_panic_plane_* 2>/dev/null | head -1)
-	if [ -n "$F" ] && echo 1 >"$F" 2>/dev/null; then
-		: # success: deliberately silent, see the comment above
-	else
-		say "   !! panic screen trigger FAILED (${F:-no drm_panic_plane_* found})"
-		say "      hints: drm=$(ls /sys/kernel/debug/dri 2>/dev/null | tr '\n' ' ')_card=$(ls /sys/class/drm 2>/dev/null | tr '\n' ' ')"
-		say "      DRM_PANIC_DEBUG / DRM_PANIC / a DRM device are required"
-	fi
-fi
-
+# There used to be a panic-screen SELF TEST here: N seconds after boot it
+# triggered drm_panic on purpose, which repainted the whole panel with the QR
+# code (looks like full-screen colour blocks from a distance).  It was a
+# bring-up debug aid, not something a daily image should do on its own, so it
+# is gone.
+#
+# To check the panic screen by hand (no special image needed):
+#     mount -t debugfs none /sys/kernel/debug
+#     echo 1 > /sys/kernel/debug/dri/*/drm_panic_plane_*
+# A real panic still draws the QR code (CONFIG_DRM_PANIC).
 # Automatic reboot (only meaningful when packaged with --reboot N).
 if [ -n "$N_RB" ]; then
 	sleep "$N_RB"

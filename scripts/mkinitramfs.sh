@@ -6,8 +6,6 @@
 #   ... --no-usb-console            不带 USB 串口 + U盘（默认带）
 #   ... --reboot 60                 到点自动重启（方便反复试；默认不重启）
 #   ... --dump-partition sda15      把 log 也写进 /dev/sda15（用 TWRP 读回来，谨慎使用）
-#   ... --test-panic 60             N 秒后自动画一次 panic 屏（二维码自测；默认不做）
-#   ... --no-panic-test             不做这个自测
 #   ... --root /dev/sda34           切根到真正的 rootfs（默认就是这个，Arch 装在 userdata）
 #   ... --rootfstype ext4           根文件系统类型（默认 ext4）
 #   ... --root none                 纯救援镜像，不切根
@@ -22,10 +20,6 @@ BB=${BB:-/tmp/armroot/bin/busybox.static}
 USB=1
 REBOOT=""
 DUMPPART=""
-# 默认**不做** panic 屏自测：那会在启动后 N 秒把整块屏刷成 drm_panic 的二维码
-# （看起来就是满屏色块），日常使用/给别人看都不合适。要看就显式传
-# `--test-panic 60`。
-PANICTEST=""
 ROOTDEV="/dev/sda34"
 ROOTFSTYPE="ext4"
 while [ $# -gt 0 ]; do
@@ -34,8 +28,6 @@ while [ $# -gt 0 ]; do
 	--no-usb-console) USB=0 ;;
 	--reboot) shift; REBOOT="$1" ;;
 	--dump-partition) shift; DUMPPART="$1" ;;
-	--test-panic) shift; PANICTEST="$1" ;;
-	--no-panic-test) PANICTEST="" ;;
 	--root) shift; ROOTDEV="$1" ;;
 	--rootfstype) shift; ROOTFSTYPE="$1" ;;
 	*) echo "未知参数 $1"; exit 1 ;;
@@ -103,7 +95,6 @@ chmod 755 "$BUILD/init"
 [ "$USB" = 1 ] && echo "usb" > "$BUILD/usb-console"
 [ -n "$REBOOT" ] && echo "$REBOOT" > "$BUILD/reboot-after"
 [ -n "$DUMPPART" ] && echo "$DUMPPART" > "$BUILD/dump-partition"
-[ -n "$PANICTEST" ] && echo "$PANICTEST" > "$BUILD/panic-test"
 # 切根目标：写进 initramfs 的小文件，init 脚本读它，不用重编内核（cmdline 是编译期固定的）
 if [ -n "$ROOTDEV" ]; then
 	echo "$ROOTDEV" > "$BUILD/root-dev"
