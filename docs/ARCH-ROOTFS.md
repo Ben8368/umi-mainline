@@ -231,3 +231,28 @@ ABL 回落 fastboot —— **即使 md5 对得上**。
 > 不要图省事在手机上改分区里的 dtb 段。
 
 代价是每次实验要按一次键进 fastboot，但至少不用猜为什么起不来。
+
+
+## 10. 分区远大于镜像：首次启动后要缩放文件系统
+
+镜像 out/arch-rootfs.img 是固定 6 GiB，但真正烧进去的是手机上的
+/dev/sda34（226.3 GiB）。所以刚启动时 df 只有 5.9G：
+
+`
+/dev/sda34  5.9G  2.3G  3.6G  40% /
+`
+
+ext4 支持在线变长，不用重启、不用卸载：
+
+`sh
+resize2fs /dev/sda34
+df -h /
+`
+
+`
+The filesystem on /dev/sda34 is now 59318267 (4k) blocks long.
+/dev/sda34  223G  2.3G  221G   2% /
+`
+
+注意：esize2fs 在线只能**变长**，缩小必须先卸载。以后换更大的镜像时
+同样只要两行命令，别再重烧分区。
