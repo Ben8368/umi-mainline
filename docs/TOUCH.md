@@ -692,3 +692,47 @@ flashProcedure: ERROR 82000000
 - 想恢复只剩：产线/服务工具，或者把 userdata 让给 MIUI 重装。
 - 其它一切正常：WiFi（固定 MAC  0:03:7f:12:a4:a4）、USB RNDIS 网卡、
   串口控制台、SSH 都不受影响。
+
+### 10.6 ROM 下载模式探针（用户态，2026-10-25 晚）
+
+内核路径看不到中间状态，所以写了 	mp/fts_hw.py：用 I2C_RDWR 直接对
+/dev/i2c-13 发 FTS 的 HW 寄存器协议，每一步都能看到返回值。需要
+python3（pacman -S python；/dev/i2c-13 来自 i2c-dev）。
+
+协议（全部来自厂商 tsFlash.c / tsHardware.h）：
+
+`
+0xFA <addr:4B> <data...>    写 HW 寄存器
+0xFB <addr:4B>              读（再取 N 字节）
+
+0x20000000  ADDR_DCHIP_ID          芯片 ID（正常应为 36 39）
+0x20000004  ADDR_DCHIP_FW_VER      FW 版本
+0x20000024  ADDR_SYSTEM_RESET      SYSTEM_RESET_VALUE = 0x80；hold_m3 写 0x01
+0x20000025  ADDR_BOOT_OPTION       "REMAP / Boot option"，flash_unlock 写 0x20
+0x2000006A  erase                  flash_unlock 后写 0xA0 启动擦除
+0x2000006B  unlock 第二段          写 0x00
+0x20000071  FLASH_DMA_CODE0        0x71 / 0xC0
+0x20000078  ADDR_CRC               低 2 位 = CRC 错误标志
+`
+
+实测（空片状态）：
+
+| 操作 | 结果 |
+|---|---|
+| i2c 地址扫描 0x20–0x77 | 只有 **0x49** 应答 |
+| 裸读 8 字节 |  0 00 00 00 00 00 00 00 |
+| HW 寄存器读（0xFB 框） | 全部 FF FF（读长度 1 时直接 EIO） |
+| 写  x24 = 0x01（hold_m3） | 写入 ACK，事后读回仍 FF |
+| 写  x24 = 0x80（system reset） | 同上 |
+| lash_unlock（ x25=0x20、 x6B=0x00） | 同上 |
+| 单字节命令扫描（0xA0–0xAB、0xF0–0xFF、0x00/01/02/05/0x40） | 之后裸读全是  0，无有效响应 |
+| 长复位（RESET 拉低 200 ms 再释放） | chip id 仍 FF FF |
+| 整轨断电 8 s（unbind→bind） | 芯片状态无变化；且 unbind 不释放 legacy gpio_request，重绑时报 Failed to get gpio 589 (-16 EBUSY)，必须重启才能重新绑定 |
+
+结论：**控制器在硬件层面还活着（ACK i2c），但下载/寄存器接口不响应任何
+我们能构造的时序**。要么需要 ST 的 boot ROM 协议文档，要么需要产线工具；
+纯靠猜时序已经到尽头。
+
+另外注意：lush 后 load program DONE/load config DONE 说明当初那次刷写
+是成功的（代码页写进去了），所以现在芯片里是**有效代码 + 空 CX**；它之所以
+不再响应，是 FW 在 CX 无效时不会启动应用层，而 ROM 又不实现 HW 寄存器读。

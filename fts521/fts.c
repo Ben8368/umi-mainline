@@ -1305,6 +1305,65 @@ static ssize_t fwupdate_store(struct device *dev,
 	if (info->client->irq)
 		disable_irq(info->client->irq);
 
+	if (mode & 128) {
+		/*
+		 * Long reset pulse: the vendor pulses RESET for 10 ms, which may
+		 * not be enough for the ROM to re-sample a blank/corrupt flash.
+		 * RESET is active low on this board (the vendor's own sequence
+		 * drives 0 for 10 ms and then 1).
+		 */
+		u8 id[2] = { 0, 0 };
+
+		if (info->board->reset_gpio != GPIO_NOT_DEFINED) {
+			gpio_set_value(info->board->reset_gpio, 0);
+			msleep(200);
+			gpio_set_value(info->board->reset_gpio, 1);
+			msleep(100);
+			logError(1, "%s fwupdate: long reset pulse done\n", tag);
+		} else {
+			logError(1, "%s fwupdate: no reset gpio\n", tag);
+		}
+
+		ret = fts_writeReadU8UX(FTS_CMD_HW_REG_R, ADDR_SIZE_HW_REG,
+					ADDR_DCHIP_ID, id, 2, DUMMY_FIFO);
+		logError(1, "%s fwupdate: chip id after reset ret %d -> %02X %02X\n",
+			 tag, ret, id[0], id[1]);
+	}
+
+	if (mode & 16) {
+		/* raw HW-register dump: the whole flash/download path is driven
+		 * through 0x200000xx (0xFA write / 0xFB read), so reading these
+		 * tells us whether the IC still answers at that level. */
+		static const u64 addrs[] = { 0x20000024ULL, 0x20000025ULL,
+					     0x2000006AULL, 0x2000006BULL };
+		int i;
+
+		for (i = 0; i < ARRAY_SIZE(addrs); i++) {
+			u8 b[2] = { 0xEE, 0xEE };
+
+			ret = fts_writeReadU8UX(FTS_CMD_HW_REG_R,
+						ADDR_SIZE_HW_REG, addrs[i],
+						b, 2, 0);
+			logError(1,
+				 "%s fwupdate: hw[%08llX] ret %d -> %02X %02X\n",
+				 tag, (unsigned long long)addrs[i], ret, b[0],
+				 b[1]);
+		}
+	}
+
+	if (mode & 32) {
+		u8 v = 0x01;
+
+		ret = fts_writeU8UX(FTS_CMD_HW_REG_W, ADDR_SIZE_HW_REG,
+				    0x20000024ULL, &v, 1);
+		logError(1, "%s fwupdate: hold_m3(0x24=1) ret %d\n", tag, ret);
+	}
+
+	if (mode & 64) {
+		ret = flash_unlock();
+		logError(1, "%s fwupdate: flash_unlock ret %d\n", tag, ret);
+	}
+
 	if (mode & 8) {
 		ret = fts_chip_powercycle(info);
 		logError(1, "%s fwupdate: chip powercycle -> %d\n", tag, ret);
