@@ -854,3 +854,58 @@ super 里的 system/vendor/product/odm/system_ext 全部是 ext4，**没有任�
 供电已排除：`vreg_l1c_1p8` 1800 mV、`touch_vddio_vreg` 3300 mV 都是 enabled
 且带负载。剩下只能是传感器/AFE 侧的硬件问题（触控 FPC、面板换过、或
 VTX/VRX 未连），或 MIUI 在别处开启了某个我们还没打开的硬件使能。
+
+### 11.6 又对齐了三处和 MIUI 的差异（AFE 仍然没信号）
+
+继续和厂商 `downstream-kernel/.../fts_521` 逐行对比，又找到三处：
+
+1. **扫描掩码**：厂商 `fts_mode_handler()` 发的是
+   `setScanMode(SCAN_MODE_ACTIVE, 0x01)`（只开多点触控），我们从 sm7150
+   移植来的那份发 `0xFF`（"开 config 支持的所有扫描"）。
+   0xFF 会让固件去做 key/hover/proximity/force 这些这颗面板没有的扫描，
+   结果**每帧 elaboration 失败**，FIFO 里只有 `43 03`(STATUS/FRAME_DROP)，
+   一个触摸点都不报。已改成 `ACTIVE_MULTI_TOUCH`。
+2. **sense 重启**：厂商 `fts_init_sensing()` 在 `fts_mode_handler()` 之后还有
+   一段（原在 `CONFIG_TOUCHSCREEN_FOD` 里）：`setScanMode(0,00)` → 等 50 ms
+   → `setScanMode(0,01)`。已无条件补上。
+3. **中断使能**：厂商末尾有 `fts_enableInterrupt()`，我们这行原来是注释掉的。
+   已恢复（并保留 `fts_resetDisableIrqCount()`）。
+
+改完掩码之后 `mode_active = { 00010000 }`，FRAME_DROP 洪水消失（IRQ 从
+2.7 次/秒变 0），但**仍然没有任何触摸报文**：
+
+    FIFO 直读 25 秒（25 × mode 1024 直方图）: 0 个事件
+    按住屏幕 45 次 raw 采样: spread=0（完全不变）
+    requestSyncFrame(MS_RAW/FILTER/STRENGTH/BASELINE) -> 80020007 = ERROR_REQU_DATA|ERROR_TIMEOUT
+
+顺带把**工厂 lockdown/production 区**读出来了（用 `A4 06 7x` 加载 +
+`A6 00 00` 读 28 字节），这块**没被我们擦坏**：
+
+    lockdown 0x70: A5 70 02 00 ... 53 42 32 01 74 02 32 01
+                   -> lockdown_info = 53 42 32 01 74 02 32 01
+
+按厂商 DT 的选择表：
+
+| | tp-vendor | tp-module | 固件 |
+|---|---|---|---|
+| cfg_0 | 0x38 | 0x00 | `st_fts_j2_1.ftb` |
+| **cfg_1** | **0x42** | **0x01** | **`st_fts_j2_2.ftb`** ← 我们这颗 |
+| cfg_2 | 0x42 | 0x02 | `st_fts_j2_3.ftb` |
+
+`lockdown_info[1]=0x42`、`lockdown_info[7]=0x01` → **`j2_2` 是对的**（镜像作者
+给的原始文件）。0x71..0x77 返回 `temp[4]=0x32`（NO_DATA），即只有 0x70 这条
+记录存在，符合预期。
+
+判定帧读取链路是否正常的方法：`raw` 现在一次读四种帧，结果是
+
+    MS_RAW      = -13462 (全节点一致)
+    MS_FILTER   = 0
+    MS_STRENGTH = 0        <- strength = baseline - raw，和 raw 自洽
+    MS_BASELINE = -13462
+
+四种帧自洽，说明**读链路是好的**，是模拟前端本身给出了一条平坦的基线。
+
+结论：数字侧（固件、配置、CX、lockdown、中断、扫描）已经全部对齐 MIUI，
+剩下的缺口在模拟前端拿不到信号，而动驱动之前 `raw` 就已经是 `-13462`，
+说明这一环从 bring-up 第一天起就没通。下一步只能靠「跑一次 MIUI」来判定
+是硬件/工厂数据问题，还是仍有我们没对齐的初始化步骤。

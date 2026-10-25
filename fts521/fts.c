@@ -225,20 +225,41 @@ static ssize_t fts_raw_show(struct device *dev,
 	int res, i, n = 0, cnt;
 	int mn = 0, mx = 0;
 	long long sum = 0;
+	static const u8 types[] = { MS_RAW, MS_FILTER, MS_STRENGTH, MS_BASELINE };
+	unsigned int t;
 
-	memset(&frame, 0, sizeof(frame));
-	frame.node_data = NULL;
+	/*
+	 * Read every mutual-sense frame type.  If raw, filtered and strength all
+	 * come back as the same uniform constant the frame *read* is wrong, not
+	 * the analogue front end: strength is (baseline - raw), so it cannot be
+	 * identical to raw on real data.
+	 */
+	for (t = 0; t < ARRAY_SIZE(types); t++) {
+		memset(&frame, 0, sizeof(frame));
+		frame.node_data = NULL;
 
-	res = getMSFrame3(MS_RAW, &frame);
-	if (res < OK)
-		return snprintf(buf, PAGE_SIZE,
-				"raw: getMSFrame3 failed %08X\n", res);
+		/*
+		 * getMSFrame3() only reads the buffer; the IC fills it when it is
+		 * asked to (SYS_CMD_LOAD_DATA).  Without the request the numbers
+		 * are whatever was left in the controller RAM.
+		 */
+		res = requestSyncFrame(types[t]);
+		if (res < OK)
+			n += snprintf(buf + n, PAGE_SIZE - n,
+				      "type %u: requestSyncFrame %08X\n",
+				      types[t], res);
 
-	cnt = frame.node_data_size;
-	n += snprintf(buf + n, PAGE_SIZE - n, "nodes=%d\n", cnt);
+		res = getMSFrame3(types[t], &frame);
+		if (res < OK) {
+			n += snprintf(buf + n, PAGE_SIZE - n,
+				      "type %u: getMSFrame3 failed %08X\n",
+				      types[t], res);
+			continue;
+		}
 
-	if (cnt > 0) {
-		mn = mx = frame.node_data[0];
+		cnt = frame.node_data_size;
+		mn = mx = cnt ? frame.node_data[0] : 0;
+		sum = 0;
 		for (i = 0; i < cnt; i++) {
 			int v = frame.node_data[i];
 
@@ -249,26 +270,24 @@ static ssize_t fts_raw_show(struct device *dev,
 				mx = v;
 		}
 		n += snprintf(buf + n, PAGE_SIZE - n,
-			      "min=%d max=%d mean=%lld spread=%d\n", mn, mx,
-			      sum / cnt, mx - mn);
+			      "type %u nodes=%d min=%d max=%d mean=%lld spread=%d head:",
+			      types[t], cnt, mn, mx, cnt ? sum / cnt : 0,
+			      mx - mn);
+		for (i = 0; i < cnt && i < 10; i++)
+			n += snprintf(buf + n, PAGE_SIZE - n, " %d",
+				      frame.node_data[i]);
+		n += snprintf(buf + n, PAGE_SIZE - n, "\n");
+		kfree(frame.node_data);
 	}
 
-	n += snprintf(buf + n, PAGE_SIZE - n, "head:");
-	for (i = 0; i < cnt && i < 24; i++)
-		n += snprintf(buf + n, PAGE_SIZE - n, " %d", frame.node_data[i]);
-	n += snprintf(buf + n, PAGE_SIZE - n, "\nspread:");
-	for (i = 0; i < cnt; i += (cnt / 8 ? cnt / 8 : 1))
-		n += snprintf(buf + n, PAGE_SIZE - n, " %d", frame.node_data[i]);
 	n += snprintf(buf + n, PAGE_SIZE - n,
-		      "\naddr raw=0x%04X filt=0x%04X stren=0x%04X "
+		      "addr raw=0x%04X filt=0x%04X stren=0x%04X base=0x%04X "
 		      "txrx=%ux%u\n",
 		      systemInfo.u16_msTchRawAddr,
 		      systemInfo.u16_msTchFilterAddr,
 		      systemInfo.u16_msTchStrenAddr,
+		      systemInfo.u16_msTchBaselineAddr,
 		      systemInfo.u8_scrTxLen, systemInfo.u8_scrRxLen);
-	n += snprintf(buf + n, PAGE_SIZE - n, "\n");
-
-	kfree(frame.node_data);
 	return n;
 }
 
@@ -1508,6 +1527,26 @@ static ssize_t fwupdate_store(struct device *dev,
 			 tag, systemInfo.u8_cfgAfeVer, systemInfo.u8_cxAfeVer,
 			 systemInfo.u8_panelCfgAfeVer, systemInfo.u16_scrResX,
 			 systemInfo.u16_scrResY);
+		logError(1,
+			 "%s fwupdate: mpFlag 0x%02X ssDet 0x%02X fwCrc 0x%08X cfgCrc 0x%08X txrx %ux%u\n",
+			 tag, systemInfo.u8_mpFlag, systemInfo.u8_ssDetScanSet,
+			 systemInfo.u32_fwCrc, systemInfo.u32_cfgCrc,
+			 systemInfo.u8_scrTxLen, systemInfo.u8_scrRxLen);
+		logError(1,
+			 "%s fwupdate: die %02X%02X%02X%02X%02X%02X%02X%02X rel %02X%02X%02X%02X%02X%02X%02X%02X\n",
+			 tag, systemInfo.u8_dieInfo[0], systemInfo.u8_dieInfo[1],
+			 systemInfo.u8_dieInfo[2], systemInfo.u8_dieInfo[3],
+			 systemInfo.u8_dieInfo[4], systemInfo.u8_dieInfo[5],
+			 systemInfo.u8_dieInfo[6], systemInfo.u8_dieInfo[7],
+			 systemInfo.u8_releaseInfo[0], systemInfo.u8_releaseInfo[1],
+			 systemInfo.u8_releaseInfo[2], systemInfo.u8_releaseInfo[3],
+			 systemInfo.u8_releaseInfo[4], systemInfo.u8_releaseInfo[5],
+			 systemInfo.u8_releaseInfo[6], systemInfo.u8_releaseInfo[7]);
+		logError(1,
+			 "%s fwupdate: frames ms raw 0x%04X filt 0x%04X stren 0x%04X dbg 0x%04X\n",
+			 tag, systemInfo.u16_msTchRawAddr,
+			 systemInfo.u16_msTchFilterAddr,
+			 systemInfo.u16_msTchStrenAddr, systemInfo.u16_dbgInfoAddr);
 	}
 
 	if (mode & 2) {
@@ -2783,8 +2822,16 @@ static int fts_init_sensing(struct fts_ts_info *info)
 	error |= fts_interrupt_install(info); /* register event handler */
 	error |= fts_mode_handler(info, 0); /* enable the features and
 						 * sensing */
-	/* error |= fts_enableInterrupt(); */ /* enable the interrupt */
+	/*
+	 * umi: MIUI restarts the scan right after enabling it (its FOD block:
+	 * sense off, wait, sense on).  Without the restart the controller
+	 * reports that it is in active mode but never produces a touch event.
+	 */
+	error |= setScanMode(SCAN_MODE_ACTIVE, 0x00);
+	mdelay(WAIT_AFTER_SENSEOFF);
+	error |= setScanMode(SCAN_MODE_ACTIVE, 0x01);
 	error |= fts_resetDisableIrqCount();
+	error |= fts_enableInterrupt();
 
 	if (error < OK)
 		logError(1, "%s %s Init after Probe error (ERROR = %08X)\n",
@@ -2973,8 +3020,20 @@ static int fts_mode_handler(struct fts_ts_info *info, int force)
 		 * of the following options */
 		/* settings[0] = ACTIVE_MULTI_TOUCH | ACTIVE_KEY | ACTIVE_HOVER
 		 * | ACTIVE_PROXIMITY | ACTIVE_FORCE; */
-		settings[0] = 0xFF; /* enable all the possible scans mode
-					 * supported by the config */
+		/*
+		 * umi: the sm7150 port that this driver comes from sends 0xFF
+		 * here ("enable all the possible scans supported by the
+		 * config"), but the umi vendor driver sends MULTI_TOUCH only:
+		 *
+		 *     Sense ON -> setScanMode(SCAN_MODE_ACTIVE, 0x01)
+		 *     FOD press -> setScanMode(SCAN_MODE_ACTIVE, 0x20)
+		 *
+		 * With 0xFF the controller tries to run the key/hover/proximity/
+		 * force scans that this panel does not have, fails to elaborate
+		 * every frame and reports STATUS/FRAME_DROP for ever without
+		 * ever emitting a touch point.
+		 */
+		settings[0] = ACTIVE_MULTI_TOUCH;
 		logError(0, "%s %s: Sense ON!\n", tag, __func__);
 		res |= setScanMode(SCAN_MODE_ACTIVE, settings[0]);
 		info->mode |= (SCAN_MODE_ACTIVE << 24);
