@@ -765,3 +765,41 @@ etworkctl 显示 Link File 已生效，但 ip link 里还是固件那个）。
 um_radios > 1），所以 DT 的值一定生效。
 
 验证：连着重启两次，ip link show wlan0 都是同一个 MAC。
+
+## 14. 合并镜像：显示 + 触摸 + GPU + WiFi 一条镜像（2026-10）
+
+之前 WiFi 只能用 `sm8250-xiaomi-umi-wifi.dts` 单独跑（主 DTS 没开 PCIe，
+`build.sh` 也不编它），而 GPU/触摸在主 DTS 上，两边没法同时存在。现在合了：
+
+1. `dts/sm8250-xiaomi-umi-wifi.dts` 补上 GPU 段（`&gmu` / `&gpu`，和主 DTS
+   完全一样；boost 电源、触摸、面板都来自 `common.dtsi`，不用重复）。
+2. `scripts/build.sh`：
+   - 同步列表加 `sm8250-xiaomi-umi-wifi.dts`
+   - DTB 循环加 `sm8250-xiaomi-umi-wifi`（顺带拿到 `-@` 编出的 `__symbols__`，
+     ABL 的 dtbo overlay 要用）
+   - 产物收集时一并拷 `out/sm8250-xiaomi-umi-wifi.dtb`
+3. 打包时指定这份 DTB：
+
+```sh
+python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb --name all1
+fastboot boot out/boot-umi-all1.img
+```
+
+实测（`all1`，6.12.94，约 18 s 起 SSH）：
+
+```
+wlan0: <...UP,LOWER_UP> ... link/ether 00:03:7f:12:a4:a4
+iwctl: State connected / HUAWEI-SVTYH4_5G / IPv4 192.168.3.175   <- 固定 MAC 生效
+0000:01:00.0 ath11k_pci: qca6390 hw2.0, fw_version 0x10121492
+gpu: gpu-initialized: 1, revision: 650 (6.5.0.2), devfreq 空闲 305 MHz
+touch: MS_RAW spread 15688（真实帧），vdd_boost_reg=enabled
+```
+
+两点注意：
+
+- `pcie0` 的 `perst-gpios`(79) / `pinctrl-0` / `wake-gpios`(81) 必须留着，
+  所以 `&tlmm` 的 `gpio-reserved-ranges` 要按 wifi.dts 那份放开
+  （`<28 4>, <40 4>`）。主 DTS 那份保留 NORTH，**不能拿主 DTS 打 WiFi**。
+- `pcie-qcom` 的 early power-on 补丁已经在树里（
+  `grep pwrseq drivers/pci/controller/dwc/pcie-qcom.c` 应有 10 处命中）：
+  它在释放 PERST# 之前调 `pwrseq_power_on()`，否则 WLAN_EN 永远是低。

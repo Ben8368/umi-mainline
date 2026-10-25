@@ -161,6 +161,24 @@
 	 * pci_pwrctrl_power_on_devices() 的位置。所有权归 pwrseq，谁也不抢。*/
 };
 
+/* ---------------------------------------------------------------- GPU (Adreno 650)
+ *
+ * 和主 DTS 里那段完全一样。固件（a650_zap.mdt/.b00-.b02、a650_sqe.fw、
+ * a650_gmu.bin）必须打进 initramfs —— adreno 是内建驱动，probe 发生在
+ * rootfs 挂载之前，只放 /lib/firmware 会 -2。详见 docs/GPU.md。
+ */
+&gmu {
+	status = "okay";
+};
+
+&gpu {
+	status = "okay";
+
+	zap-shader {
+		firmware-name = "qcom/a650_zap.mdt";
+	};
+};
+
 /* ------------------------------------------------------------- PCIe0 → QCA6390
  * ★ 一个属性都不删 —— 和作者的 dtb 一样原样用主线那套。
  *
