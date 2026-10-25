@@ -69,6 +69,8 @@
 #include "fts_lib/ftsGesture.h"
 #include "fts_lib/ftsTime.h"
 #include "fts_lib/ftsTool.h"
+#include "fts_lib/ftsFlash.h"
+#include "fts_lib/ftsTest.h"
 
 /**
   * Event handler installer helpers
@@ -87,6 +89,9 @@ extern struct mutex gestureMask_mutex;
 #endif
 
 char tag[8] = "[ FTS ]\0";
+
+/* ftsFlash.c (vendor) expects to reach the device instance through this */
+struct fts_ts_info *fts_info;
 char fts_ts_phys[64]; /* /< buffer which store the input device name assigned
 			 * by the kernel */
 #ifdef USE_ONE_FILE_NODE
@@ -110,6 +115,7 @@ extern spinlock_t fts_int;
 static int fts_init_sensing(struct fts_ts_info *info);
 static int fts_mode_handler(struct fts_ts_info *info, int force);
 static int fts_chip_initialization(struct fts_ts_info *info, u8 init_type);
+int fts_chip_powercycle(struct fts_ts_info *info);
 
 /**
   * Release all the touches in the linux input subsystem
@@ -1264,8 +1270,82 @@ static DEVICE_ATTR(gesture_coordinates, (S_IRUGO | S_IWUSR | S_IWGRP),
 #endif
 
 /*  /sys/devices/soc.0/f9928000.i2c/i2c-6/6-0049 */
+/*
+ * Firmware / panel-config download.
+ *
+ * The vendor stack picks st_fts_j2_1/2/3.ftb by tp-vendor/tp-module read from
+ * the chip and reflashes the IC when the version differs.  This port has no
+ * config-array yet, so the blob is named in the DT (fts,default-fw-name) and
+ * the download is only started on request:
+ *
+ *     echo 1 > /sys/bus/i2c/devices/13-0049/fwupdate
+ *
+ * The flash protocol itself is the untouched vendor ftsFlash.c.
+ */
+static ssize_t fwupdate_store(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct fts_ts_info *info = dev_get_drvdata(dev);
+	const char *name = info->board->default_fw_name;
+	int mode = 0, ret = 0;
+	u16 fw_vers = 0, config_id = 0;
+
+	if (kstrtoint(buf, 0, &mode))
+		return -EINVAL;
+	if (!name)
+		name = "st_fts_j2_2.ftb";
+
+	/*
+	 * The controller interrupt must be off while we poke the IC: with the
+	 * chip sitting in its bootloader the handler would keep re-reading the
+	 * event FIFO from under the flash procedure (that is what wedged the
+	 * kernel on the first attempt).
+	 */
+	if (info->client->irq)
+		disable_irq(info->client->irq);
+
+	if (mode & 8) {
+		ret = fts_chip_powercycle(info);
+		logError(1, "%s fwupdate: chip powercycle -> %d\n", tag, ret);
+		msleep(400);
+	}
+
+	if (mode & 1) {
+		ret = getFirmwareVersion(&fw_vers, &config_id);
+		logError(1, "%s fwupdate: on-chip fw=0x%04X cfg=0x%04X (ret %d)\n",
+			 tag, fw_vers, config_id, ret);
+
+		ret = flashProcedure(name, 1, 0);
+		logError(1, "%s fwupdate: flashProcedure(%s) -> %d\n",
+			 tag, name, ret);
+	}
+
+	if (mode & 4) {
+		ret = fts_system_reset();
+		logError(1, "%s fwupdate: system_reset -> %d\n", tag, ret);
+	}
+
+	if (mode & 2) {
+		ret = production_test_initialization(SPECIAL_FULL_PANEL_INIT);
+		logError(1, "%s fwupdate: production_test_initialization -> %d\n",
+			 tag, ret);
+		if (ret >= OK) {
+			ret = cleanUp(0x01);
+			logError(1, "%s fwupdate: cleanUp -> %d\n", tag, ret);
+		}
+	}
+
+	if (info->client->irq)
+		enable_irq(info->client->irq);
+
+	return count;
+}
+static DEVICE_ATTR_WO(fwupdate);
+
 static struct attribute *fts_attr_group[] = {
 	&dev_attr_appid.attr,
+	&dev_attr_fwupdate.attr,
 	&dev_attr_mode_active.attr,
 	&dev_attr_raw.attr,
 #ifdef USE_ONE_FILE_NODE
@@ -3115,6 +3195,18 @@ static int parse_dt(struct device *dev, struct fts_hw_platform_data *bdata)
 		logError(0, "%s pwr_reg_name = %s\n", tag, name);
 	}
 
+	/*
+	 * FW blob used by the (newly ported) flash path, resolved through
+	 * request_firmware() -> /lib/firmware/.  MIUI names it per panel
+	 * variant (st_fts_j2_1/2/3.ftb, selected by tp-vendor/tp-module).
+	 */
+	retval = of_property_read_string(np, "fts,default-fw-name", &name);
+	if (retval < 0)
+		bdata->default_fw_name = "st_fts_j2_2.ftb";
+	else
+		bdata->default_fw_name = (char *)name;
+	logError(0, "%s default_fw_name = %s\n", tag, bdata->default_fw_name);
+
 	retval = of_property_read_string(np, "fts,regulator_avdd", &name);
 	if (retval == -EINVAL)
 		bdata->avdd_reg_name = NULL;
@@ -3253,6 +3345,7 @@ static int fts_probe(struct spi_device *client)
 
 	info->client = client;
 	info->dev = &info->client->dev;
+	fts_info = info;
 
 	dev_set_drvdata(info->dev, info);
 
@@ -3327,6 +3420,7 @@ static int fts_probe(struct spi_device *client)
 	INIT_WORK(&info->suspend_work, fts_suspend_work);
 
 	info->dev = &info->client->dev;
+	fts_info = info;
 
 	logError(0, "%s SET Input Device Property:\n", tag);
 	info->input_dev = input_allocate_device();
@@ -3459,19 +3553,27 @@ static int fts_probe(struct spi_device *client)
 	logError(1, "%s Device Initialization:\n", tag);
 	error = fts_init(info);
 	if (error < OK) {
-		logError(1, "%s Cannot initialize the device ERROR %08X\n", tag,
-			 error);
-		error = -ENODEV;
-		goto ProbeErrorExit_6;
+		/* umi: same as the init-flow failure below - stay bound so that
+		 * the fwupdate node remains reachable for recovery. */
+		logError(1,
+			 "%s Cannot initialize the device ERROR %08X (keeping device bound)\n",
+			 tag, error);
+		error = OK;
 	}
 
 	logError(1, "%s Sensing Initialization:\n", tag);
 	error = fts_init_flow(info);
 	if (error < OK) {
-		logError(1, "%s Cannot execute init flow ERROR %08X\n", tag,
-			 error);
-		error = -ENODEV;
-		goto ProbeErrorExit_6;
+		/*
+		 * umi: keep the device bound even when the controller cannot
+		 * initialise (e.g. after a bad FW flash, chip id reads 0x0000).
+		 * The sysfs nodes - in particular fwupdate - are the recovery
+		 * path, so dropping the device here would make it unreachable.
+		 */
+		logError(1,
+			 "%s Cannot execute init flow ERROR %08X (keeping device bound)\n",
+			 tag, error);
+		error = OK;
 	}
 
 	logError(0, "%s SET Device File Nodes:\n", tag);

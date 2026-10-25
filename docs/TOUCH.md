@@ -612,3 +612,83 @@ nor does it contain the data this bring-up is missing.
 
 For the record, what the controller reports about itself (and what MIUI reads
 identically): FW 0132, CONFIG VER 004C, CX VER FFFF, AFE 05/05/05.
+
+
+## 10. 2026-10-25：刷 FW 把 CX 擦空，控制器变空片（当前状态：触摸不可用）
+
+### 10.1 起因
+
+补上 pinctrl（驱动要的状态名是 default/sleep，见 ts521/fts.h 对
+PINCTRL_STATE_ACTIVE 的重定义）之后，控制器仍然只在上电时发几十个
+EV_STATUS（43 03 F8 28 ...），之后完全静默、evtest 零事件，
+而 raw 帧依旧是全节点 -13462 —— 和本节前面几轮的结论一致：CX 无效。
+
+于是按「最小 FW 下载」方案，把厂商的 tsFlash.c 移植进来（连带
+tsTest.c 180 KB、tsCompensation.c、224 个缺失常量）并在
+/sys/bus/i2c/devices/13-0049/fwupdate 开了入口。
+
+### 10.2 致命的一步：keep_cx = 0
+
+lashProcedure(path, force, keep_cx)：
+
+- keep_cx = 1 → SKIP_PANEL_CX_INIT，**保留** CX
+- keep_cx = 0 → ERASE_ALL，**擦掉** CX
+
+而 st_fts_j2_2.ftb 自身没有 CX 段（sec2_size = 0），厂商代码警告得很清楚：
+
+`
+WARNING!!! Erasing CX memory but no CX in fw file! touch will not work right after fw update!
+`
+
+CX 被擦空后：断电重启 → FW 不跑 → 所有系统命令 checkEcho 超时
+（ERROR 80000007 = ERROR_TIMEOUT）→ 之后 chip id 读成  000 →
+现在 w = 0xFFFF cfg = 0xFFFF（flash 全 0xFF，空片）。
+
+### 10.3 为什么救不回来
+
+厂商的恢复序列（ts_fw_update()）：
+
+`
+flashProcedure(force) → fts_system_reset() → pollForErrorType(CX CRC)
+  → 有 CRC 错 → flashProcedure(default_fw_name, CRC_CX, 0)
+  → 比较 u8_cfgAfeVer / u8_cxAfeVer / u8_panelCfgAfeVer
+  → fts_chip_initialization(SPECIAL_FULL_PANEL_INIT)   ← 用它重建 CX
+  → fts_init_sensing()
+`
+
+阻塞点：lash_burn() **先**发 FW 的 ts_system_reset()，成功了才
+hold_m3() 进下载模式。空片没有 FW → 第一步就超时 → 永远进不了下载模式：
+
+`
+flash_burn: system reset FAILED!
+Wait for flash TIMEOUT! ERROR 80000007
+flash erase FAILED! ERROR 80080000
+flashProcedure: ERROR 82000000
+`
+
+ts_chip_powercycle() 之后再试（echo 9）也一样：chip 仍读  xFFFF。
+
+### 10.4 现存的开关与安全措施
+
+/sys/bus/i2c/devices/13-0049/fwupdate 按位组合：
+
+| 值 | 动作 |
+|---|---|
+| 1 | 刷 FW |
+| 2 | production_test_initialization(SPECIAL_FULL_PANEL_INIT) + cleanUp |
+| 4 | ts_system_reset |
+| 8 | ts_chip_powercycle（echo 9 = 硬复位 + 刷写） |
+
+- 刷写期间 disable_irq()：第一次没有这层保护时整机挂死过一次（IRQ 处理函数
+  与刷写路径互锁）。
+- FLASH_RETRY_COUNT 从 200 降到 20，失败快速返回。
+- 驱动初始化失败时**保持绑定**，否则 sysfs 全消失、连救的入口都没有。
+- 救急镜像 out/boot-umi-notouch.img：DT 里触摸 status = "disabled"。
+
+### 10.5 结论
+
+- 触摸控制器**当前不可用**（空片 + 无 ROM 下载模式入口）。
+- 不能靠启动 MIUI 恢复：userdata 已是我们的 Arch 根分区，MIUI 起不来。
+- 想恢复只剩：产线/服务工具，或者把 userdata 让给 MIUI 重装。
+- 其它一切正常：WiFi（固定 MAC  0:03:7f:12:a4:a4）、USB RNDIS 网卡、
+  串口控制台、SSH 都不受影响。

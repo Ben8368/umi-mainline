@@ -76,3 +76,6 @@ int elapsedMillisecond(StopWatch *w);
 int elapsedNanosecond(StopWatch *w);
 
 #endif
+
+/* ---- constants imported from the vendor tree (parent driver) ---- */
+#define TIMEOUT_ECHO								TIMEOUT_INITIALIZATION_TEST_RESULT	/*timeout of the echo command, should be the max of all the possible commands (used in worst case)*/

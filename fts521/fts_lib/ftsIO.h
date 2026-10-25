@@ -78,3 +78,7 @@ int fts_writeU8UXthenWriteReadU8UX(u8 cmd1, AddrSize addrSize1, u8 cmd2,
 				   AddrSize addrSize2, u64 address, u8 *outBuf,
 				   int count, int hasDummyByte);
 #endif
+
+/* ---- constants imported from the vendor tree (parent driver) ---- */
+#define I2C_RETRY					3
+#define I2C_WAIT_BEFORE_RETRY		2

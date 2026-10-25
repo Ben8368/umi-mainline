@@ -31,7 +31,7 @@
 #define FLASH_STATUS_BYTES				1	/*number of bytes to check for read the flash status*/
 
 /*Flash timing parameters*/
-#define FLASH_RETRY_COUNT				200	/*number of attemps to read the flash status*/
+#define FLASH_RETRY_COUNT				20	/*number of attemps to read the flash status*/
 #define FLASH_WAIT_BEFORE_RETRY         50	/*time to wait in ms between one status reading and another*/
 
 #ifdef FW_H_FILE

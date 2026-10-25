@@ -178,6 +178,8 @@
 		 */
 		vdd-supply = <&vreg_l1c_1p8>;
 		avdd-supply = <&touch_vddio_vreg>;
+		/* FW/panel blob for the flash path (see fwupdate in fts521/fts.c) */
+		fts,default-fw-name = "st_fts_j2_2.ftb";
 		fts,regulator_dvdd = "vdd";
 		fts,regulator_avdd = "avdd";
 

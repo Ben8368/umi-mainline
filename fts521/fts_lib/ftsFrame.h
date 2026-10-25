@@ -117,3 +117,6 @@ int getMSFrame3(MSFrameType type, MutualSenseFrame *frame);
 int getSSFrame3(SSFrameType type, SelfSenseFrame *frame);
 int getSyncFrame(u8 type, MutualSenseFrame *msFrame, SelfSenseFrame *ssFrame);
 #endif
+
+/* ---- constants imported from the vendor tree (parent driver) ---- */
+#define RETRY_FRAME_DATA_READ					2	/*max number of attempts to read a frame*/

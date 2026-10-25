@@ -30,11 +30,19 @@
 #include "ftsTool.h"
 #include "../fts.h"
 #include <linux/errno.h>
+/*
+ * The vendor flash code logs through MI_TOUCH_LOG*; this port only has
+ * logError().  Map them so ftsFlash.c stays byte-identical to the vendor
+ * tree apart from this block.
+ */
+#define MI_TOUCH_LOGI(l, fmt, ...) logError(l, fmt, ##__VA_ARGS__)
+#define MI_TOUCH_LOGE(l, fmt, ...) logError(l, fmt, ##__VA_ARGS__)
+#define MI_TOUCH_LOGD(l, fmt, ...) logError(l, fmt, ##__VA_ARGS__)
+#define MI_TOUCH_LOGW(l, fmt, ...) logError(l, fmt, ##__VA_ARGS__)
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <stdarg.h>
 #include <linux/serio.h>
 #include <linux/time.h>
 #include <linux/delay.h>

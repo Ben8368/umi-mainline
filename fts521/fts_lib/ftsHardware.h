@@ -369,3 +369,54 @@
 /**@}*/
 
 #endif
+
+/* ---- constants imported from the vendor tree (parent driver) ---- */
+#define ADDR_BOOT_OPTION			((u64)0x0000000020000025)			/*address of Boot option register in SONIA*/
+#define ADDR_CONFIG_OFFSET			((u64)0x0000000000000000)			/*config address in memory if FTI*/
+#define ADDR_CRC					((u64)0x0000000020000078)			/*address of the CRC control register in FTI*/
+#define ADDR_DCHIP_FW_VER			((u64)0x0000000020000004)			/*fw version address for FTI*/
+#define ADDR_DCHIP_ID				((u64)0x0000000020000000)			/*chip id address for FTI*/
+#define ADDR_ERROR_DUMP				((u64)0x000000000000EF80)			/*start address dump error log*/
+#define ADDR_FRAMEBUFFER			((u64)0x0000000000000000)			/*frame buffer address in memory*/
+#define ADDR_GPIO_CONFIG_REG0		((u64)0x000000002000003D)			/*address of GPIO config register*/
+#define ADDR_GPIO_CONFIG_REG2		((u64)0x000000002000003F)			/*address of GPIO config register*/
+#define ADDR_GPIO_DIRECTION			((u64)0x0000000020000032)			/*address of GPIO direction register*/
+#define ADDR_GPIO_INPUT				((u64)0x0000000020000030)			/*address of GPIO input register*/
+#define ADDR_GPIO_PULLUP			((u64)0x0000000020000034)			/*address of GPIO pullup register*/
+#define ADDR_ICR					((u64)0x000000002000002D)			/*address of Device control register to set the comunication protocol (SPI/I2C)*/
+#define ADDR_IER					((u64)0x0000000020000029)			/*address of the Interrupt enable register in FTMI*/
+#define ADDR_SYSTEM_RESET			((u64)0x0000000020000024)			/*address of System control register in FTI*/
+#define CRC_MASK								0x03				/*bitmask which reveal if there is a CRC error in the flash*/
+#define DCHIP_FW_VER_BYTE						2					/*number of bytes of the fw versions*/
+#define DUMMY_CONFIG							0					/*1 if the first byte read from Config Memory is dummy*/
+#define DUMMY_FIFO								0					/*1 if the first byte read from FIFO is dummy*/
+#define DUMMY_FRAMEBUFFER						0					/*1 if the first byte read from Frame buffer is dummy*/
+#define DUMMY_HW_REG							0					/*1 if the first byte read from HW register is dummy*/
+#define FIFO_CMD_READALL						0x87				/*command to read all the events in the FIFO*/
+#define FIFO_CMD_READONE						FIFO_CMD_READALL	/*commad to read one event from FIFO*/
+#define FIFO_DEPTH								32					/*max number of events that the FIFO can collect before going in overflow in FTM5*/
+#define FLASH_ADDR_CODE							0x00000000			/*starting address (words) in the flash of the code in FTI*/
+#define FLASH_ADDR_CONFIG						0x00007C00			/*starting address (words) in the flash of the config in FTI*/
+#define FLASH_ADDR_CX							0x00007000			/*starting address (words) in the flash of the Init data in FTI*/
+#define FLASH_CX_PAGE_END						30					/*last page which contain Cx data*/
+#define FLASH_CX_PAGE_START						28					/*starting page which contain Cx data*/
+#define FLASH_NUM_PAGE							32					/*number of pages in main flash*/
+#define FLASH_PANEL_PAGE_END					27					/*last page which contain Panel Init data*/
+#define FLASH_PANEL_PAGE_START					26					/*starting page which contain Panel Init data*/
+#define FTS_CMD_CONFIG_R						0xA9				/*command to read the config memory if FTI*/
+#define FTS_CMD_CONFIG_W						0xA8				/*command to write the config memory if FTI*/
+#define FTS_CMD_FRAMEBUFFER_R					0xA7				/*command to read the framebuffer if FTI*/
+#define FTS_CMD_HW_REG_R						0xFB				/*command to read an hw register if FTI*/
+#define FTS_CMD_HW_REG_W						0xFA				/*command to write an hw register if FTI*/
+#define FW_BIN_CONFIG_ID_OFFSET					20					/*offset of the config id in the .ftb file*/
+#define FW_BIN_VER_OFFSET						16					/*offset of the fw version in the .ftb file*/
+#define FW_CX_VERSION							(16 + 4)				/*offset of CX version in the sec2 of FW file*/
+#define FW_HEADER_SIZE							64					/*dimension of the header of the .fts file*/
+#define IER_DISABLE								0x00				/*value to write in IER_ADDR to disable the interrupts*/
+#define IER_ENABLE								0x41				/*value to write in IER_ADDR to enable the interrupts*/
+#define MEMORY_CHUNK							1024				/*chunk dimenasion of a single i2c write on mem, max allowed value is 2kB*/
+#define READ_CHUNK								1024				/*chunk dimension of a single i2c read, max allowed value is 2kB*/
+#define SPI_CLOCK_FREQ							7000000				/*clock frequency in Hz of the SPI bus*/
+#define SPI_DELAY_CS							10					/*time in usec to wait before rising the CS*/
+#define SYSTEM_RESET_VALUE						0x80				/*value to write in SYSTEM_RESET_ADDRESS to perform a system reset in FTM5*/
+#define WRITE_CHUNK								1024				/*chunk dimension of a single i2c write, max allowed value is 2kB*/

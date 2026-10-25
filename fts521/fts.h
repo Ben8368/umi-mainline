@@ -168,7 +168,8 @@ struct fts_hw_platform_data {
 	unsigned int x_max;
 	unsigned int y_max;
 	const char *vdd_reg_name; /* /< name of the VDD regulator */
-	const char *avdd_reg_name; /* /< name of the AVDD regulator */
+	const char *avdd_reg_name;
+	char *default_fw_name;	/* /< fw blob name in /lib/firmware */ /* /< name of the AVDD regulator */
 };
 
 /*
@@ -277,3 +278,34 @@ extern int input_register_notifier_client(struct notifier_block *nb);
 extern int input_unregister_notifier_client(struct notifier_block *nb);
 
 #endif
+
+/* ---- constants imported from the vendor tree (parent driver) ---- */
+#define AREA_MAX                            PRESSURE_MAX
+#define AREA_MIN                            PRESSURE_MIN
+#define CENTER_X 540
+#define CENTER_Y 1910
+#define CMD_STR_LEN							32
+#define DISTANCE_MAX						127
+#define DISTANCE_MIN						0
+#define DRIVER_TEST
+#define EXP_FN_WORK_DELAY_MS				1000
+#define FTS_LOCKDOWN_SIZE 8
+#define FTS_RESULT_FAIL 1
+#define FTS_RESULT_INVALID 0
+#define FTS_RESULT_PASS 2
+#define FTS_SELFTEST_FORCE_CAL
+#define FW_ARRAY_NAME myArray
+#define FW_SIZE_NAME myArray_size
+#define FW_UPDATE_ON_PROBE
+#define GRIP_MODE_DEBUG
+#define GRIP_PARAMETER_NUM 8
+#define GRIP_POS 4
+#define GRIP_RECT_NUM 12
+#define GRIP_TYPE 3
+#define LIMITS_ARRAY_NAME myArray2
+#define LIMITS_SIZE_NAME myArray2_size
+#define PINCTRL_STATE_RELEASE		"pmx_ts_release"
+#define RXNODE_MAX							40
+#define TOUCH_ID_MAX                        10
+#define TSP_BUF_SIZE						PAGE_SIZE
+#define TXNODE_MAX							40

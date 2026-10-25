@@ -594,3 +594,82 @@ typedef struct {
 } DataHeader;
 
 #endif
+
+/* ---- constants imported from the vendor tree (parent driver) ---- */
+#define ADDR_CONFIG_FORCE_LEN				0x0031	/*Address where is stored the number of force channels*/
+#define ADDR_CONFIG_ID						0x0010	/*Starting Address of the config ID*/
+#define ADDR_CONFIG_SENSE_LEN				0x0030	/*Address where is stored the number of sense channels*/
+#define CAL_MS_LOW_POWER					0x01	/*Mutual Sense Touch in low power mode*/
+#define ERROR_DUMP_COL_SIZE					4		/*number of bytes for each row of the error memory*/
+#define ERROR_DUMP_ROW_SIZE					32		/*number of rows of the error memory*/
+#define ERROR_DUMP_SIGNATURE				0xFA5005AF	/*first row signature of a proper dump*/
+#define EVT_ID_CONTROLLER_READY				0x03	/*Controller ready, issued after a system reset.*/
+#define EVT_ID_MOTION_POINT					0x23	/*Touch motion (a specific touch changed position)*/
+#define EVT_ID_STATUS_UPDATE				0x43	/*FW report a system condition change*/
+#define EVT_ID_USER_REPORT					0x53	/*User related events triggered (keys, gestures, proximity etc)*/
+#define EVT_TYPE_ERROR_CRC_CFG				0x21	/*CRC error in the Config Area*/
+#define EVT_TYPE_ERROR_CRC_CFG_HEAD			0x20	/*CRC error in the Config Area Header*/
+#define EVT_TYPE_ERROR_CRC_CX				0xA1	/*CRC error in the CX Area*/
+#define EVT_TYPE_ERROR_CRC_CX_HEAD			0xA0	/*CRC error in the CX Area Header*/
+#define EVT_TYPE_ERROR_CRC_CX_SUB			0xA6	/*CRC error in the CX Subsection Area*/
+#define EVT_TYPE_ERROR_CRC_CX_SUB_HEAD		0xA5	/*CRC error in the CX Subsection Area Header*/
+#define EVT_TYPE_ERROR_CRC_PANEL			0x23	/*CRC error in the Panel Area*/
+#define EVT_TYPE_ERROR_CRC_PANEL_HEAD		0x22	/*CRC error in the Panel Area Header*/
+#define EVT_TYPE_ERROR_ITO_FORCETOGND		0x60	/*Force channel/s short to ground*/
+#define EVT_TYPE_ERROR_ITO_FORCETOVDD		0x62	/*Force channel/s short to VDD*/
+#define EVT_TYPE_ERROR_ITO_FORCE_P2P		0x64	/*Pin to Pin short Force channel/s*/
+#define EVT_TYPE_ERROR_ITO_SENSETOGND		0x61	/*Sense channel/s short to ground*/
+#define EVT_TYPE_ERROR_ITO_SENSETOVDD		0x63	/*Sense channel/s short to VDD*/
+#define EVT_TYPE_ERROR_ITO_SENSE_P2P		0x65	/*Pin to Pin short Sense channel/s*/
+#define EVT_TYPE_STATUS_ECHO				0x01	/*Echo event, contain the first 5 bytes of the FW command sent*/
+#define EVT_TYPE_STATUS_FORCE_CAL			0x05	/*Force Calibration has triggered*/
+#define EVT_TYPE_STATUS_FRAME_DROP			0x03	/*Some frame was skipped during the elaboration*/
+#define EVT_TYPE_STATUS_POCKET				0x0A
+#define EVT_TYPE_STATUS_SS_RAW_SAT			0x07	/*Self Sense data saturated*/
+#define EVT_TYPE_USER_EARDET				0x03	/*ear detection event report*/
+#define EVT_TYPE_USER_KEY					0x00	/*Keys pressed/relesed event report*/
+#define EVT_TYPE_USER_OVAL					0x04	/*ear detection event report*/
+#define EVT_TYPE_USER_PROXIMITY				0x01	/*Proximity detection event report*/
+#define FEAT_DISABLE						0		/*General value to disable a feature*/
+#define FEAT_ENABLE							1		/*General value to enable a feature*/
+#define FEAT_SEL_STYLUS						0x07	/*Stylus Mode (this is a driver define, not available in FW)*/
+#define FOD_LONGPRESS_EVENT 0x01
+#define FOD_SINGLETAP_EVENT 0x02
+#define FTS_CMD_CUSTOM			0xC0
+#define FTS_CMD_LOCKDOWN_ID				0x70
+#define FTS_CMD_SYSTEM						0xA4	/*OP code to write s system command*/
+#define GEST_ID_LONG_PRESS					0x18	/*'^'*/
+#define GEST_ID_SINGTAP						0x19	/*'^'*/
+#define ITO_FORCE_GROUND					0x02	/*Check if some force channels is short to ground*/
+#define ITO_FORCE_OPEN						0x00	/*Check if some force channels is open*/
+#define ITO_FORCE_VDD						0x04	/*Check if some force channels is short to VDD*/
+#define ITO_KEY_FORCE_OPEN					0x09	/*Check if some force channels used for the key is open*/
+#define ITO_KEY_SENSE_OPEN					0x0A	/*Check if some sense channels used for the key is open*/
+#define ITO_SENSE_GROUND					0x03	/*Check if some sense channels is short to ground*/
+#define ITO_SENSE_OPEN						0x01	/*Check if some sense channels is open*/
+#define ITO_SENSE_VDD						0x05	/*Check if some sense channels is short to VDD*/
+#define LOAD_CX_MS_FORCE					0x16	/*Load MS Init Data for Force*/
+#define LOAD_CX_MS_KEY						0x14	/*Load MS Init Data for Key*/
+#define LOAD_CX_MS_LOW_POWER				0x11	/*Load MS Init Data for Low Power Mode*/
+#define LOAD_CX_MS_TOUCH					0x10	/*Load MS Init Data for Active Mode*/
+#define LOAD_CX_SS_FORCE					0x17	/*Load SS Init Data for Force*/
+#define LOAD_CX_SS_HOVER					0x18	/*Load SS Hover Init Data for* Force */
+#define LOAD_CX_SS_KEY						0x15	/*Load SS Init Data for Key*/
+#define LOAD_CX_SS_TOUCH					0x12	/*Load SS Init Data for Active Mode*/
+#define LOAD_CX_SS_TOUCH_IDLE				0x13	/*Load SS Init Data for Low Power Mode*/
+#define LOAD_PANEL_CX_TOT_MS_FORCE			0x56	/*Load TOT MS Init Data for Force*/
+#define LOAD_PANEL_CX_TOT_MS_KEY			0x54	/*Load TOT MS Init Data for Key*/
+#define LOAD_PANEL_CX_TOT_MS_LOW_POWER		0x51	/*Load TOT MS Init Data for Low Power Mode*/
+#define LOAD_PANEL_CX_TOT_MS_TOUCH			0x50	/*Load TOT MS Init Data for Active Mode*/
+#define LOAD_PANEL_CX_TOT_SS_FORCE			0x57	/*Load TOT SS Init Data for Force*/
+#define LOAD_PANEL_CX_TOT_SS_KEY			0x55	/*Load TOT SS Init Data for Key*/
+#define LOAD_PANEL_CX_TOT_SS_TOUCH			0x52	/*Load TOT SS Init Data for Active Mode*/
+#define LOAD_PANEL_CX_TOT_SS_TOUCH_IDLE		0x53	/*Load TOT SS Init Data for Low Power Mode*/
+#define LOAD_SYNC_FRAME_BASELINE			0x32	/*Load a Synchronized Baseline Frame*/
+#define LOAD_SYNC_FRAME_FILTER				0x31	/*Load a Synchronized Filter Frame*/
+#define LOAD_SYNC_FRAME_RAW					0x30	/*Load a Synchronized Raw Frame*/
+#define LOAD_SYNC_FRAME_STRENGTH			0x33	/*Load a Synchronized Strength Frame*/
+#define SAVE_PANEL_CONF						0x04	/*Save the Panel configuration to the flash*/
+#define SCAN_MODE_LOCKED					0x03	/*Select the Scan mode which will be locked*/
+#define SCAN_MODE_LOW_POWER					0x01	/*Select the low power scanning mode*/
+#define STAPI_HOST_DATA_ID_PANEL_CX_SS_HVR 	0x58		/*Load HOVER TOT SS Init Data for Activity*/
