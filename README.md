@@ -26,12 +26,12 @@ partition — the kernel is always loaded into RAM with `fastboot boot`.
 | Framebuffer console | **works** | `msmdrmfb`, fbcon on card1 |
 | Backlight | **works** | 1..2047 via `/sys/class/backlight`, usable range starts ~1000 |
 | Power off / on | **works** | sleep-in + reset + full 652-byte init sequence |
-| Touchscreen | **works** | ST FTS on `i2c13`, 10 slots, MT-B |
+| Touchscreen | **works** | ST FTS on `i2c13`, 10 slots, MT-B; needs the `vdd_boost_reg` (PM8150B GPIO5) rail, see `docs/TOUCH.md` §12 |
 | Serial console | **works** | USB CDC-ACM on `ttyMSM0`, 115200 |
 | USB mass storage | **works** | initramfs exports its report directory as a disk |
 | pstore / ramoops | **works** | last crash survives a reboot |
 | CPU / clock / regulator | **partial** | boots with `clk_ignore_unused`, `pd_ignore_unused`, `regulator_ignore_unused` |
-| GPU (Adreno 650) | no | `no GPU device was found` |
+| GPU (Adreno 650) | **works** | `gpu-initialized: 1`, devfreq 305–587 MHz; `a650_*` firmware must be in the initramfs, see `docs/GPU.md` |
 | Wi-Fi / BT | no | pins live in the TLMM *north* tile, not reachable yet |
 | Rootfs on UFS | no | needs a partition write, deliberately not done |
 | 90 Hz mode | no | second timing exists in the panel node, not enabled |
@@ -187,11 +187,14 @@ are enabled and left at the value the bootloader programmed.
 ## 中文速览
 
 小米 10（umi / SM8250）主线内核移植。目前已经能启动、点亮 1080×2340 屏幕、
-调亮度、熄屏再亮、触摸可用。全程只 `fastboot boot`，不写任何分区。
+调亮度、熄屏再亮、**触摸可用**、**Adreno 650 初始化成功**（devfreq 305–587 MHz）。
+全程只 `fastboot boot`，不写任何分区。
 
 编译：`wsl -d umi -u root -e sh scripts/build.sh`
+initramfs（GPU 固件要打进去）：`wsl -d umi -u root -e sh scripts/mkinitramfs.sh`
 打包：`python tools/pack-umi.py --name p16-touch`
 上机：`adb reboot bootloader` → `fastboot boot out/boot-umi-p16-touch.img`
 
-踩坑记录在 `docs/`：`DISPLAY.md`（面板/DSC/DSI 包格式）、`TOUCH.md`（触摸）、
+踩坑记录在 `docs/`：`DISPLAY.md`（面板/DSC/DSI 包格式）、`TOUCH.md`（触摸，
+含 §12 的 boost 电源定案）、`GPU.md`（Adreno 650 + 固件/initramfs）、
 `TESTLOG.md`（每一次上机的实测日志）、`DIAGNOSIS.md`、`HARDWARE.md`。

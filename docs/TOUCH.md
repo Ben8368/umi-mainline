@@ -641,7 +641,7 @@ WARNING!!! Erasing CX memory but no CX in fw file! touch will not work right aft
 `
 
 CX 被擦空后：断电重启 → FW 不跑 → 所有系统命令 checkEcho 超时
-（ERROR 80000007 = ERROR_TIMEOUT）→ 之后 chip id 读成  000 →
+（ERROR 80000007 = ERROR_TIMEOUT）→ 之后 chip id 读成 0000 →
 现在 w = 0xFFFF cfg = 0xFFFF（flash 全 0xFF，空片）。
 
 ### 10.3 为什么救不回来
@@ -666,7 +666,7 @@ flash erase FAILED! ERROR 80080000
 flashProcedure: ERROR 82000000
 `
 
-ts_chip_powercycle() 之后再试（echo 9）也一样：chip 仍读  xFFFF。
+ts_chip_powercycle() 之后再试（echo 9）也一样：chip 仍读 0xFFFF。
 
 ### 10.4 现存的开关与安全措施
 
@@ -690,7 +690,7 @@ flashProcedure: ERROR 82000000
 - 触摸控制器**当前不可用**（空片 + 无 ROM 下载模式入口）。
 - 不能靠启动 MIUI 恢复：userdata 已是我们的 Arch 根分区，MIUI 起不来。
 - 想恢复只剩：产线/服务工具，或者把 userdata 让给 MIUI 重装。
-- 其它一切正常：WiFi（固定 MAC  0:03:7f:12:a4:a4）、USB RNDIS 网卡、
+- 其它一切正常：WiFi（固定 MAC 00:03:7f:12:a4:a4）、USB RNDIS 网卡、
   串口控制台、SSH 都不受影响。
 
 ### 10.6 ROM 下载模式探针（用户态，2026-10-25 晚）
@@ -720,12 +720,12 @@ python3（pacman -S python；/dev/i2c-13 来自 i2c-dev）。
 | 操作 | 结果 |
 |---|---|
 | i2c 地址扫描 0x20–0x77 | 只有 **0x49** 应答 |
-| 裸读 8 字节 |  0 00 00 00 00 00 00 00 |
+| 裸读 8 字节 | 00 00 00 00 00 00 00 00 |
 | HW 寄存器读（0xFB 框） | 全部 FF FF（读长度 1 时直接 EIO） |
-| 写  x24 = 0x01（hold_m3） | 写入 ACK，事后读回仍 FF |
-| 写  x24 = 0x80（system reset） | 同上 |
-| lash_unlock（ x25=0x20、 x6B=0x00） | 同上 |
-| 单字节命令扫描（0xA0–0xAB、0xF0–0xFF、0x00/01/02/05/0x40） | 之后裸读全是  0，无有效响应 |
+| 写 0x24 = 0x01（hold_m3） | 写入 ACK，事后读回仍 FF |
+| 写 0x24 = 0x80（system reset） | 同上 |
+| lash_unlock（0x25=0x20、0x6B=0x00） | 同上 |
+| 单字节命令扫描（0xA0–0xAB、0xF0–0xFF、0x00/01/02/05/0x40） | 之后裸读全是 00，无有效响应 |
 | 长复位（RESET 拉低 200 ms 再释放） | chip id 仍 FF FF |
 | 整轨断电 8 s（unbind→bind） | 芯片状态无变化；且 unbind 不释放 legacy gpio_request，重绑时报 Failed to get gpio 589 (-16 EBUSY)，必须重启才能重新绑定 |
 
@@ -948,3 +948,122 @@ VTX/VRX 未连），或 MIUI 在别处开启了某个我们还没打开的硬件
 至此驱动、DT、面板时序、中断方式与 MIUI/LineageOS **已无可对比的差异**，
 剩下的缺口是出厂烧在芯片里的 FW 与 CX 内容 —— MIUI 和 LineageOS 都因为
 "芯片版本更新就不刷"而从未写过它，公开渠道也没有。
+
+## 12. 定案：缺的是 PM8150B GPIO5 的 boost 电源（已修好）
+
+§11 的推断里只有一条是错的：**模拟前端不是"坏了"，也不是缺出厂 FW/CX，
+而是这颗板级 boost 电源从来没被打开过。**
+
+### 12.1 线索来源
+
+`https://github.com/reAAAq/UniXNU-umi`（iPadOS 17 on umi）第 80 版
+commit `138d6cb`：
+
+```
+fix(touch): enable the native always-on boost before FTS startup
+
+The inherited PM8150B GPIO5 was output-low while the native board DT marks
+vdd_boost_vreg always-on. Require the observed PMIC/pin profile and EE0
+ownership, enable only SID2/C444 bit7, wait 4 ms and verify the readback.
+```
+
+也就是说，**这颗 GPIO 在别人的移植里同样是 output-low，把它拉高之后
+ST FTS 触摸才真正可用**（原话：机主确认触摸有效）。
+
+### 12.2 下游 DT 里的这颗电源
+
+`dump/downstream.dts`：
+
+```dts
+vdd_boost_vreg {
+    compatible = "regulator-fixed";
+    regulator-name = "vdd_boost_vreg";
+    startup-delay-us = <0xfa0>;      /* 4000 us */
+    enable-active-high;
+    regulator-always-on;
+    gpio = <0x654 0x05 0x00>;        /* PM8150B GPIO5 */
+};
+```
+
+它**没有任何 consumer**，原厂就是靠 `regulator-always-on` 常开。
+
+### 12.3 为什么主线上它没开
+
+原厂 dtbo 补进来的那份节点用的是**写死的 phandle**（`00 00 03 2d` = 813），
+而主线 DTB 里 PM8150B 的 gpio 控制器 phandle 是 `0xdb`（219），于是：
+
+```
+platform soc@0:vdd_boost_vreg: deferred probe pending:
+    reg-fixed-voltage: can't get GPIO
+```
+
+—— 节点在，但永远拿不到 GPIO，boost 一直是低电平。
+
+### 12.4 修法
+
+`dts/sm8250-xiaomi-umi-common.dtsi` 里用 label 重新声明一份（不用同名，
+避免和 dtbo 补进来的坏节点打架）：
+
+```dts
+vdd_boost_reg: regulator-vdd-boost {
+    compatible = "regulator-fixed";
+    regulator-name = "vdd_boost_reg";
+    enable-active-high;
+    gpio = <&pm8150b_gpios 5 GPIO_ACTIVE_HIGH>;
+    regulator-always-on;
+    regulator-boot-on;
+    startup-delay-us = <4000>;
+};
+```
+
+### 12.5 结果：触摸当场活了
+
+同一颗芯片、同一份 FW/CX，只多了这颗 GPIO 和 4 ms 上电延时：
+
+| | boost 关 | boost 开 |
+|---|---|---|
+| `raw` MS_RAW | `-13462` 全节点一致，spread=0 | `min=-6178 max=9491 mean=321 spread=15669`，头两节点 `4140 / -2505` |
+| MS_FILTER | 0 | `-30..20` |
+| 中断计数（45 s） | 不动（3） | **3 → 485** |
+| input 事件（45 s） | 0 | **1400 个**：`ABS_MT_POSITION_X/Y`、`BTN_TOUCH` |
+
+`abs_x 439 / abs_y 1787` 落在 1080×2340 内，量纲正确；多点报文的
+`ABS_MT_TOUCH_MAJOR/MINOR/PRESSURE` 也都有值。
+
+### 12.6 顺带把出厂 FW 也找回来了
+
+§11 说"出厂 `0x0132/0x004C` 拿不到"—— 其实它就在**我们自己的原厂 boot
+分区**（`dump/boot-stock.img`）里，以 `fts_fw.h` 的形式编进内核：
+
+```
+python tmp/ftb-scan.py dump/boot-stock.img tmp/stockfw
+```
+
+8 个 `.ftb` 里第 4 个就是 **svn 0x5072 / fw 0x0132 / cfg 0x004C**。已刷入，
+芯片现在报的就是出厂版本：
+
+```
+fw 0x0132 svn 0x5072 cfg 0x004C | afe cfg 0x05 cx 0x05 panel 0x05 | txrx 17x37
+```
+
+（`0x0132` 比仓库里那批 `j2_2` 0x0128 和 MIUI vendor 的 0x0124 都新。）
+
+### 12.7 产线 MP 测试现在能跑完
+
+`fts521/fts_lib/ftsTest.c` 里本来就有完整的产线测试。把 MIUI
+`/vendor/firmware/stm_fts_production_limits_2.csv`（`FORCE_LENGTH 17` /
+`SENSE_LENGTH 37`，正是 17×37 的 j2_2 模组）装上之后：
+
+```
+echo 2048 > /sys/bus/i2c/devices/13-0049/fwupdate   # 只跑 ITO -> 0 (PASS)
+echo 4096 > /sys/bus/i2c/devices/13-0049/fwupdate   # ITO+初始化+数据测试
+```
+
+boost 没开时 4096 死在 `MS RAW MIN MAX TEST`（全节点 `-13462` 超出
+`[-8000, 8000]`）；boost 打开后 `raw` 与中断都正常。
+
+### 12.8 结论修正
+
+§11 的结论"差的是出厂 FW 与 CX"**是错的**。真正的缺口是**一颗板级电源
+使能**：`PM8150B GPIO5`（`vdd_boost_vreg`）。有它，自算的 CX 和
+`j2_2`/出厂 `0x0132` 都能正常出帧；没它，任何 FW/CX 组合都只有 `-13462`。

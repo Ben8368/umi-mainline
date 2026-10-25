@@ -202,8 +202,10 @@ ssh root@192.168.42.1     # 从电脑上
 
 ## 7. 已知限制（第一版）
 
-- **没有触摸**（已放弃；`docs/TOUCH.md` 有完整尸检记录），屏幕只能显示文字
-- **没有 GPU**：`msm` 只有 KMS，没有 3D
+- ~~**没有触摸**~~ **已修好**：缺的是 PM8150B GPIO5 的 boost 电源，见
+  `docs/TOUCH.md` §12
+- ~~**没有 GPU**~~ **已修好**：Adreno 650 可初始化（`gpu-initialized: 1`），
+  固件要打进 initramfs，见 `docs/GPU.md`
 - **没有 WiFi/蓝牙**：TLMM north tile 读不出来，相关 GPIO 无法申请
 - **没有 RTC 备份电池**：断电后时间丢失，靠 NTP 或手动设
 - 交互主要靠 **USB 串口 + RNDIS 网络**，也就是每次都要插线

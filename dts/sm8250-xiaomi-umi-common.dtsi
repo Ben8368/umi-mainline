@@ -135,6 +135,37 @@
 		regulator-boot-on;
 	};
 
+	/*
+	 * 板级 boost 电源使能：PM8150B GPIO5。
+	 *
+	 * 下游 DT（dump/downstream.dts）：
+	 *   vdd_boost_vreg { compatible = "regulator-fixed";
+	 *                    regulator-always-on; enable-active-high;
+	 *                    startup-delay-us = <4000>;
+	 *                    gpio = <&pm8150b_gpios 5 0>; }
+	 * 它没有 consumer（原厂也不给任何设备引用），就是一颗常开的板级电源。
+	 *
+	 * UniXNU 的 XNU 移植（reAAAq/UniXNU-umi commit 138d6cb）把这颗 GPIO
+	 * 从 output-low 改成拉高之后，ST FTS 触摸在 iPadOS 下才真正可用 ——
+	 * 在那之前触摸 IC 只有 1.8 V(vdd) / 3.3 V(vddio)：主机接口、ITO 自容
+	 * 测试都能过，但互容扫描（TX 需要 boost 供电）出不来数据，正好是我们
+	 * 看到的现象（MS_RAW/MS_BASELINE 恒为 -13462、FIFO 永远空、IRQ 不动）。
+	 *
+	 * 原厂 dtbo 里这颗 regulator 是用**写死的 phandle 0x32d** 引用的，主线
+	 * DTB 的 phandle 编号不同，所以 dtbo 补进来的那份拿不到 GPIO
+	 * （dmesg: vdd_boost_vreg: reg-fixed-voltage: can't get GPIO）。
+	 * 这里用 label 重新声明一份，保证开机就把它拉高。
+	 */
+	vdd_boost_reg: regulator-vdd-boost {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd_boost_reg";
+		enable-active-high;
+		gpio = <&pm8150b_gpios 5 GPIO_ACTIVE_HIGH>;
+		regulator-always-on;
+		regulator-boot-on;
+		startup-delay-us = <4000>;
+	};
+
 	gpio_keys: gpio-keys {
 		compatible = "gpio-keys";
 		pinctrl-names = "default";

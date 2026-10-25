@@ -72,6 +72,13 @@
 #include "fts_lib/ftsFlash.h"
 #include "fts_lib/ftsTest.h"
 
+/*
+ * MP test limits as shipped by the vendor in /vendor/firmware.  The three
+ * files there are the three j2 module variants; the _2 one declares
+ * FORCE_LENGTH 17 / SENSE_LENGTH 37, i.e. this panel.
+ */
+#define FTS_LIMITS_FILE "stm_fts_production_limits_2.csv"
+
 /**
   * Event handler installer helpers
   */
@@ -1587,6 +1594,75 @@ static ssize_t fwupdate_store(struct device *dev,
 			ret = cleanUp(0x01);
 			logError(1, "%s fwupdate: cleanUp -> %d\n", tag, ret);
 		}
+	}
+
+	/*
+	 * Factory production test.
+	 *
+	 * The production line does not need the factory FW file to leave the IC
+	 * in a usable state: it runs the panel's own MP test, which re-tunes the
+	 * analogue front end and rewrites the CX area in flash.  The limits file
+	 * ships in the stock vendor image (stm_fts_production_limits_2.csv is
+	 * the 17x37 one, i.e. this module), so the whole flow can be replayed
+	 * here.
+	 *
+	 *   mode 2048  ITO test only (electrode open/short + self capacitance)
+	 *   mode 4096  full MP test: ITO + panel init + data test, then save
+	 *   mode 8192  with 4096: use SPECIAL_PANEL_INIT instead of FULL
+	 *   mode 16384 special tuning: Ioff calibration + CX tuning, then save
+	 */
+	if (mode & (2048 | 4096 | 16384)) {
+		extern TestToDo tests;
+		const char *lim = FTS_LIMITS_FILE;
+
+		/* a brand new CX area queues a CRC error ahead of every echo */
+		fts_lenient_echo = 1;
+
+		if (mode & 2048) {
+			initTestToDo();
+			ret = production_test_ito(lim, &tests);
+			logError(1,
+				 "%s fwupdate: production_test_ito(%s) -> %d\n",
+				 tag, lim, ret);
+		}
+
+		if (mode & 4096) {
+			const int init_type = (mode & 8192) ?
+				SPECIAL_PANEL_INIT : SPECIAL_FULL_PANEL_INIT;
+
+			initTestToDo();
+			ret = production_test_main(lim, 1, init_type, &tests);
+			logError(1,
+				 "%s fwupdate: production_test_main(%s, init %d) -> %d\n",
+				 tag, lim, init_type, ret);
+
+			if (ret >= OK) {
+				u8 save = SAVE_CX | SAVE_PANEL_CONF;
+				int sret = writeSysCmd(SYS_CMD_SAVE_FLASH, &save, 1);
+
+				logError(1, "%s fwupdate: save after MP test -> %d\n",
+					 tag, sret);
+				if (sret < OK)
+					ret = sret;
+			}
+		}
+
+		if (mode & 16384) {
+			u8 ioff[2] = { SPECIAL_TUNING_IOFF, 0x00 };
+			u8 cx[2] = { 0x00, 0x01 };	/* hover autotune */
+			u8 save = SAVE_CX | SAVE_PANEL_CONF;
+
+			ret = writeSysCmd(SYS_CMD_SPECIAL_TUNING, ioff, 2);
+			logError(1, "%s fwupdate: SPECIAL_TUNING(ioff) -> %d\n",
+				 tag, ret);
+			ret = writeSysCmd(SYS_CMD_CX_TUNING, cx, 2);
+			logError(1, "%s fwupdate: CX_TUNING -> %d\n", tag, ret);
+			ret = writeSysCmd(SYS_CMD_SAVE_FLASH, &save, 1);
+			logError(1, "%s fwupdate: save after tuning -> %d\n",
+				 tag, ret);
+		}
+
+		fts_lenient_echo = 0;
 	}
 
 	if (info->client->irq)

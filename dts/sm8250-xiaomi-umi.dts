@@ -94,6 +94,34 @@
 	};
 };
 
+/* ---------------------------------------------------------------- GPU (Adreno 650) */
+
+/*
+ * GPU 需要的固件（都从本机 MIUI 的 /vendor/firmware 取，或 modem 分区）：
+ *
+ *   /lib/firmware/qcom/a650_zap.mdt   + a650_zap.b00/.b01/.b02
+ *   /lib/firmware/qcom/a650_sqe.fw
+ *   /lib/firmware/qcom/a650_gmu.bin
+ *
+ * 6.12 的 adreno 驱动用 qcom_mdt_load() 加载 zap：它会拿固件名末尾 3 个字符
+ * 换成 "bXX" 去找分段（drivers/soc/qcom/mdt_loader.c:83），所以分段文件必须
+ * 和 .mdt 同前缀。zap 的名字来自 a6xx_catalog.c 里的 .zapfw，DT 里的
+ * firmware-name 只是给新内核留的兼容位。
+ *
+ * 缺固件时 adreno probe 会失败（-2/-22），显示（msm/mdss/dsi）不受影响。
+ */
+&gmu {
+	status = "okay";
+};
+
+&gpu {
+	status = "okay";
+
+	zap-shader {
+		firmware-name = "qcom/a650_zap.mdt";
+	};
+};
+
 /*
  * 触摸：STMicroelectronics FTS（不是 goodix，虽然下游 DT 里两个节点都 status=ok，
  * 实机上 /proc/bus/input/devices 只有 "fts"，goodix@5d 从来没 bind 过）。

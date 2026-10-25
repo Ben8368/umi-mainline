@@ -62,6 +62,29 @@ rm -rf "$BUILD"
 mkdir -p "$BUILD/bin" "$BUILD/sbin" "$BUILD/proc" "$BUILD/sys" "$BUILD/dev" \
          "$BUILD/tmp" "$BUILD/etc" "$BUILD/usr/bin" "$BUILD/usr/sbin"
 
+# ---- GPU 固件 ----
+# adreno 是内建驱动，probe 发生在 initramfs 阶段（rootfs 还没挂上），那时候
+# request_firmware() 只能看到 initramfs 里的 /lib/firmware；否则 dmesg 里就是
+#   Direct firmware load for qcom/a650_sqe.fw failed with error -2
+# 于是 GPU 停在未初始化状态（devfreq 有节点但 cur_freq=0）。
+#
+# 文件来自本机 MIUI 的 /vendor/firmware（a650_zap.mdt/.b00-.b02、a650_sqe.fw、
+# a650_gmu.bin），放在仓库 firmware/qcom/ 下；qcom/ 和旧式平铺路径各放一份，
+# 因为 adreno_request_fw() 两种都会试。
+FW_SRC="$WS/firmware/qcom"
+if [ -d "$FW_SRC" ]; then
+	mkdir -p "$BUILD/lib/firmware/qcom"
+	for f in "$FW_SRC"/a650_*; do
+		[ -e "$f" ] || continue
+		cp "$f" "$BUILD/lib/firmware/qcom/"
+		cp "$f" "$BUILD/lib/firmware/"
+	done
+	echo "== GPU 固件已装入 initramfs:"
+	ls "$BUILD/lib/firmware/qcom" | sed 's/^/     /'
+else
+	echo "== 没有 firmware/qcom，GPU probe 会报 -2（显示不受影响）"
+fi
+
 cp "$BB" "$BUILD/bin/busybox"
 chmod 755 "$BUILD/bin/busybox"
 # 常用 applet 先建好链接（init 里也会 busybox --install，这里做双保险）
