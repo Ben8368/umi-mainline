@@ -178,10 +178,22 @@
 		 */
 		vdd-supply = <&vreg_l1c_1p8>;
 		avdd-supply = <&touch_vddio_vreg>;
-		/* FW/panel blob for the flash path (see fwupdate in fts521/fts.c) */
+		/*
+		 * 同一份 DT 要同时伺候两个驱动：
+		 *   fts521（主线移植版，默认）只认 regulator_* / default-fw-name
+		 *   stfts （厂商 5.2.4，TOUCH=stfts 时用）认 pwr/bus-reg-name 和
+		 *          config-array（它按 lockdown 的 tp-vendor 选 FW/limits）
+		 * 多出来的属性对另一边是无害的，所以不拆两份 DT。
+		 *
+		 * tp-vendor 0x42 / module 1 = 本机 lockdown（53 42 32 01 74 02 32 01）。
+		 */
 		fts,default-fw-name = "st_fts_j2_2.ftb";
 		fts,regulator_dvdd = "vdd";
 		fts,regulator_avdd = "avdd";
+
+		fts,pwr-reg-name = "avdd";
+		fts,bus-reg-name = "vdd";
+		fts,config-array-size = <1>;
 
 		fts,irq-gpio = <&tlmm 39 GPIO_ACTIVE_LOW>;
 		fts,irq-gpio-name = "fts_irq";
@@ -203,6 +215,18 @@
 		touchscreen-size-y = <2340>;
 
 		status = "okay";
+
+		/*
+		 * 厂商 stfts 驱动按 lockdown 的 tp-vendor 选 FW/limits。
+		 * 本机 lockdown = 53 42 32 01 74 02 32 01 → tp-vendor 0x42, module 1。
+		 * 子节点必须放在所有属性之后（dtc 要求 properties precede subnodes）。
+		 */
+		fts,cfg_0 {
+			fts,tp-vendor = <0x42>;
+			fts,tp-module = <1>;
+			fts,fw-name = "st_fts_j2_2.ftb";
+			fts,limit-name = "stm_fts_production_limits_2.csv";
+		};
 	};
 };
 

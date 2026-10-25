@@ -1149,3 +1149,62 @@ fbdev 的 blank 接口 —— 驱动只偶尔收到一次 `FB_BLANK_POWERDOWN`�
 
 要做的话得动 FW 的 scan/idle 参数（厂商配置里 `touch-idletime` 那一组），
 主线驱动目前没接。
+
+## 14. 抄来一份厂商驱动：`stfts`（来自 zhaoyuanwang123/armbian）
+
+参考：<https://github.com/zhaoyuanwang123/armbian> 的
+`patch/kernel/archive/sm8250-7.2/0043-umi-touch-stfts-panel-qdefconfig.patch`
+（2.5 MB，含整棵 `drivers/input/touchscreen/stfts/` + 一个专用面板驱动 +
+`q_defconfig`）。同一系列还有 `0042-umi-board-dtsi-gpi-panel-touch-cs35l41.patch`
+和 `0044-dts-add-xiaomi-umi-board.patch`。
+
+已经把它搬进本仓库并**编过**，作为可切换的第二套触摸驱动：
+
+```
+stfts/                     厂商驱动 5.2.4（fts.c 190KB + fts_lib + fts_fw.h + fts_limits.h）
+TOUCH=stfts sh scripts/build.sh      # 换这套驱动编译
+python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb --name stfts
+# -> out/boot-umi-stfts.img
+```
+
+### 14.1 移植时遇到的三个问题
+
+1. **补丁里的文件是 CRLF**，内核构建直接报
+   `drivers/input/touchscreen/stfts/Kconfig:7: syntax error`。
+   `scripts/fix-stfts-crlf.sh` 已经把仓库里的副本规范成 LF（build.sh 拷进树时
+   也会再 `sed 's/\r$//'` 一遍）。
+2. **`BTN_INFO` 未定义**：厂商 7.x 树的 `input-event-codes.h` 里有这个小
+   米私有键值，主线没有。在 `stfts/fts.h` 里补了 fallback（`0x2c6`）。
+3. **DT 属性缺**：它要 `fts,pwr-reg-name` / `fts,bus-reg-name` /
+   `fts,config-array-size` / `fts,cfg_N`。已在
+   `dts/sm8250-xiaomi-umi-touch.dtsi` 里补齐（`fts,cfg_0` 放在**所有属性之后**，
+   否则 dtc 报 “Properties must precede subnodes”），tp-vendor 用本机 lockdown
+   的 `0x42`/module `1`。fts521 那边多出来的属性无害。
+
+### 14.2 和 fts521 的差别（值得试的地方）
+
+| | fts521（我们的主线移植） | stfts（厂商 5.2.4） |
+|---|---|---|
+| FW 烧写 | 手动 `echo 1 > fwupdate` | `FW_UPDATE_ON_PROBE`，probe 时自动判断版本 |
+| 预存补偿 | 无 | `PRE_SAVED_METHOD` 定义 |
+| FOD | 无 | `CONFIG_FTS_FOD_AREA_REPORT=y`（会发 `C0 02` / `A2 03` 那一组） |
+| 事件上报 | 纯 MT-B（无 `BTN_TOUCH`） | 带 `BTN_TOUCH` + `BTN_INFO` |
+| proc 接口 | 无 | `fts_proc.c`（`/proc/fts/...`，含产线/调试项） |
+| FW 来源 | `/lib/firmware/st_fts_j2_2.ftb` | 同（`FW_H_FILE` 被注释掉，用文件） |
+
+`fts_fw.h` 里那份 100476 B 的 `myArray` 是**别的面板**（2559×1439 / 15×30），
+但 `FW_H_FILE` 没有定义，所以不会被烧进去 —— 它只在没有 .ftb 文件时才可能
+被用到，真要用的话得把 `st_fts_j2_2.ftb` 放进 `/lib/firmware/`。
+
+### 14.3 试机时重点看什么
+
+1. `dmesg | grep -i -e "TOUCHSCREEN_ST_FTS" -e "fts_probe" -e "FW VER"`
+   —— probe 是否走到、有没有尝试烧 FW；
+2. `grep fts /proc/interrupts` 是否随触摸增长；
+3. 空闲 20 秒后**第一下**快按是否跟手（这正是 fts521 没解决的问题）；
+4. `/proc/fts/` 下有没有能用的调试节点（帧数据/产线项）。
+
+⚠️ 风险：这套驱动会自己判断要不要烧 FW，而我们芯片里是**出厂 0x0132**
+（比任何 .ftb 文件都新），理论上不会烧；但如果不幸触发，`fts_fw_download`
+失败可能把芯片留在 bootloader —— 真出问题就 `echo 256 > fwupdate`（blind
+flash）救，命令见 §11。

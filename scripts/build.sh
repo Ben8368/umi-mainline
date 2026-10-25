@@ -113,12 +113,36 @@ FTS_MK="$TREE/drivers/input/touchscreen/Makefile"
 grep -q 'fts-umi' "$FTS_MK" || \
 	printf 'obj-$(CONFIG_TOUCHSCREEN_FTS_UMI)\t+= fts-umi.o\n' >> "$FTS_MK"
 
+# ---- 触摸驱动选择 ----
+#   TOUCH=fts521 （默认）主线移植版，走标准 i2c_transfer + umi-i2c 适配器
+#   TOUCH=stfts        厂商 5.2.4 驱动，取自 zhaoyuanwang123/armbian 的
+#                      patch/kernel/archive/sm8250-7.2/0043-…patch
+#                      （带 FW_UPDATE_ON_PROBE / PRE_SAVED_METHOD / FOD）
+TOUCH_SEL=${TOUCH:-fts521}
+echo "   touch driver: $TOUCH_SEL"
+
+if [ "$TOUCH_SEL" = stfts ]; then
+	ST_SRC="$WS/stfts"
+	if [ -d "$ST_SRC" ]; then
+		ST_DST="$TREE/drivers/input/touchscreen/stfts"
+		rm -rf "$ST_DST"
+		cp -r "$ST_SRC" "$ST_DST"
+		# 补丁里的源码是 CRLF 的，内核构建吃不了
+		find "$ST_DST" -type f -exec sed -i 's/\r$//' {} +
+		grep -q 'touchscreen/stfts/Kconfig' "$FTS_K" || \
+			printf 'source "drivers/input/touchscreen/stfts/Kconfig"\n' >> "$FTS_K"
+		grep -q 'stfts/' "$FTS_MK" || \
+			printf 'obj-$(CONFIG_TOUCHSCREEN_ST_FTS)\t+= stfts/\n' >> "$FTS_MK"
+		echo "   stfts: $(ls "$ST_DST" | tr '\n' ' ')"
+	fi
+fi
+
 # ---- 参考实现：sm7150-mainline 的 fts521（主线 ST FTS5 驱动）----
 # 它只通过标准 i2c_transfer() 说话，所以配 umi-i2c 那个 bit-bang 适配器用。
 # 目的不是替换 fts-umi，而是拿一份「别处已经跑通的主线实现」去 probe 同一颗芯片：
 # 要么它直接能用，要么它同样失败 —— 那软件面就真的到头了。
 REF_SRC="$WS/fts521"
-if [ -d "$REF_SRC" ]; then
+if [ -d "$REF_SRC" ] && [ "$TOUCH_SEL" != stfts ]; then
 	REF_DST="$TREE/drivers/input/touchscreen/fts521"
 	rm -rf "$REF_DST"
 	mkdir -p "$REF_DST/fts_lib"
@@ -214,6 +238,15 @@ if [ "$badfrag" = 1 ]; then
 	exit 2
 fi
 cat "$FRAG" >> "$OUT/.config"
+# TOUCH=stfts：换掉 umi.config 里的主线触摸选项（后写的覆盖前面的）
+if [ "${TOUCH_SEL:-fts521}" = stfts ]; then
+	{
+		echo '# CONFIG_TOUCHSCREEN_ST_FTS_V521 is not set'
+		echo '# CONFIG_TOUCHSCREEN_FTS_UMI is not set'
+		echo 'CONFIG_TOUCHSCREEN_ST_FTS=y'
+		echo 'CONFIG_FTS_FOD_AREA_REPORT=y'
+	} >> "$OUT/.config"
+fi
 make -s -C "$TREE" $MAKEFLAGS_TC O="$OUT" olddefconfig
 
 echo "== [4/6] 校验关键配置是否真的生效"
@@ -252,9 +285,15 @@ done
 # 编成模块（=m）等于没编：initramfs 里不会去加载它，DSI 就一直 EPROBE_DEFER。
 check_y DRM_PANEL_XIAOMI_UMI
 # 触摸：同样是 =m 等于没编（initramfs 无模块加载器）。
-# 现在跑的是主线参考实现（fts521 走标准 i2c_transfer），fts-umi 那版留着但不编。
-check_y I2C_UMI_BITBANG
-check_y TOUCHSCREEN_ST_FTS_V521
+#   TOUCH=fts521（默认）主线移植版，走标准 i2c_transfer
+#   TOUCH=stfts         厂商 5.2.4 驱动（取自 zhaoyuanwang123/armbian 的
+#                       sm8250-7.2 补丁 0043），带 FW_UPDATE_ON_PROBE/FOD
+if [ "${TOUCH:-fts521}" = stfts ]; then
+	check_y TOUCHSCREEN_ST_FTS
+else
+	check_y I2C_UMI_BITBANG
+	check_y TOUCHSCREEN_ST_FTS_V521
+fi
 check_y I2C_QCOM_GENI
 check_y QCOM_GPI_DMA
 # 「必须关掉」的（y 或 m 都算失败）
