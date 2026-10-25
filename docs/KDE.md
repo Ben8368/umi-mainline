@@ -29,17 +29,30 @@ wayland session：
     Exec=/usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasmamobile
 ```
 
-## 2. 自动登录 + 自动进桌面
+## 2. 桌面用户 + 自动登录 + 自动进桌面
+
+桌面用户是 **`colorgarden`**（uid 1001），在 `wheel,input,video,render,audio` 组，
+所以 sudo、读 `/dev/input/*`、用 DRM 都不缺权限：
+
+```sh
+useradd -m -s /bin/bash -G wheel,input,video,render,audio colorgarden
+echo 'colorgarden:********' | chpasswd          # 密码只写进设备，不进仓库
+printf '%wheel ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/10-wheel
+chmod 440 /etc/sudoers.d/10-wheel
+```
+
+原来的 `alarm` 保留着（uid 1000），只是不再自动登录；它的 `~/.config`
+（里面是 `kwinoutputconfig.json` 的 scale=2.5）拷给了新用户。
 
 `/etc/systemd/system/getty@tty1.service.d/autologin.conf`：
 
 ```ini
 [Service]
 ExecStart=
-ExecStart=-/usr/bin/agetty --autologin alarm --noclear %I linux
+ExecStart=-/usr/bin/agetty --autologin colorgarden --noclear %I linux
 ```
 
-`/home/alarm/.bash_profile`：
+`/home/colorgarden/.bash_profile`：
 
 ```sh
 if [ -z "${WAYLAND_DISPLAY}" ] && [ "${XDG_VTNR}" = "1" ]; then
