@@ -94,6 +94,84 @@
 	};
 };
 
+/* ---------------------------------------------------------------- WiFi/BT (QCA6390) */
+
+/*
+ * 这一段原来只在 sm8250-xiaomi-umi-plus.dts 里。搬进主 DTS 是因为只开 GPU 的
+ * 镜像会**没有 wlan0**（PCIe 节点没开），而这两个东西并不冲突。
+ *
+ * WiFi 使能脚 gpio20/21 在 TLMM 的 NORTH tile，那一片在这台机器上读会
+ * synchronous external abort，所以 wlan-enable-gpios / bt-enable-gpios 仍然
+ * 不接（写进 gpio-reserved-ranges 了）；供电全靠下面这颗 PMU。
+ */
+/ {
+	qca6390_pmu: qca6390-pmu {
+		compatible = "qcom,qca6390-pmu";
+
+		vddaon-supply = <&vreg_s6a_0p95>;
+		vddpmu-supply = <&vreg_s6a_0p95>;
+		vddrfa0p95-supply = <&vreg_s6a_0p95>;
+		vddrfa1p3-supply = <&vreg_s8c_1p35>;
+		vddrfa1p9-supply = <&vreg_s5a_1p9>;
+		vddpcie1p3-supply = <&vreg_s8c_1p35>;
+		vddpcie1p9-supply = <&vreg_s5a_1p9>;
+		vddio-supply = <&vreg_s4a_1p8>;
+
+		regulators {
+			vreg_pmu_rfa_cmn: ldo0 { regulator-name = "vreg_pmu_rfa_cmn"; };
+			vreg_pmu_aon_0p59: ldo1 { regulator-name = "vreg_pmu_aon_0p59"; };
+			vreg_pmu_wlcx_0p8: ldo2 { regulator-name = "vreg_pmu_wlcx_0p8"; };
+			vreg_pmu_wlmx_0p85: ldo3 { regulator-name = "vreg_pmu_wlmx_0p85"; };
+			vreg_pmu_btcmx_0p85: ldo4 { regulator-name = "vreg_pmu_btcmx_0p85"; };
+			vreg_pmu_rfa_0p8: ldo5 { regulator-name = "vreg_pmu_rfa_0p8"; };
+			vreg_pmu_rfa_1p2: ldo6 { regulator-name = "vreg_pmu_rfa_1p2"; };
+			vreg_pmu_rfa_1p7: ldo7 { regulator-name = "vreg_pmu_rfa_1p7"; };
+			vreg_pmu_pcie_0p9: ldo8 { regulator-name = "vreg_pmu_pcie_0p9"; };
+			vreg_pmu_pcie_1p8: ldo9 { regulator-name = "vreg_pmu_pcie_1p8"; };
+		};
+	};
+};
+
+&pcie0 {
+	status = "okay";
+};
+
+&pcie0_phy {
+	vdda-phy-supply = <&vreg_l5a_0p88>;
+	vdda-pll-supply = <&vreg_l9a_1p2>;
+	status = "okay";
+};
+
+&pcieport0 {
+	wifi@0 {
+		compatible = "pci17cb,1101";
+		reg = <0x10000 0x0 0x0 0x0 0x0>;
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
+		vddwlmx-supply = <&vreg_pmu_wlmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
+		vddpcie0p9-supply = <&vreg_pmu_pcie_0p9>;
+		vddpcie1p8-supply = <&vreg_pmu_pcie_1p8>;
+	};
+};
+
+&uart6 {
+	status = "okay";
+
+	bluetooth {
+		compatible = "qcom,qca6390-bt";
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddbtcmx-supply = <&vreg_pmu_btcmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
+	};
+};
+
 /* ---------------------------------------------------------------- GPU (Adreno 650) */
 
 /*

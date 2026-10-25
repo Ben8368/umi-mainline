@@ -1,0 +1,47 @@
+// fastfetch：默认布局 + 一行 GPU
+//
+// fastfetch 2.x 在 Linux 上是靠 PCI ID（/sys/class/drm/card*/device/vendor 与
+// device/device）识别显卡的。SM8250 的 Adreno 650 是 platform device
+// （3d00000.gpu），没有 PCI ID，所以内置的 "gpu" 模块在 umi 上永远是空的。
+//
+// 这里就是 `fastfetch --gen-config` 生成的原版模块表，只把 "gpu" 换成读
+// devfreq 的 command 模块（顺序不变，所以外观和以前一模一样，只多这一行）。
+// 脚本：/usr/local/bin/umi-gpu-info（见同目录 umi-gpu-info）
+{
+	"$schema": "https://github.com/fastfetch-cli/fastfetch/raw/master/doc/json_schema.json",
+	"modules": [
+		"title",
+		"separator",
+		"os",
+		"host",
+		"kernel",
+		"uptime",
+		"packages",
+		"shell",
+		"display",
+		"de",
+		"wm",
+		"wmtheme",
+		"theme",
+		"icons",
+		"font",
+		"cursor",
+		"terminal",
+		"terminalfont",
+		"cpu",
+		{
+			"type": "command",
+			"key": "GPU",
+			"text": "/usr/local/bin/umi-gpu-info"
+		},
+		"memory",
+		"swap",
+		"disk",
+		"localip",
+		"battery",
+		"poweradapter",
+		"locale",
+		"break",
+		"colors"
+	]
+}

@@ -1,0 +1,27 @@
+#!/bin/sh
+# Adreno 650 状态行（给 fastfetch 的 custom 模块用）
+#
+# fastfetch 在 Linux 上认 GPU 的办法是读 /sys/class/drm/card*/device/vendor 和
+# device/device（PCI ID）去查 pci.ids。SM8250 的 Adreno 是 platform device
+# （3d00000.gpu），没有 PCI ID，所以它一个 GPU 都列不出来。这里直接从 devfreq
+# 和 msm 的 debugfs 取真实数据。
+
+d=/sys/class/devfreq/3d00000.gpu
+if [ ! -d "$d" ]; then
+	echo "Adreno 650 (msm) · 未初始化"
+	exit 0
+fi
+
+cur=$(( $(cat "$d/cur_freq" 2>/dev/null || echo 0) / 1000000 ))
+max=$(( $(cat "$d/max_freq" 2>/dev/null || echo 0) / 1000000 ))
+
+rev=""
+for f in /sys/kernel/debug/dri/*/gpu; do
+	[ -r "$f" ] || continue
+	rev=$(sed -n 's/^revision: //p' "$f" 2>/dev/null | head -n1)
+	[ -n "$rev" ] && break
+done
+
+line="Adreno 650 (msm/freedreno) · ${cur} MHz · max ${max} MHz"
+[ -n "$rev" ] && line="$line · ${rev}"
+echo "$line"
