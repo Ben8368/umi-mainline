@@ -183,6 +183,20 @@
 		compatible = "pci17cb,1101";
 		reg = <0x10000 0x0 0x0 0x0 0x0>;
 
+		/*
+		 * 固定 MAC：不打这个属性时，卡片固件每次开机都会现生成一个
+		 * （实测 00:03:7f:12:e7:e7 / 89:89 / 19:19 / a5:a5 / 9c:9c），
+		 * 路由器的转发/MAC 绑定规则就没法用。
+		 *
+		 * ath11k 在 ath11k_mac_register() 里会调
+		 * device_get_mac_address(ab->dev, mac_addr)，只要这个属性存在就
+		 * 会优先用它——QCA6390 是单 radio，ab->pdevs_macaddr_valid 永远
+		 * 为 false（那一支要求 num_radios > 1），所以 DT 的值一定生效。
+		 *
+		 * 换 MAC 时只改这一行，然后重打包 boot.img。
+		 */
+		local-mac-address = [00 03 7f 12 a4 a4];
+
 		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
 		vddaon-supply = <&vreg_pmu_aon_0p59>;
 		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;

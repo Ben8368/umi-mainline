@@ -732,3 +732,17 @@ int fts_writeU8UXthenWriteReadU8UX(u8 cmd1, AddrSize addrSize1, u8 cmd2,
 
 	return OK;
 }
+
+/* Wrappers so the unmodified ftsFlash.c from the vendor tree links against
+ * this port: the DMA-safe calls exist there because the downstream bus layer
+ * bounces through a preallocated buffer; fts_write/fts_writeRead here already
+ * own the transfer buffer. */
+int fts_write_dma_safe(u8 *cmd, int cmdLength)
+{
+	return fts_write(cmd, cmdLength);
+}
+
+int fts_writeRead_dma_safe(u8 *cmd, int cmdLength, u8 *outBuf, int byteToRead)
+{
+	return fts_writeRead(cmd, cmdLength, outBuf, byteToRead);
+}

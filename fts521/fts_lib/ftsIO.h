@@ -60,6 +60,10 @@ int changeSAD(u8 sad);
 int fts_read(u8 *outBuf, int byteToRead);
 int fts_writeRead(u8 *cmd, int cmdLength, u8 *outBuf, int byteToRead);
 int fts_write(u8 *cmd, int cmdLength);
+/* DMA-safe variants used by ftsFlash.c: this port talks plain i2c_transfer()
+ * with a bounce buffer inside fts_write/fts_writeRead, so they are wrappers. */
+int fts_write_dma_safe(u8 *cmd, int cmdLength);
+int fts_writeRead_dma_safe(u8 *cmd, int cmdLength, u8 *outBuf, int byteToRead);
 int fts_writeFwCmd(u8 *cmd, int cmdLenght);
 int fts_writeThenWriteRead(u8 *writeCmd1, int writeCmdLength, u8 *readCmd1,
 			   int readCmdLength, u8 *outBuf, int byteToRead);

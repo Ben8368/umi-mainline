@@ -736,3 +736,32 @@ ping 1.1.1.1 → 0% packet loss
 - 凭据只存在 `/var/lib/iwd/<ssid>.psk`（root 可读），没有写进仓库。
 
 
+
+
+## 13. 固定 MAC（路由器绑定规则要用）
+
+不打 local-mac-address 时，QCA6390 的固件**每次开机现生成一个 MAC**
+（实测  0:03:7f:12: 后面依次是 e7:e7 / 89:89 / 19:19 / 5:a5 /
+9c:9c），路由器的转发/MAC 绑定规则就没法用。
+
+注意 systemd 的 .link 里写 MACAddress= **不管用** —— 驱动在 udev 打完
+add 事件之后才把固件的 MAC 写进 netdev，会把 udev 设的值盖掉（实测
+
+etworkctl 显示 Link File 已生效，但 ip link 里还是固件那个）。
+
+正确做法是在 DT 里给 wifi@0 加属性：
+
+`dts
+&pcieport0 {
+	wifi@0 {
+		local-mac-address = [00 03 7f 12 a4 a4];
+	};
+};
+`
+
+th11k_mac_register() 里有 device_get_mac_address(ab->dev, mac_addr)，
+只要属性存在就优先用；QCA6390 是单 radio，b->pdevs_macaddr_valid 永远
+alse（那一支要求 
+um_radios > 1），所以 DT 的值一定生效。
+
+验证：连着重启两次，ip link show wlan0 都是同一个 MAC。
