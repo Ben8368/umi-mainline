@@ -2908,32 +2908,19 @@ static int fts_init_sensing(struct fts_ts_info *info)
 	error |= setScanMode(SCAN_MODE_ACTIVE, 0x01);
 
 	/*
-	 * umi: 把 FW 的"空闲扫描"关掉。
+	 * umi: 这里**不要**发 FW 的 idle/动态扫描命令。
 	 *
-	 * 症状：屏幕静止一会儿之后再快速点/马上拖，前几下像没接住 —— 要"按一会
-	 * 才跟手"。原因不是驱动丢事件，而是芯片在空闲时降了扫描率：
+	 * 厂商驱动里那两条原始命令是：
+	 *     C0 00 00 xx   进入 idle 的时间 = xx * 50 ms
+	 *     C0 0A 00/01   关/开"动态扫描频率切换"
 	 *
-	 *   C0 00 00 xx   进入 idle 的时间 = xx * 50 ms（厂商 DT 的
-	 *                 fts,touch-idletime-*，默认 12450ms → 0xF9）
-	 *   C0 0A 00/01   关/开"动态扫描频率切换"
+	 * 在 init 之后紧接着发（C0 00 00 FF + C0 0A 01）实测会让**触摸直接
+	 * 不响应**（IRQ 计数不再增长，sysinfo/raw 都还正常），只有 system_reset
+	 * 才能救回来 —— 说明这两条命令的时序/参数不能照搬到主线的初始化流程里。
 	 *
-	 * 实测（20s 静置后极短按 10 下，看 /proc/interrupts 的 fts 增量）：
-	 *   FW 默认                      ->  0 次中断（一个都没接住）
-	 *   C0 0A 00 + C0 00 00 FF       -> 40 次
-	 *   C0 0A 01 + C0 00 00 FF       -> 89 次
-	 *
-	 * 所以这里在每次初始化/唤醒后都重发一遍：idle 时间拉到最大（12.75s），
-	 * 动态扫描保持开着（亮屏时始终是快档）。代价是灭屏后那几个小时多耗一点电。
+	 * 想要"空闲之后第一下也跟手"，得在用户态用 /root/fwcmd.py 一条一条试，
+	 * 见 docs/TOUCH.md §13.5。
 	 */
-	{
-		u8 idle_time[4] = { 0xC0, 0x00, 0x00, 0xFF };
-		u8 dyn_freq[3] = { 0xC0, 0x0A, 0x01 };
-
-		error |= fts_write(idle_time, sizeof(idle_time));
-		error |= fts_write(dyn_freq, sizeof(dyn_freq));
-		logError(1, "%s %s: idle-time/dyn-freq set (%d)\n", tag,
-			 __func__, error);
-	}
 
 	error |= fts_resetDisableIrqCount();
 	error |= fts_enableInterrupt();
