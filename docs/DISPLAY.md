@@ -225,3 +225,51 @@ NORTH total  68  保留后可用   0 : -
 
 - 已验证可用的镜像：`out/boot-umi-p6-psci.img`（UFS + COM3 + 日志 U 盘全通）
 - 随时可回退：`fastboot boot out/boot-umi-p6-psci.img`，不写任何分区
+
+## 7. 偶发开机黑屏 → repower（2026-10 补充）
+
+上机经验：**有一部分启动里面板 IC 没接住 on 序列**，SoC 侧一切正常
+（`card1-DSI-1` 是 `connected/enabled`、背光值也写进去了），屏幕就是不亮。
+这不是驱动崩了，重发一次 on 序列就好：
+
+```sh
+echo 1 > /sys/devices/platform/soc@0/ae00000.display-subsystem/ae94000.dsi/ae94000.dsi.0/repower
+# repower: on-sequence: sent 59 packets / 652 bytes
+# repower: on-sequence -> 0
+```
+
+`panel-xiaomi-umi.c` 里的 `umi_panel_repower_store()` 就是干这个的，**不会**
+动亮度（亮度是独立参数）。
+
+### 两个坑
+
+1. **屏被 consoleblank 关掉的时候 repower 会返回 -EINVAL**
+   （`on-sequence: packet 0 dtype 0x39 failed (-22)`），因为 DSI 链路已经关了。
+   先把 fbcon 解屏再 repower：
+
+   ```sh
+   echo 0 > /sys/class/graphics/fb0/blank
+   echo 1 > .../repower
+   ```
+
+   （`/sys/class/drm/card1-DSI-1/dpms` 在这一版驱动里是只读的，改不动。）
+2. repower 会把面板恢复到 on 序列最后的状态；如果之前用 `dsi` 节点手动改过
+   ELVSS / gamma 之类的参数，需要重新发。
+
+### 想省事：开机自动补一次
+
+on 序列是幂等的，开机补一次无害。手机上的 oneshot：
+
+```ini
+# /etc/systemd/system/umi-panel-repower.service
+[Unit]
+Description=Re-send the umi panel on-sequence once (rescues a black panel)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'sleep 3; echo 0 > /sys/class/graphics/fb0/blank; echo 1 > /sys/devices/platform/soc@0/ae00000.display-subsystem/ae94000.dsi/ae94000.dsi.0/repower'
+
+[Install]
+WantedBy=multi-user.target
+```
