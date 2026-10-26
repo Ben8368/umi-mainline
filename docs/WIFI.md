@@ -803,3 +803,51 @@ touch: MS_RAW spread 15688（真实帧），vdd_boost_reg=enabled
 - `pcie-qcom` 的 early power-on 补丁已经在树里（
   `grep pwrseq drivers/pci/controller/dwc/pcie-qcom.c` 应有 10 处命中）：
   它在释放 PERST# 之前调 `pwrseq_power_on()`，否则 WLAN_EN 永远是低。
+
+## 15. Wi-Fi 6（802.11ax）支持情况
+
+**芯片和驱动都支持 Wi-Fi 6。** QCA6390 本身就是 11ax 芯片（`docs/WIFI.md` §1
+里写的 "a/b/g/n/ac/ax"），主线的 `ath11k_pci` 也是 QCOM 11ax 家族驱动，不是
+11ac 的 `ath10k`：
+
+```
+ath11k_pci 0000:01:00.0: qca6390 hw2.0
+ath11k_pci 0000:01:00.0: fw_version 0x10121492 ...
+```
+
+能力边界（QCA6390 这颗芯片本身的上限，不是驱动限制）：
+
+| 项目 | QCA6390 |
+|---|---|
+| 标准 | 802.11a/b/g/n/**ac**/**ax**（HE） |
+| 频段 | 2.4 / 5 GHz（**没有 6 GHz**，所以不是 Wi-Fi 6E） |
+| 空间流 | 2×2（MU-MIMO/OFDMA 支持，随 AP） |
+| 带宽 | 20/40/**80** MHz（**没有 160 MHz**） |
+| 最高 PHY | HE80 2SS MCS11 ≈ **1201 Mbps**（实测一般 600–900） |
+| 协议开销 | 需 AP 也广播 HE；连 11ac AP 时自然退回 VHT |
+
+### 15.1 怎么确认当前真的跑在 11ax
+
+```sh
+# 1) 驱动/固件
+dmesg | grep -i ath11k | head
+iw list | grep -A8 "HE Iftypes"          # 有 “HE Iftypes: managed” 就说明支持 HE
+
+# 2) 当前连接协商成什么
+iw dev wlan0 link                        # rx/tx bitrate；11ax 会带 HE-MCS
+iw dev wlan0 station dump | grep -i -e bitrate -e "rx he" -e "tx he"
+
+# 3) AP 有没有 HE（关键：AP 不支持就只能跑 ac）
+iw dev wlan0 scan | grep -A25 "SSID: <你的AP>" | grep -i -e he -e vht -e ht
+```
+
+### 15.2 想要速度的几个注意点
+
+- **关省电**：`iw dev wlan0 set power_save off`
+  （NM 里持久化：`nmcli connection modify <名字> wifi.powersave 2`），
+  省电模式会把吞吐砍得很厉害。
+- **5 GHz + 80 MHz**：我们默认连的是 `HUAWEI-SVTYH4_5G`，如果它能给 80 MHz，
+  链路理论上限就是 1201 Mbps 那一档。
+- **PCIe 链路**：QCA6390 挂在 PCIe0 上，灌满 1.2 Gbps 需要链路至少稳在 Gen2 x1；
+  `dmesg | grep -i ltssm` 能看到 `state=0x11`，那是正常训练完成。
+- **测速**：`pacman -S iperf3` 之后 `iperf3 -c <另一台> -t 30 -P 4`。
