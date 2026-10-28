@@ -109,8 +109,8 @@ wsl -d umi -u root -e sh -c "cd /root/linux && make ARCH=arm64 CROSS_COMPILE=aar
 打包时用参数控制，**改它不需要重编内核**：
 
 ```powershell
-wsl -d umi -u root -- sh scripts/mkinitramfs.sh --no-panic-test --root /dev/sda34
-wsl -d umi -u root -- sh scripts/mkinitramfs.sh --no-panic-test --root /dev/sda29   # cache 验证用
+wsl -d umi -u root -- sh scripts/mkinitramfs.sh --root /dev/sda34
+wsl -d umi -u root -- sh scripts/mkinitramfs.sh --root /dev/sda29   # cache 验证用
 ```
 
 > 为什么不用内核 cmdline 的 `root=`：本内核开了 `CONFIG_CMDLINE_FORCE=y`，
@@ -256,5 +256,6 @@ The filesystem on /dev/sda34 is now 59318267 (4k) blocks long.
 /dev/sda34  223G  2.3G  221G   2% /
 `
 
-注意：esize2fs 在线只能**变长**，缩小必须先卸载。以后换更大的镜像时
+注意：
+esize2fs 在线只能**变长**，缩小必须先卸载。以后换更大的镜像时
 同样只要两行命令，别再重烧分区。

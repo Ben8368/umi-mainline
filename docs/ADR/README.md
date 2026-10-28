@@ -6,3 +6,4 @@
 | --- | --- | --- |
 | [0001](0001-governance-port.md) | 已接受 | 移植 DockDSM 治理与工具级署名 |
 | [0002](0002-ci-and-bot-boundaries.md) | 已接受 | CI 证据分层与受控机器人协作 |
+| [0003](0003-unvalidated-charge-pump.md) | 已接受 | 隔离未验收快充与显式选择根分区 |

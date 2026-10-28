@@ -7,7 +7,9 @@ wsl -d umi -u root -- sh /mnt/d/project/UMI-mainline/scripts/mkimage.sh
 # 产物：out/boot-umi.img
 ```
 
-这张 `out/boot-umi.img` 就是**唯一需要刷的镜像**，里面同时有：
+这张 `out/boot-umi.img` 是默认临时引导镜像；构建会依次生成内核/三个新 DTB、fresh initramfs，再打包。默认 `ROOTDEV=none` 进入救援模式，不自动挂载 userdata。已安装 Arch 的设备可在确认真实根分区后显式设置 `ROOTDEV=/dev/sda34`，例如在 Linux 中运行 `ROOTDEV=/dev/sda34 sh scripts/mkimage.sh`。刷写不是本构建命令的一部分。
+
+镜像内容：
 
 | 子系统 | 在哪 |
 |---|---|
@@ -15,7 +17,7 @@ wsl -d umi -u root -- sh /mnt/d/project/UMI-mainline/scripts/mkimage.sh
 | 触摸（ST FTS，fts521 主线移植版） | `fts521/`（`patches/fts-umi.c` 是旧版，不编） |
 | GPU（Adreno 650） | `dts/*.dts` 的 `&gpu`/`&gmu` + `firmware/qcom/a650_*` 打进 initramfs |
 | WiFi/BT（QCA6390 PCIe，MAC 固定） | `dts/sm8250-xiaomi-umi-wifi.dts` |
-| 电量计 / 充电 / 快充 | `power/qcom_fg.c`、`qcom_pm8150b_charger.c`、`bq25970_charger.c` |
+| 电量计 / 主充电器（BQ25970 默认禁用） | `power/qcom_fg.c`、`qcom_pm8150b_charger.c`、`bq25970_charger.c` |
 | 桌面（Plasma Mobile，在 rootfs 里） | `scripts/umi-plasma.sh` |
 
 功能是**一张镜像里累加**的，不要按功能分镜像。`out/archive/` 里的
@@ -47,6 +49,8 @@ sh scripts/build.sh
 
 ## 2. 创建 initramfs
 
+默认救援模式，已安装根分区用 `--root /dev/sda34` 显式选择。所有打包阶段失败都会停止，不发布半成品覆盖旧 initramfs。
+
 GPU 固件必须在这里面（adreno 是内建驱动，probe 时 rootfs 还没挂上）：
 
 ```sh
@@ -60,15 +64,15 @@ sh scripts/mkinitramfs.sh          # 会把 firmware/qcom/a650_* 打进去
 python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb -o out/boot-umi.img
 ```
 
-`tools/pack-umi.py` 会读原厂 boot.img 的模板（地址/页大小/cmdline），
+`tools/pack-umi.py` 在显式提供 `--template` 时读取原厂 boot.img 的地址/页大小等参数；默认使用内建参数，
 把 `Image.gz` + `initramfs.cpio.gz` + DTB 打成一个 Android v2 boot image。
 
 ## 4. 引导测试
 
 ```powershell
 fastboot boot out\boot-umi.img
-# 起来了以后：ssh root@192.168.42.1（USB RNDIS）
-#              或 ssh colorgarden@<wlan ip>（WiFi 自动连）
+# 救援模式：USB CDC-ACM 串口 root shell
+# 已显式选择安装根分区且配置网络/sshd 后：ssh root@192.168.42.1（USB RNDIS）
 ```
 
 完整流程见 `RUNBOOK.md`。

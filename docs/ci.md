@@ -5,7 +5,7 @@ CI 监听面向 master 的 PR、master push、merge_group 和手动触发；不�
 | Job | 内容 | 证据层级 |
 | --- | --- | --- |
 | governance | 文档预算/链接/ADR、署名钩子与新提交、CI/派单策略回归 | L0/L1 |
-| lint | Python AST、Shell 语法、ShellCheck error、JSON/YAML 与 action 固定身份 | L0 |
+| lint | Python AST、Shell 语法、ShellCheck error、JSON/YAML、Actionlint 与 action 固定身份 | L0 |
 | offline | Linux amd64/arm64 上的纯离线回归 | L1 |
 | CodeQL | Python 与 Actions 安全补充 | L0，不替代 CI result |
 

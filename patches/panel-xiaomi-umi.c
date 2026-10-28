@@ -630,12 +630,21 @@ static ssize_t umi_panel_dsi_store(struct device *dev,
 	u8 seq[512];
 	int n = 0, ret;
 
-	while (n < (int)sizeof(seq) && sscanf(p, "%x", &v) == 1) {
-		seq[n++] = v & 0xff;
-		while (*p && *p != ' ' && *p != '\t' && *p != '\n')
+	/* sysfs buffers are NUL-terminated; advance past every consumed token. */
+	while (*p) {
+		int consumed = 0;
+
+		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
 			p++;
-		while (*p == ' ' || *p == '\t')
-			p++;
+		if (!*p)
+			break;
+		if (n == (int)sizeof(seq) || sscanf(p, "%2x%n", &v, &consumed) != 1 ||
+		    !consumed || v > 0xff)
+			return -EINVAL;
+		p += consumed;
+		if (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
+			return -EINVAL;
+		seq[n++] = v;
 	}
 
 	if (!n)

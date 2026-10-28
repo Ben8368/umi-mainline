@@ -19,7 +19,7 @@ Unix 先运行 uname -s、uname -m 并确认 Shell；WSL 标记 Windows + WSL。
 | 治理文档 | governance-docs-check.py、tests/governance-docs.py、git diff --check |
 | 治理/CI/机器人 | 上述 + git-hooks-test.py、tests/ci-policy.py、tests/bot-dispatch.py |
 | Shell / Python | 上述 + scripts/check-tree.py、相关离线回归；ShellCheck 至少 error 级 |
-| C 驱动 / DTS | 上述 + tests/reliability.py、Linux 目标内核编译；真机另按 test-matrix |
+| C 驱动 / DTS | 上述 + tests/test_reliability.py、Linux 目标内核编译；真机另按 test-matrix |
 
 每个结果列命令、退出结果和未覆盖项。静态或合成通过不等于完整编译；完整编译不等于真机安全。
 

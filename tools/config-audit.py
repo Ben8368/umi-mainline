@@ -45,6 +45,8 @@ MUST = [
     ("FONT_SUPPORT", "y", "fbcon 字体框架"),
     ("FONT_8x16", "y", "tty0 默认字体；缺了屏幕一个字都没有"),
     ("DRM", "y", "simpledrm 需要"),
+    ("DRM_MSM", "y", "面板/DPU 显示链"),
+    ("ARM_PSCI_CPUIDLE", "y", "PSCI 电源域供应者"),
     ("DRM_KMS_HELPER", "y", "simpledrm 依赖"),
     ("DRM_SIMPLEDRM", "y", "接管 cont-splash 的最小 DRM 驱动"),
     ("DRM_FBDEV_EMULATION", "y", "缺了 fbcon 挂不到 DRM 上 → 屏幕没 log"),
@@ -110,18 +112,13 @@ MUST = [
 ]
 
 MUST_NOT = [
-    ("DRM_MSM", "mdss 会抢走 cont-splash 然后因为没有面板驱动而全黑"),
     ("FB_SIMPLE", "和 DRM_SIMPLEDRM 互斥，同时开会把 console 抢走"),
     ("RANDOMIZE_BASE", "KASLR 关掉，地址可复现"),
     ("WERROR", "别让 warning 中断编译"),
     # 保守组
-    ("ARM_PSCI_CPUIDLE", "bring-up 先不开；cpuidle 挂住时屏幕还没起来"),
-    ("ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT", "先放行，避免漏一个 iommus 就 DMA abort"),
     ("QCOM_CPR", "会改写 CPU 电压表"),
     ("ARM_QCOM_CPUFREQ_HW", "同上"),
-    # 注意：CPU_IDLE 是关不掉的（drivers/acpi/Kconfig:269 的 ACPI_PROCESSOR 会 select 它，
-    # 而 arm64 defconfig 里 ACPI=y）。关掉 ARM_PSCI_CPUIDLE 就够了 —— 没有驱动注册，
-    # cpuidle core 会直接走 default_idle_call() → WFI。
+    # ARM_PSCI_CPUIDLE 必须开启，以提供 rpmh 所依赖的 PSCI 电源域。
 ]
 
 INFO = [
@@ -227,6 +224,9 @@ def main():
         # 效果等价于关，不算失败。但单独列出来，因为「为什么没提示符」有时正是问题本身。
         if v == "n" and got == "<不存在>":
             continue
+        if k == "ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT" and v == "n" and \
+                "arm-smmu.disable_bypass=0" in cfg.get("CMDLINE", ""):
+            continue
         if got != v:
             miss.append((k, v, got))
     if not miss:
@@ -267,6 +267,11 @@ def main():
         else:
             print("   OK CONFIG_%-40s = %s" % (k, got))
     bad += n4
+
+    if cfg.get("ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT") == "y" and \
+            "arm-smmu.disable_bypass=0" not in cfg.get("CMDLINE", ""):
+        print("   !! SMMU bypass requires arm-smmu.disable_bypass=0")
+        bad += 1
 
     # ---------------------------------------------------------------- 5 提示
     print("\n---- [5] 提醒 ----")

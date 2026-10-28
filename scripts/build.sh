@@ -217,7 +217,7 @@ EOF
 		printf 'obj-$(CONFIG_CHARGER_BQ25970)\t+= bq25970_charger.o\n' >> "$PWR_MK"
 	python3 "$WS/patches/power-supply-charging-enabled.py" \
 		"$TREE/include/linux/power_supply.h" \
-		"$PWR_DST/power_supply_sysfs.c" || echo "   !! power_supply 属性补丁没打上"
+		"$PWR_DST/power_supply_sysfs.c" || { echo "!! power_supply patch failed"; exit 2; }
 fi
 
 # ---- 电量计 / 充电 ---- end
@@ -231,7 +231,7 @@ fi
 #   geni_i2c a94000.i2c: error -ENODEV: Failed to setup GPI DMA mode
 if [ -f "$TREE/drivers/dma/qcom/gpi.c" ]; then
 	python3 "$WS/patches/gpi-sm8250-ee-offset.py" \
-		"$TREE/drivers/dma/qcom/gpi.c" || echo "   !! gpi 补丁没打上"
+		"$TREE/drivers/dma/qcom/gpi.c" || { echo "!! GPI patch failed"; exit 2; }
 fi
 
 # ---- shared-GPIO：7.x 不能对 reserved 行做代理 ----
@@ -240,7 +240,7 @@ fi
 # -EINVAL 后整个 gpiochip 注册失败，GPIO/i2c/触摸全挂。
 if [ -f "$TREE/drivers/gpio/gpiolib-shared.c" ]; then
 	python3 "$WS/patches/gpiolib-shared-reserved-guard.py" \
-		"$TREE/drivers/gpio/gpiolib-shared.c" || echo "   !! shared-gpio 补丁没打上"
+		"$TREE/drivers/gpio/gpiolib-shared.c" || { echo "!! shared GPIO patch failed"; exit 2; }
 fi
 
 MK=$TREE/arch/arm64/boot/dts/qcom/Makefile
@@ -381,23 +381,33 @@ if [ "$fail" = 1 ]; then
 	exit 2
 fi
 
-echo "== [5/6] 编译（-j$JOBS, TC=$TC）"
-# 先删旧产物：编译失败时下面的存在性检查才能真的报错（踩过：编挂了却拿旧 Image.gz 打包）
-rm -f "$OUT/arch/arm64/boot/Image.gz" "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi.dtb"
-( make -C "$TREE" $MAKEFLAGS_TC O="$OUT" -j"$JOBS" Image.gz dtbs ) 2>&1 | tee "$OUT/build.log" | tail -25
-# tee 之后 make 的退出码在 POSIX sh 里拿不到，用产物判断
-for p in "$OUT/arch/arm64/boot/Image.gz" \
-         "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi.dtb"; do
-	[ -s "$p" ] || { echo "!! 编译失败：缺少 $p（完整日志 $OUT/build.log）"; exit 3; }
+echo "== [5/6] 编译（-j$JOBS, TC=${TC}）"
+# Clear every artifact consumed below; a failed make must never reuse an old DTB.
+DTBS="sm8250-xiaomi-umi sm8250-xiaomi-umi-plus sm8250-xiaomi-umi-wifi"
+rm -f "$OUT/arch/arm64/boot/Image.gz"
+for dtb in $DTBS; do
+	rm -f "$OUT/arch/arm64/boot/dts/qcom/$dtb.dtb"
+done
+# POSIX sh has no portable pipefail. Keep make outside the logging pipeline.
+if make -C "$TREE" $MAKEFLAGS_TC O="$OUT" -j"$JOBS" Image.gz dtbs >"$OUT/build.log" 2>&1; then
+	tail -25 "$OUT/build.log"
+else
+	tail -25 "$OUT/build.log"
+	echo "!! Kernel/DTB build failed; see $OUT/build.log"
+	exit 3
+fi
+artifact="$OUT/arch/arm64/boot/Image.gz"
+[ -s "$artifact" ] || { echo "!! Missing fresh artifact: $artifact"; exit 3; }
+for dtb in $DTBS; do
+	artifact="$OUT/arch/arm64/boot/dts/qcom/$dtb.dtb"
+	[ -s "$artifact" ] || { echo "!! Missing fresh artifact: $artifact"; exit 3; }
 done
 
 echo "== [6/6] 收集产物到 $WS/out"
-cp -f "$OUT/arch/arm64/boot/Image.gz"      "$WS/out/Image.gz"
-cp -f "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi.dtb"      "$WS/out/sm8250-xiaomi-umi.dtb"
-[ -f "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-plus.dtb" ] && \
-	cp -f "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-plus.dtb" "$WS/out/sm8250-xiaomi-umi-plus.dtb"
-[ -f "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-wifi.dtb" ] && \
-	cp -f "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-wifi.dtb" "$WS/out/sm8250-xiaomi-umi-wifi.dtb"
+cp -f "$OUT/arch/arm64/boot/Image.gz" "$WS/out/Image.gz"
+for dtb in $DTBS; do
+	cp -f "$OUT/arch/arm64/boot/dts/qcom/$dtb.dtb" "$WS/out/$dtb.dtb"
+done
 cp -f "$OUT/.config" "$WS/out/config-effective"
 ls -l "$WS/out" | sed -n '1,20p'
 echo "== 完成"

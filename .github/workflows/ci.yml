@@ -44,6 +44,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends shellcheck python3-yaml
       - run: python3 scripts/check-tree.py
+      - name: Validate GitHub Actions workflows
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          tools_dir=$(mktemp -d)
+          cd "$tools_dir"
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          curl --fail --silent --show-error --location --retry 3 "$url/$archive" -o "$archive"
+          curl --fail --silent --show-error --location --retry 3 "$url/actionlint_${ACTIONLINT_VERSION}_checksums.txt" -o checksums.txt
+          grep " $archive$" checksums.txt | sha256sum --check --strict
+          tar -xzf "$archive" actionlint
+          cd "$GITHUB_WORKSPACE"
+          "$tools_dir/actionlint" -color
   offline:
     strategy:
       fail-fast: false
