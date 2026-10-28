@@ -60,6 +60,36 @@ class PolicyTests(unittest.TestCase):
                     self.assertNotIn('run', step)
             self.assertNotEqual(doc['permissions'].get('contents'), 'write')
 
+    def test_kernel_build_uses_one_literal_pinned_checkout_per_version(self):
+        doc = load('.github/workflows/kernel.yml')
+        self.assertEqual(doc['on'], {'workflow_dispatch': ''})
+        self.assertEqual(doc['permissions'], {'contents': 'read'})
+        job = doc['jobs']['kernel']
+        matrix = job['strategy']['matrix']
+        self.assertEqual(set(matrix), {'version'})
+        steps = job['steps']
+        external = [step for step in steps
+                    if step.get('with', {}).get('repository')]
+        pins = {
+            '6.12.94': '0b8f247169e487eff2d4c2dd531bc43f7efda2cb',
+            '7.2.12': 'cc9de5d4b5ab6459f5774946aa3195ad51236fa8',
+        }
+        self.assertCountEqual(matrix['version'], pins)
+        self.assertEqual(len(external), len(pins))
+        build_index = next(i for i, step in enumerate(steps)
+                           if step.get('run') == 'sh scripts/build.sh')
+        for version, sha in pins.items():
+            matches = [step for step in external
+                       if step.get('if') == f"matrix.version == '{version}'"]
+            self.assertEqual(len(matches), 1)
+            step = matches[0]
+            self.assertTrue(step['uses'].startswith('actions/checkout@'))
+            self.assertEqual(step['with'], {
+                'repository': 'gregkh/linux', 'ref': sha,
+                'path': '.kernel-ci', 'persist-credentials': 'false',
+            })
+            self.assertLess(steps.index(step), build_index)
+
     def test_bots_never_automerge_and_sensitive_paths_are_excluded(self):
         rabbit = load('.coderabbit.yaml')
         self.assertEqual(rabbit['reviews']['auto_review']['base_branches'], ['master'])

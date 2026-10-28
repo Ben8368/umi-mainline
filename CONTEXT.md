@@ -1,7 +1,7 @@
 # 当前状态
 
 > **最后确认：** 2026-10-29
-> **阶段：** 治理与离线修复已实现，准备 PR；目标设备验收尚未完成。
+> **阶段：** 治理与离线修复已提交 PR #2；修复 CodeQL 告警，目标设备验收尚未完成。
 > **代码基线：** umi-mainline master 39b6349；治理源 DockDSM bc77c7e。
 
 ## 当前决策
@@ -14,12 +14,13 @@
 
 ## 近期优先级
 
-1. 完成两次本地提交后一次性推送工作分支并建立 PR，不合并 master。
-2. 在 PR 中核对 CI / CodeRabbit；Issue 派单等默认分支工作流合入后再验收。
+1. 将 CodeQL 工作流修复追加到同一 PR #2，不合并 master。
+2. 在新 HEAD 核对 CI / CodeQL / CodeRabbit；Issue 派单等默认分支工作流合入后再验收。
 3. 按 [测试矩阵](docs/test-matrix.md)补充 Linux 编译与真机证据。
 
 ## 最近验证
 
+- 2026-10-29：PR #2 的旧 HEAD 常规 CI 通过、CodeQL 告警；修复后本地策略与离线回归通过，远端新 HEAD 待核验，见 [记录](docs/archive/reviews/2026-10-29-codeql-fix.md)。
 - 2026-10-29：11 项可靠性回归通过，实际 C 函数故障注入与脚本错误路径见 [记录](docs/archive/reviews/2026-10-29-reliability-fixes.md)。
 
 - 2026-10-29：macOS / arm64 / zsh；源代码审查和隔离复现，未完整编译或真机测试，见 [审查记录](docs/archive/reviews/2026-10-28-source-review.md)。
