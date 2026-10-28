@@ -1,5 +1,8 @@
 # umi-mainline
 
+Development: [current state](CONTEXT.md), [contributing](CONTRIBUTING.md),
+[governance and documentation index](docs/README.md).
+
 Running a mainline Linux kernel on the **Xiaomi Mi 10** (SM8250 / "kona",
 device codename `umi`, model M2001J2C).
 

@@ -3,7 +3,7 @@
 > 没有 UART 的情况下，调试带宽全靠**屏幕** + **pstore** + **USB gadget**。
 > 所以整条路线是「先把图像挤到屏幕上，再谈驱动」。
 >
-> **📌 上机测试顺序以 [RISK-AUDIT-2.md](RISK-AUDIT-2.md) §4 的矩阵为准。**
+> **📌 上机测试顺序以 [RISK-AUDIT-2.md](notes/RISK-AUDIT-2.md) §4 的矩阵为准。**
 > 相比本文，那个矩阵多了「第 0 步：先用原厂 boot.img 做一次 `fastboot boot` 对照」——
 > 两分钟就能把「环境 / 打包 / ABL 通道」这一整类原因排除掉，是最便宜的一步。
 >
@@ -82,7 +82,7 @@ python tools\pack-umi.py --name p1 --template 原厂boot.img
 
 ## 4. 上机测试阶梯（一步一个变量，别跳）
 
-> **上机前先读 [RISK-AUDIT.md](RISK-AUDIT.md)**：那里把「黑屏」的 14 种可能原因、每种怎么区分
+> **上机前先读 [RISK-AUDIT.md](notes/RISK-AUDIT.md)**：那里把「黑屏」的 14 种可能原因、每种怎么区分
 > 都列全了。下面是执行版。
 
 ### 步骤 A0 —— 先起「不看屏幕的眼睛」（每次测试前都做）
@@ -103,7 +103,7 @@ powershell -ExecutionPolicy Bypass -File tools\watch-usb.ps1
 - **U 盘**（Windows 上直接出现盘符，里面是 `dmesg.txt` / `pstore.txt` / `partitions.txt`）
   —— 不需要串口驱动、不需要终端软件，最省事的一条路
 
-> 完整的 log 提取方案（七条通道）见 **[LOG-EXTRACTION.md](LOG-EXTRACTION.md)**。
+> 完整的 log 提取方案（七条通道）见 **[LOG-EXTRACTION.md](notes/LOG-EXTRACTION.md)**。
 
 ### 步骤 A1 —— 掐秒表（区分 ABL 层和内核层）
 
@@ -215,7 +215,7 @@ fastboot boot out\boot-umi-beacon.img
 ### 步骤 G —— panic 屏 / 二维码（不用真崩就能先验证）
 
 内核里已经配好了 `DRM_PANIC` + `qr_code`：panic 时会把**压缩后的日志编成二维码**
-画在屏幕上，手机扫一下就把整段 log 拿走（见 [LOG-EXTRACTION.md](LOG-EXTRACTION.md) 通道⑧）。
+画在屏幕上，手机扫一下就把整段 log 拿走（见 [LOG-EXTRACTION.md](notes/LOG-EXTRACTION.md) 通道⑧）。
 
 initramfs 默认**开机 60 秒后自动画一次**（这是自测，不是真崩），
 所以第一次成功启动时就能顺手确认"这张屏扫不扫得出来、解码器好不好用"：
