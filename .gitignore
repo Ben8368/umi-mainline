@@ -23,3 +23,7 @@ __pycache__/
 *.pyc
 # scratch files from bring-up sessions (never part of the source of truth)
 tmp/
+
+# Isolated development environments
+.venv/
+.kernel-ci/

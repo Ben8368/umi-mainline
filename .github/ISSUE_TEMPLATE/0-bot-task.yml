@@ -1,0 +1,63 @@
+name: "🤖 Small task for Jules"
+description: Maintainer-authorized documentation, tests, or admitted offline tooling work packages.
+title: "[bot] "
+labels: ["bot:request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Only maintainers with current write access can automatically dispatch this form.
+        Use 1–3 exact files for Documentation/Tests, or up to 6 admitted Tooling files.
+        Tooling paths must belong to an explicit bundle in bot-dispatch.yml.
+        Check docs/bot-automation.md and docs/jules-environment.md before dispatch.
+        Kernel drivers, DTS, firmware, charging, partitions,
+        governance, security, dependencies and CI permissions require manual ownership.
+        Jules must read AGENTS.md, CONTEXT.md and LESSONS.md, preserve assertions,
+        run the listed checks, and open a PR labeled jules while actively editing.
+        Stop before another writer takes over. No merge, release or unrelated changes.
+  - type: dropdown
+    id: category
+    attributes:
+      label: Task category
+      options: [Documentation, Tests, Tooling]
+    validations:
+      required: true
+  - type: textarea
+    id: paths
+    attributes:
+      label: Allowed paths
+      description: One exact existing or new file path per line; no globs or directory paths.
+      placeholder: tests/example.py
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: Requested change
+      description: Describe one deliverable, current behavior, dependencies, and excluded changes.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Observable success/failure cases; required evidence and explicitly untested boundaries.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation command
+      description: Include governance-docs-check.py and task-specific checks; never replace evidence with CI success.
+      value: python3 scripts/governance-docs-check.py
+    validations:
+      required: true
+  - type: checkboxes
+    id: authorization
+    attributes:
+      label: Authorization
+      options:
+        - label: I authorize Jules to implement only this scoped task.
+          required: true
+        - label: I verified dependencies, available quota, and exclusive file ownership.
+          required: true

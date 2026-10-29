@@ -1,0 +1,43 @@
+name: Stale issues and pull requests
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: stale-marking
+  cancel-in-progress: false
+
+jobs:
+  stale:
+    name: Mark inactive items (never close)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Mark stale
+        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        with:
+          days-before-issue-stale: 90
+          days-before-pr-stale: 90
+          days-before-issue-close: -1
+          days-before-pr-close: -1
+          stale-issue-label: stale
+          stale-pr-label: stale
+          exempt-issue-labels: security,data-loss,kernel,power,firmware,storage,arm64,qemu,phase-acceptance,hardware-testing,pinned,risk:high,needs:hardware-test
+          exempt-pr-labels: security,data-loss,kernel,power,firmware,storage,arm64,qemu,phase-acceptance,hardware-testing,pinned,dependencies,risk:high,needs:hardware-test
+          exempt-draft-pr: true
+          remove-stale-when-updated: true
+          operations-per-run: 100
+          stale-issue-message: |
+            This issue has had no activity for 90 days and is now marked stale.
+            It will not be closed automatically. Comment or update it to remove the stale label.
+          stale-pr-message: |
+            This pull request has had no activity for 90 days and is now marked stale.
+            It will not be closed automatically. Update it to remove the stale label.

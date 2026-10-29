@@ -1,38 +1,11 @@
-# Contributing
+# 贡献指南
 
-## What is welcome
+先读 [AGENTS](AGENTS.md)、[当前状态](CONTEXT.md)、[产品范围](docs/PRODUCT.md)。工作分支用 codex/ 前缀，PR 面向 master，由维护者审查合并。
 
-* **Device variants.** Other panels (CSOT `j2_42_*`, Samsung `j2_38_*`, the
-  `l3a_*`/`l10a_*` boards) and the Goodix GT9889 touch variant. The panel
-  driver is already data driven from DT, so a new variant is usually a new
-  node, not new C code.
-* **Bring-up reports** for other `umi` units: panel id, touch controller
-  (`/proc/bus/input/devices`), and the output of `dmesg | grep -Ei 'dsi|panel|fts'`.
-* **Fixes.** Anything that makes the tree smaller, the boot quieter, or a
-  comment less wrong.
+Conventional Commit 类型英文、标题与正文中文。AI 实质参与附工具级 Co-authored-by；纯人工用 Human-authored: true。规则唯一见 [AI_RULES](docs/AI_RULES.md)，安装钩子：python3 scripts/install-git-hooks.py。
 
-## Rules that this port learned the hard way
+验证最低要求与证据分级见 [QUALITY](docs/QUALITY.md)，CI 入口见 [ci](docs/ci.md)。治理文档至少运行 python3 scripts/governance-docs-check.py 和 git diff --check；源码变化先输出 🚦 Audit Report，覆盖失败路径。完整编译和真机验证分别报告。
 
-1. **Never write a partition.** Everything is verified with `fastboot boot`.
-   A patch that requires flashing is out of scope.
-2. **Never change a voltage.** No regulator min/max edits, no OPP tables, no
-   current limits. Rails are enabled and left at whatever the bootloader set.
-3. **Kernel log strings are ASCII.** The framebuffer console has no CJK
-   font, so any non-ASCII `dev_*` string becomes garbage on the panel.
-   `tools/find-nonascii.py` and `tools/ascii-logs.py` enforce this.
-4. **One `fastboot boot` per bootloader session.** Do not file bugs about
-   `Failed to load/authenticate boot image` without a `reboot-bootloader`
-   first.
+不提交镜像、原厂分区、凭据或长日志，不伪造硬件就绪，不猜电压或充电参数。刷写/格式化/真实块设备写入必须有具体授权。当前调试权限策略见 [技术债](docs/TECH_DEBT.md)。保留 [许可证](LICENSE) 与 [来源归属](docs/PROVENANCE.md)。
 
-## Style
-
-* C: kernel style, `patches/*.c` carry an SPDX tag.
-* Device tree: follow the upstream Qualcomm `arm64` conventions.
-* Scripts: keep the PowerShell helpers ASCII-only, Windows PowerShell 5.1
-  reads a BOM-less `.ps1` as ANSI and mangles anything else.
-
-## License
-
-By opening a pull request you agree to the per-path licensing described in
-`LICENSE`: GPL-2.0-only for `patches/`, BSD-3-Clause for `dts/`, CC0-1.0 for
-`scripts/` and `tools/`, CC-BY-4.0 for `docs/`.
+PR 写明变更、验证命令/结果、未覆盖项、Risk/TD/ADR。推送后 CI result / CodeRabbit 可待核验，不自动合并；合入门禁见 AI_RULES。

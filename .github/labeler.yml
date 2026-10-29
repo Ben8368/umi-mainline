@@ -1,0 +1,24 @@
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ['docs/**', '*.md', '.cursorrules']
+ci:
+  - changed-files:
+      - any-glob-to-any-file: ['.github/**', 'scripts/ci-*.py']
+kernel:
+  - changed-files:
+      - any-glob-to-any-file: ['patches/**', 'config/**', 'fts521/**', 'stfts/**']
+power:
+  - changed-files:
+      - any-glob-to-any-file: ['power/**', 'dts/xiaomi-umi-battery.dtsi']
+hardware-testing:
+  - changed-files:
+      - any-glob-to-any-file: ['dts/**', 'patches/*.c', 'power/**', 'fts521/**', 'stfts/**']
+build:
+  - changed-files:
+      - any-glob-to-any-file: ['scripts/build.sh', 'scripts/mk*.sh', 'tools/pack-umi.py', 'tools/bootimg.py', 'Makefile']
+tests:
+  - changed-files:
+      - any-glob-to-any-file: ['tests/**']
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file: ['renovate.json', '.github/dependabot.yml']

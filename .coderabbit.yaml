@@ -1,0 +1,65 @@
+language: zh-CN
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  allow_author_approval: false
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    base_branches: [master]
+  path_filters:
+    - '!firmware/**'
+    - '!out/**'
+    - '!**/*.img'
+    - '!**/*.dtb'
+  path_instructions:
+    - path: '**'
+      instructions: >-
+        Read AGENTS.md, CONTEXT.md, LESSONS.md and task-specific authoritative docs.
+        Preserve licensing and evidence levels. A simulated check or compile does not prove
+        device operation. Do not propose changing development root/SSH/USB permissions;
+        TD-001 explicitly defers that policy. No automatic merge or release.
+    - path: 'power/**'
+      instructions: >-
+        Check protection configuration, checked I2C results, failure-closed charging,
+        real board parameter provenance, notifier lifetime and devm cleanup.
+        Never guess voltages, limits, sensor wiring or sense resistor values.
+    - path: 'dts/**'
+      instructions: >-
+        Check supply mappings and device variant evidence. Do not enable unvalidated
+        fast charging or weaken thermal/current protection to make a test pass.
+    - path: 'scripts/**'
+      instructions: >-
+        Check make exit status, fresh artifacts, initramfs generation, POSIX shell behavior,
+        root mode selection and safe temporary paths. Inspect raw source bytes before
+        flagging TAB/backslash-t differences. Never execute target init on the host.
+    - path: '.github/**'
+      instructions: >-
+        Require least privilege, full action SHAs, no untrusted target-context checkout,
+        explicit scoped bot authorization, queue/path exclusivity and no PAT injection.
+    - path: 'tests/**'
+      instructions: >-
+        Preserve negative cases. Synthetic and stub tests must not be called kernel builds
+        or hardware acceptance. Do not lower assertions or broaden bot allowlists.
+  finishing_touches:
+    docstrings: {enabled: false}
+    unit_tests: {enabled: false}
+    autofix: {enabled: false}
+    fix_ci: {enabled: false}
+    resolve_merge_conflict: {enabled: false}
+chat:
+  auto_reply: true
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - AGENTS.md
+      - CONTEXT.md
+      - LESSONS.md
+      - docs/AI_RULES.md
+      - docs/QUALITY.md
+      - docs/platforms.md
+      - docs/bot-automation.md
+  learnings:
+    scope: local

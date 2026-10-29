@@ -1,0 +1,47 @@
+name: Kernel compile
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['6.12.94', '7.2.12']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Keep external revisions literal so security analysis can verify the pins.
+      - name: Checkout Linux 6.12.94
+        if: matrix.version == '6.12.94'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: gregkh/linux
+          ref: 0b8f247169e487eff2d4c2dd531bc43f7efda2cb
+          path: .kernel-ci
+          persist-credentials: false
+      - name: Checkout Linux 7.2.12
+        if: matrix.version == '7.2.12'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: gregkh/linux
+          ref: cc9de5d4b5ab6459f5774946aa3195ad51236fa8
+          path: .kernel-ci
+          persist-credentials: false
+      - name: Install cross-build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm lld bc bison flex libssl-dev libelf-dev make gcc g++ python3
+      - name: Build actual arm64 kernel and device trees
+        env:
+          TREE: ${{ github.workspace }}/.kernel-ci
+          TC: llvm
+          JOBS: '2'
+        run: sh scripts/build.sh

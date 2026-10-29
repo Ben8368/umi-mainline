@@ -3,7 +3,7 @@
 > 没有 UART 的情况下，调试带宽全靠**屏幕** + **pstore** + **USB gadget**。
 > 所以整条路线是「先把图像挤到屏幕上，再谈驱动」。
 >
-> **📌 上机测试顺序以 [RISK-AUDIT-2.md](RISK-AUDIT-2.md) §4 的矩阵为准。**
+> **📌 上机测试顺序以 [RISK-AUDIT-2.md](notes/RISK-AUDIT-2.md) §4 的矩阵为准。**
 > 相比本文，那个矩阵多了「第 0 步：先用原厂 boot.img 做一次 `fastboot boot` 对照」——
 > 两分钟就能把「环境 / 打包 / ABL 通道」这一整类原因排除掉，是最便宜的一步。
 >
@@ -82,7 +82,7 @@ python tools\pack-umi.py --name p1 --template 原厂boot.img
 
 ## 4. 上机测试阶梯（一步一个变量，别跳）
 
-> **上机前先读 [RISK-AUDIT.md](RISK-AUDIT.md)**：那里把「黑屏」的 14 种可能原因、每种怎么区分
+> **上机前先读 [RISK-AUDIT.md](notes/RISK-AUDIT.md)**：那里把「黑屏」的 14 种可能原因、每种怎么区分
 > 都列全了。下面是执行版。
 
 ### 步骤 A0 —— 先起「不看屏幕的眼睛」（每次测试前都做）
@@ -103,16 +103,16 @@ powershell -ExecutionPolicy Bypass -File tools\watch-usb.ps1
 - **U 盘**（Windows 上直接出现盘符，里面是 `dmesg.txt` / `pstore.txt` / `partitions.txt`）
   —— 不需要串口驱动、不需要终端软件，最省事的一条路
 
-> 完整的 log 提取方案（七条通道）见 **[LOG-EXTRACTION.md](LOG-EXTRACTION.md)**。
+> 完整的 log 提取方案（七条通道）见 **[LOG-EXTRACTION.md](notes/LOG-EXTRACTION.md)**。
 
-### 步骤 A1 —— 掐秒表（区分 ABL 层和内核层）
+### 步骤 A1 —— 记录启动耗时（辅助排查）
 
 执行 `fastboot boot` 时**掐秒表**，记录「从执行命令到重新出现 fastboot」的时间：
 
 | 时间 | 结论 | 下一步 |
 |---|---|---|
-| **< 5 秒** | ABL 层面就拒绝了（镜像格式/DTB 匹配） | 换 `scripts/multiid-dtb.sh` 生成的 DTB 再试；复核 `pack-umi.py` 的 info 输出 |
-| **> 8 秒** | 内核跑起来了，然后挂了/卡了（可能被看门狗复位） | 进步骤 B/C，用 USB + pstore 捞日志 |
+| 几秒内返回 | ABL 拒绝和内核早期异常后复位都可能 | 先检查 fastboot 返回信息、USB 枚举和 pstore；不能只按耗时归因 |
+| 延迟较长后返回 | 内核可能已开始执行，也可能有其他复位原因 | 用 USB + pstore 取日志，并与同一镜像的重复结果对照；不能把耗时当成定论 |
 | 一直黑屏、不回落 fastboot | 内核卡死（`QCOM_WDT` 接手喂狗后的正常表现） | 步骤 C（pstore）+ 步骤 F（信标） |
 
 ### 步骤 A2 —— 裸机打屏测试（判断屏幕通道是否可用）
@@ -215,7 +215,7 @@ fastboot boot out\boot-umi-beacon.img
 ### 步骤 G —— panic 屏 / 二维码（不用真崩就能先验证）
 
 内核里已经配好了 `DRM_PANIC` + `qr_code`：panic 时会把**压缩后的日志编成二维码**
-画在屏幕上，手机扫一下就把整段 log 拿走（见 [LOG-EXTRACTION.md](LOG-EXTRACTION.md) 通道⑧）。
+画在屏幕上，手机扫一下就把整段 log 拿走（见 [LOG-EXTRACTION.md](notes/LOG-EXTRACTION.md) 通道⑧）。
 
 initramfs 默认**开机 60 秒后自动画一次**（这是自测，不是真崩），
 所以第一次成功启动时就能顺手确认"这张屏扫不扫得出来、解码器好不好用"：
@@ -235,8 +235,7 @@ python tools\decode-panic-qr.py "https://umi.local/panic?a=aarch64&v=6.12.94-umi
 
 | 表现 | 含义 | 下一步 |
 |---|---|---|
-| 黑几秒 → 回 fastboot（<5s） | ABL 层拒绝镜像 | 检查 boot.img 的 dtb_size / board-id（步骤 A2），试 multiid DTB |
-| 黑几秒 → 回 fastboot（>8s） | 内核跑起来后挂了/被看门狗复位 | 步骤 C 捞 pstore；步骤 F 看信标颜色 |
+| 黑几秒 → 回 fastboot | ABL 拒绝、内核早期异常后复位等原因都可能 | 检查 fastboot 返回信息、USB 枚举与 pstore；必要时用同一镜像重复对照 |
 | 一直黑屏，不重启 | 内核卡死（QCOM_WDT 接手喂狗后的表现） | 步骤 C 捞 pstore；步骤 F 看信标颜色 |
 | USB 出现 1D6B:0104 | **内核 + initramfs + 用户态全通了**，只是屏幕没显示 | 接串口拿 log，转去修显示 |
 | 出现 kernel log | 成功 | 继续看哪个驱动没起来 |

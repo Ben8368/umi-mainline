@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+reject() {
+    printf '%s\n' "umi-mainline: $1" >&2
+    printf '%s\n' \
+        'Add the actual AI tool trailer in a separate final paragraph:' \
+        '  Co-authored-by: Codex <codex@openai.com>' \
+        '  Co-authored-by: Claude Code <noreply@anthropic.com>' \
+        '  Co-authored-by: Cursor <cursoragent@cursor.com>' \
+        '  Co-authored-by: Google Labs Jules <161369871+google-labs-jules[bot]@users.noreply.github.com>' \
+        'For entirely human work, declare: Human-authored: true' \
+        'Cursor checkpoint commits omit attribution. Commit with the correct trailer before checking out.' \
+        'See docs/AI_RULES.md. No author is inferred or added automatically.' >&2
+    exit 1
+}
+
+[ "$#" -eq 1 ] || reject 'Expected a commit message file.'
+trailers=$(git interpret-trailers --parse "$1") || reject 'Cannot parse commit trailers.'
+has_ai=false
+has_human=false
+while IFS= read -r trailer; do
+    case "$trailer" in
+        'Co-authored-by: Codex <codex@openai.com>'|\
+        'Co-authored-by: Claude Code <noreply@anthropic.com>'|\
+        'Co-authored-by: Cursor <cursoragent@cursor.com>'|\
+        'Co-authored-by: Google Labs Jules <161369871+google-labs-jules[bot]@users.noreply.github.com>') has_ai=true ;;
+        'Co-authored-by: Codex '*|'Co-authored-by: Claude Code '*|'Co-authored-by: Cursor '*|'Co-authored-by: Google Labs Jules '*)
+            reject 'The AI tool trailer does not match the repository identity.' ;;
+        'Bot-authored-by: Renovate <29139614+renovate[bot]@users.noreply.github.com>') has_ai=true ;;
+        'Human-authored: true') has_human=true ;;
+    esac
+done <<EOF
+$trailers
+EOF
+
+if [ "$has_ai" = true ] && [ "$has_human" = true ]; then
+    reject 'AI attribution and entirely human authorship are contradictory.'
+fi
+if [ "$has_ai" = false ] && [ "$has_human" = false ]; then
+    reject 'Missing AI attribution or an explicit human authorship declaration.'
+fi

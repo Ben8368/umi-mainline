@@ -109,9 +109,13 @@ wsl -d umi -u root -e sh -c "cd /root/linux && make ARCH=arm64 CROSS_COMPILE=aar
 打包时用参数控制，**改它不需要重编内核**：
 
 ```powershell
-wsl -d umi -u root -- sh scripts/mkinitramfs.sh --no-panic-test --root /dev/sda34
-wsl -d umi -u root -- sh scripts/mkinitramfs.sh --no-panic-test --root /dev/sda29   # cache 验证用
+wsl -d umi -u root -- sh scripts/mkinitramfs.sh --root /dev/sda34
+wsl -d umi -u root -- sh scripts/mkinitramfs.sh --root /dev/sda29   # cache 验证用
 ```
+
+注意：当前 `scripts/mkinitramfs.sh` 默认 `ROOTDEV=none`，普通临时引导进入救援模式；
+只有显式传入 `--root /dev/sda34` 才会切到已安装的 Arch 根分区。上面两条是分别为正式
+rootfs 与 cache 验证选择根设备的示例，不代表默认行为。
 
 > 为什么不用内核 cmdline 的 `root=`：本内核开了 `CONFIG_CMDLINE_FORCE=y`，
 > 头里的 cmdline 是装饰性的，真正生效的那份是编译进 `Image` 的。
@@ -256,5 +260,6 @@ The filesystem on /dev/sda34 is now 59318267 (4k) blocks long.
 /dev/sda34  223G  2.3G  221G   2% /
 `
 
-注意：esize2fs 在线只能**变长**，缩小必须先卸载。以后换更大的镜像时
+注意：
+resize2fs 在线只能**变长**，缩小必须先卸载。以后换更大的镜像时
 同样只要两行命令，别再重烧分区。

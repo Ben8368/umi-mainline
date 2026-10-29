@@ -317,7 +317,8 @@ struct bq2597x {
 	struct power_supply *fc2_psy;
 	struct power_supply *typec_psy;
 
-    struct notifier_block nb;
+	struct notifier_block nb;
+	bool notifier_registered;
     //struct delayed_work status_changed_work;
 };
 
@@ -416,10 +417,11 @@ static int bq2597x_enable_charge(struct bq2597x *bq, bool enable)
 	int ret;
 	u8 val;
 
+	/* No board-validated charge-pump policy/watchdog service exists yet. */
 	if (enable)
-		val = BQ2597X_CHG_ENABLE;
-	else
-		val = BQ2597X_CHG_DISABLE;
+		return -EOPNOTSUPP;
+
+	val = BQ2597X_CHG_DISABLE;
 
 	val <<= BQ2597X_CHG_EN_SHIFT;
 
@@ -929,7 +931,7 @@ static int bq2597x_set_adc_average(struct bq2597x *bq, bool avg)
 
 	ret = bq2597x_update_bits(bq, BQ2597X_REG_14,
 				BQ2597X_ADC_AVG_MASK, val);
-	return 0;
+	return ret;
 }
 
 static int bq2597x_set_adc_scanrate(struct bq2597x *bq, bool oneshot)
@@ -1292,6 +1294,14 @@ static int bq2597x_parse_dt(struct bq2597x *bq, struct device *dev)
 	bq->cfg->die_therm_disable = of_property_read_bool(np,
 			"ti,bq2597x,die-therm-disable");
 
+	if (bq->cfg->bat_ovp_disable || bq->cfg->bat_ocp_disable ||
+	    bq->cfg->bat_ovp_alm_disable || bq->cfg->bat_ocp_alm_disable ||
+	    bq->cfg->bus_ocp_disable || bq->cfg->bus_ovp_alm_disable ||
+	    bq->cfg->bus_ocp_alm_disable || bq->cfg->bat_ucp_alm_disable ||
+	    bq->cfg->bat_therm_disable || bq->cfg->bus_therm_disable ||
+	    bq->cfg->die_therm_disable)
+		return dev_err_probe(dev, -EINVAL, "Protection disable flags are unsupported\n");
+
 	ret = of_property_read_u32(np, "ti,bq2597x,bat-ovp-threshold",
 			&bq->cfg->bat_ovp_th);
 	if (ret) {
@@ -1304,7 +1314,7 @@ static int bq2597x_parse_dt(struct bq2597x *bq, struct device *dev)
 		bq_err("failed to read bat-ovp-alarm-threshold\n");
 		return ret;
 	}
-	/*ret = of_property_read_u32(np, "ti,bq2597x,bat-ocp-threshold",
+	ret = of_property_read_u32(np, "ti,bq2597x,bat-ocp-threshold",
 			&bq->cfg->bat_ocp_th);
 	if (ret) {
 		bq_err("failed to read bat-ocp-threshold\n");
@@ -1315,7 +1325,7 @@ static int bq2597x_parse_dt(struct bq2597x *bq, struct device *dev)
 	if (ret) {
 		bq_err("failed to read bat-ocp-alarm-threshold\n");
 		return ret;
-	}*/
+	}
 	ret = of_property_read_u32(np, "ti,bq2597x,bus-ovp-threshold",
 			&bq->cfg->bus_ovp_th);
 	if (ret) {
@@ -1340,12 +1350,12 @@ static int bq2597x_parse_dt(struct bq2597x *bq, struct device *dev)
 		bq_err("failed to read bus-ocp-alarm-threshold\n");
 		return ret;
 	}
-	/*ret = of_property_read_u32(np, "ti,bq2597x,bat-ucp-alarm-threshold",
+	ret = of_property_read_u32(np, "ti,bq2597x,bat-ucp-alarm-threshold",
 			&bq->cfg->bat_ucp_alm_th);
 	if (ret) {
 		bq_err("failed to read bat-ucp-alarm-threshold\n");
 		return ret;
-	}*/
+	}
 	ret = of_property_read_u32(np, "ti,bq2597x,bat-therm-threshold",
 			&bq->cfg->bat_therm_th);
 	if (ret) {
@@ -1381,12 +1391,14 @@ static int bq2597x_parse_dt(struct bq2597x *bq, struct device *dev)
 		}
 	}
 
-	/*ret = of_property_read_u32(np, "ti,bq2597x,sense-resistor-mohm",
+	ret = of_property_read_u32(np, "ti,bq2597x,sense-resistor-mohm",
 			&bq->cfg->sense_r_mohm);
 	if (ret) {
 		bq_err("failed to read sense-resistor-mohm\n");
 		return ret;
-	}*/
+	}
+	if (bq->cfg->sense_r_mohm != 2 && bq->cfg->sense_r_mohm != 5)
+		return -EINVAL;
 
 
 	return 0;
@@ -1397,107 +1409,155 @@ static int bq2597x_init_protection(struct bq2597x *bq)
 	int ret;
 
 	ret = bq2597x_enable_batovp(bq, !bq->cfg->bat_ovp_disable);
+	if (ret)
+		return ret;
 	bq_info("%s bat ovp %s\n",
 		bq->cfg->bat_ovp_disable ? "disable" : "enable",
 		!ret ? "successfullly" : "failed");
 
 	ret = bq2597x_enable_batocp(bq, !bq->cfg->bat_ocp_disable);
+	if (ret)
+		return ret;
 	bq_info("%s bat ocp %s\n",
 		bq->cfg->bat_ocp_disable ? "disable" : "enable",
 		!ret ? "successfullly" : "failed");
 
 	ret = bq2597x_enable_batovp_alarm(bq, !bq->cfg->bat_ovp_alm_disable);
+	if (ret)
+		return ret;
 	bq_info("%s bat ovp alarm %s\n",
 		bq->cfg->bat_ovp_alm_disable ? "disable" : "enable",
 		!ret ? "successfullly" : "failed");
 
 	ret = bq2597x_enable_batocp_alarm(bq, !bq->cfg->bat_ocp_alm_disable);
+	if (ret)
+		return ret;
 	bq_info("%s bat ocp alarm %s\n",
 		bq->cfg->bat_ocp_alm_disable ? "disable" : "enable",
 		!ret ? "successfullly" : "failed");
 
 	ret = bq2597x_enable_batucp_alarm(bq, !bq->cfg->bat_ucp_alm_disable);
+	if (ret)
+		return ret;
 	bq_info("%s bat ocp alarm %s\n",
 		bq->cfg->bat_ucp_alm_disable ? "disable" : "enable",
 		!ret ? "successfullly" : "failed");
 
 	ret = bq2597x_enable_busovp_alarm(bq, !bq->cfg->bus_ovp_alm_disable);
+	if (ret)
+		return ret;
 	bq_info("%s bus ovp alarm %s\n",
 		bq->cfg->bus_ovp_alm_disable ? "disable" : "enable",
 		!ret ? "successfullly" : "failed");
 
 	ret = bq2597x_enable_busocp(bq, !bq->cfg->bus_ocp_disable);
+	if (ret)
+		return ret;
 	bq_info("%s bus ocp %s\n",
 		bq->cfg->bus_ocp_disable ? "disable" : "enable",
 		!ret ? "successfullly" : "failed");
 
 	ret = bq2597x_enable_busocp_alarm(bq, !bq->cfg->bus_ocp_alm_disable);
+	if (ret)
+		return ret;
 	bq_info("%s bus ocp alarm %s\n",
 		bq->cfg->bus_ocp_alm_disable ? "disable" : "enable",
 		!ret ? "successfullly" : "failed");
 
 	ret = bq2597x_enable_bat_therm(bq, !bq->cfg->bat_therm_disable);
+	if (ret)
+		return ret;
 	bq_info("%s bat therm %s\n",
 		bq->cfg->bat_therm_disable ? "disable" : "enable",
 		!ret ? "successfullly" : "failed");
 
 	ret = bq2597x_enable_bus_therm(bq, !bq->cfg->bus_therm_disable);
+	if (ret)
+		return ret;
 	bq_info("%s bus therm %s\n",
 		bq->cfg->bus_therm_disable ? "disable" : "enable",
 		!ret ? "successfullly" : "failed");
 
 	ret = bq2597x_enable_die_therm(bq, !bq->cfg->die_therm_disable);
+	if (ret)
+		return ret;
 	bq_info("%s die therm %s\n",
 		bq->cfg->die_therm_disable ? "disable" : "enable",
 		!ret ? "successfullly" : "failed");
 
 	ret = bq2597x_set_batovp_th(bq, bq->cfg->bat_ovp_th);
+	if (ret)
+		return ret;
 	bq_info("set bat ovp th %d %s\n", bq->cfg->bat_ovp_th,
 		!ret ? "successfully" : "failed");
 
 	ret = bq2597x_set_batovp_alarm_th(bq, bq->cfg->bat_ovp_alm_th);
+	if (ret)
+		return ret;
 	bq_info("set bat ovp alarm threshold %d %s\n", bq->cfg->bat_ovp_alm_th,
 		!ret ? "successfully" : "failed");
 
 	ret = bq2597x_set_batocp_th(bq, bq->cfg->bat_ocp_th);
+	if (ret)
+		return ret;
 	bq_info("set bat ocp threshold %d %s\n", bq->cfg->bat_ocp_th,
 		!ret ? "successfully" : "failed");
 
 	ret = bq2597x_set_batocp_alarm_th(bq, bq->cfg->bat_ocp_alm_th);
+	if (ret)
+		return ret;
 	bq_info("set bat ocp alarm threshold %d %s\n", bq->cfg->bat_ocp_alm_th,
 		!ret ? "successfully" : "failed");
 
 	ret = bq2597x_set_busovp_th(bq, bq->cfg->bus_ovp_th);
+	if (ret)
+		return ret;
 	bq_info("set bus ovp threshold %d %s\n", bq->cfg->bus_ovp_th,
 		!ret ? "successfully" : "failed");
 
 	ret = bq2597x_set_busovp_alarm_th(bq, bq->cfg->bus_ovp_alm_th);
+	if (ret)
+		return ret;
 	bq_info("set bus ovp alarm threshold %d %s\n", bq->cfg->bus_ovp_alm_th,
 		!ret ? "successfully" : "failed");
 
 	ret = bq2597x_set_busocp_th(bq, bq->cfg->bus_ocp_th);
+	if (ret)
+		return ret;
 	bq_info("set bus ocp threshold %d %s\n", bq->cfg->bus_ocp_th,
 		!ret ? "successfully" : "failed");
 
 	ret = bq2597x_set_busocp_alarm_th(bq, bq->cfg->bus_ocp_alm_th);
+	if (ret)
+		return ret;
 	bq_info("set bus ocp alarm th %d %s\n", bq->cfg->bus_ocp_alm_th,
 		!ret ? "successfully" : "failed");
 
 	ret = bq2597x_set_batucp_alarm_th(bq, bq->cfg->bat_ucp_alm_th);
+	if (ret)
+		return ret;
 	bq_info("set bat ucp threshold %d %s\n", bq->cfg->bat_ucp_alm_th,
 		!ret ? "successfully" : "failed");
 
 	ret = bq2597x_set_bat_therm_th(bq, bq->cfg->bat_therm_th);
+	if (ret)
+		return ret;
 	bq_info("set die therm threshold %d %s\n", bq->cfg->bat_therm_th,
 		!ret ? "successfully" : "failed");
 	ret = bq2597x_set_bus_therm_th(bq, bq->cfg->bus_therm_th);
+	if (ret)
+		return ret;
 	bq_info("set bus therm threshold %d %s\n", bq->cfg->bus_therm_th,
 		!ret ? "successfully" : "failed");
 	ret = bq2597x_set_die_therm_th(bq, bq->cfg->die_therm_th);
+	if (ret)
+		return ret;
 	bq_info("set die therm threshold %d %s\n", bq->cfg->die_therm_th,
 		!ret ? "successfully" : "failed");
 
 	ret = bq2597x_set_acovp_th(bq, bq->cfg->ac_ovp_th);
+	if (ret)
+		return ret;
 	bq_info("set ac ovp threshold %d %s\n", bq->cfg->ac_ovp_th,
 		!ret ? "successfully" : "failed");
 
@@ -1506,23 +1566,54 @@ static int bq2597x_init_protection(struct bq2597x *bq)
 
 static int bq2597x_init_adc(struct bq2597x *bq)
 {
-	bq2597x_set_adc_scanrate(bq, false);
-	bq2597x_set_adc_bits(bq, 13);
-	bq2597x_set_adc_average(bq, true);
-	bq2597x_set_adc_scan(bq, ADC_IBUS, true);
-	bq2597x_set_adc_scan(bq, ADC_VBUS, true);
-	bq2597x_set_adc_scan(bq, ADC_VOUT, false);
-	bq2597x_set_adc_scan(bq, ADC_VBAT, true);
-	bq2597x_set_adc_scan(bq, ADC_IBAT, false);
-	bq2597x_set_adc_scan(bq, ADC_TBUS, false);
-	bq2597x_set_adc_scan(bq, ADC_TBAT, false);
-	bq2597x_set_adc_scan(bq, ADC_TDIE, false);
-	bq2597x_set_adc_scan(bq, ADC_VAC, true);
+	int ret;
 
-	if (bq->chip_vendor == SC8551)
-		sc8551_init_adc(bq);
+	ret = bq2597x_set_adc_scanrate(bq, false);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_adc_bits(bq, 13);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_adc_average(bq, true);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_adc_scan(bq, ADC_IBUS, true);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_adc_scan(bq, ADC_VBUS, true);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_adc_scan(bq, ADC_VOUT, false);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_adc_scan(bq, ADC_VBAT, true);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_adc_scan(bq, ADC_IBAT, false);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_adc_scan(bq, ADC_TBUS, false);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_adc_scan(bq, ADC_TBAT, false);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_adc_scan(bq, ADC_TDIE, false);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_adc_scan(bq, ADC_VAC, true);
+	if (ret)
+		return ret;
 
-	bq2597x_enable_adc(bq, true);
+	if (bq->chip_vendor == SC8551) {
+		ret = sc8551_init_adc(bq);
+		if (ret)
+			return ret;
+	}
+
+	ret = bq2597x_enable_adc(bq, true);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -1554,13 +1645,25 @@ static int bq2597x_init_int_src(struct bq2597x *bq)
 
 static int bq2597x_init_regulation(struct bq2597x *bq)
 {
-	bq2597x_set_ibat_reg_th(bq, 200);
-	bq2597x_set_vbat_reg_th(bq, 50);
+	int ret;
 
-	bq2597x_set_vdrop_deglitch(bq, 5000);
-	bq2597x_set_vdrop_th(bq, 400);
+	ret = bq2597x_set_ibat_reg_th(bq, 200);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_vbat_reg_th(bq, 50);
+	if (ret)
+		return ret;
 
-	bq2597x_enable_regulation(bq, true);
+	ret = bq2597x_set_vdrop_deglitch(bq, 5000);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_vdrop_th(bq, 400);
+	if (ret)
+		return ret;
+
+	ret = bq2597x_enable_regulation(bq, true);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -1569,39 +1672,55 @@ static int bq2597x_init_device(struct bq2597x *bq)
 {
 	int ret;
 	u8 val;
-	bq2597x_enable_wdt(bq, false);
 
-	bq2597x_set_ss_timeout(bq, 1500);
-	bq2597x_set_ibus_ucp_thr(bq, 300);
-	bq2597x_enable_ucp(bq,1);
-	bq2597x_set_sense_resistor(bq, bq->cfg->sense_r_mohm);
-
-	bq2597x_init_protection(bq);
-	bq2597x_init_adc(bq);
-	bq2597x_init_int_src(bq);
-
+	/* Configure only while charge-pump switching is explicitly disabled. */
+	ret = bq2597x_enable_charge(bq, false);
+	if (ret)
+		return ret;
+	ret = bq2597x_enable_wdt(bq, true);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_ss_timeout(bq, 1500);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_ibus_ucp_thr(bq, 300);
+	if (ret)
+		return ret;
+	ret = bq2597x_enable_ucp(bq, 1);
+	if (ret)
+		return ret;
+	ret = bq2597x_set_sense_resistor(bq, bq->cfg->sense_r_mohm);
+	if (ret)
+		return ret;
+	ret = bq2597x_init_protection(bq);
+	if (ret)
+		return ret;
+	ret = bq2597x_init_adc(bq);
+	if (ret)
+		return ret;
+	ret = bq2597x_init_int_src(bq);
+	if (ret)
+		return ret;
 	ret = bq2597x_read_byte(bq, BQ2597X_REG_13, &val);
-	bq_err("Bq device ID = 0x%02X\n", val);
-	if (!ret && val == BQ25968_DEV_ID) {
-		bq_err("Bq device ID = 0x%02X\n", val);
+	if (ret)
+		return ret;
+	if (val == BQ25968_DEV_ID)
 		return 0;
-	}
-
-	bq2597x_init_regulation(bq);
-
-	return 0;
+	return bq2597x_init_regulation(bq);
 }
 
 static int bq2597x_set_present(struct bq2597x *bq, bool present)
 {
-    if (present != bq->usb_present) {
-        bq_info("changed usb_present [%d] -> [%d]\n", bq->usb_present, present);
-        if (present) {
-            bq2597x_init_device(bq);
-        }
-        bq->usb_present = present;
-    }
+	int ret;
 
+	if (present != bq->usb_present) {
+		if (present) {
+			ret = bq2597x_init_device(bq);
+			if (ret)
+				return ret;
+		}
+		bq->usb_present = present;
+	}
 	return 0;
 }
 
@@ -1726,8 +1845,11 @@ static int bq2597x_charger_get_property(struct power_supply *psy,
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
-		bq2597x_check_charge_enabled(bq, &result);
-		val->intval = result;
+		ret = bq2597x_check_charge_enabled(bq, &result);
+		if (ret)
+			return ret;
+		val->intval = result ? POWER_SUPPLY_STATUS_CHARGING :
+			POWER_SUPPLY_STATUS_NOT_CHARGING;
 		break;
 	case POWER_SUPPLY_PROP_PRESENT:
 		val->intval = bq->usb_present;
@@ -1761,8 +1883,7 @@ static int bq2597x_charger_set_property(struct power_supply *psy,
 
 	switch (prop) {
 	case POWER_SUPPLY_PROP_PRESENT:
-		bq2597x_set_present(bq, !!val->intval);
-		break;
+		return bq2597x_set_present(bq, !!val->intval);
 	default:
 		return -EINVAL;
 	}
@@ -2067,32 +2188,46 @@ static struct of_device_id bq2597x_charger_match_table[] = {
 MODULE_DEVICE_TABLE(of, bq2597x_charger_match_table);
 
 static int bq2597x_notifier_call(struct notifier_block *nb,
-		unsigned long val, void *v)
+			unsigned long val, void *v)
 {
 	struct bq2597x *chip = container_of(nb, struct bq2597x, nb);
 	struct power_supply *psy = v;
 	union power_supply_propval propval;
+	int ret;
 
-	if (psy == chip->typec_psy) {
-		power_supply_get_property(psy, POWER_SUPPLY_PROP_ONLINE, &propval);
+	if (psy != chip->typec_psy)
+		return NOTIFY_DONE;
+	ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_ONLINE, &propval);
+	if (ret)
+		return NOTIFY_DONE;
 
-		chip->charge_state = propval.intval;
-        chip->usb_present = !!propval.intval;
-
-		power_supply_changed(chip->fc2_psy);
-
-        if (chip->usb_present) {
-            msleep(30000);
-			bq2597x_enable_charge(chip, true);
-			bq2597x_check_charge_enabled(chip, &chip->charge_enabled);
-        }
-        else {
-			bq2597x_enable_charge(chip, false);
-			bq2597x_check_charge_enabled(chip, &chip->charge_enabled);
-        }
-	}
-
+	/* Report presence only. Do not sleep or enable an unvalidated charge pump. */
+	mutex_lock(&chip->data_lock);
+	chip->usb_present = !!propval.intval;
+	chip->charge_state = propval.intval;
+	mutex_unlock(&chip->data_lock);
+	power_supply_changed(chip->fc2_psy);
 	return NOTIFY_OK;
+}
+
+static void bq2597x_cleanup(void *data)
+{
+	struct bq2597x *bq = data;
+
+	/* Drain callbacks before releasing their power_supply reference or drvdata. */
+	if (bq->notifier_registered) {
+		power_supply_unreg_notifier(&bq->nb);
+		bq->notifier_registered = false;
+	}
+	if (bq->typec_psy) {
+		power_supply_put(bq->typec_psy);
+		bq->typec_psy = NULL;
+	}
+	debugfs_remove_recursive(bq->debug_root);
+	device_init_wakeup(bq->dev, false);
+	bq2597x_enable_charge(bq, false);
+	bq2597x_enable_adc(bq, false);
+	/* fc2_psy and its sysfs group are devm managed; never unregister twice. */
 }
 
 static int bq2597x_charger_probe(struct i2c_client *client)
@@ -2102,111 +2237,74 @@ static int bq2597x_charger_probe(struct i2c_client *client)
 	struct device_node *node = client->dev.of_node;
 	int ret;
 
-	bq = devm_kzalloc(&client->dev, sizeof(struct bq2597x), GFP_KERNEL);
+	bq = devm_kzalloc(&client->dev, sizeof(*bq), GFP_KERNEL);
 	if (!bq)
 		return -ENOMEM;
-
 	bq->dev = &client->dev;
-
 	bq->client = client;
 	i2c_set_clientdata(client, bq);
-
 	mutex_init(&bq->i2c_rw_lock);
 	mutex_init(&bq->data_lock);
 	mutex_init(&bq->charging_disable_lock);
 	mutex_init(&bq->irq_complete);
-
 	bq->resume_completed = true;
-	bq->irq_waiting = false;
 
 	ret = bq2597x_detect_device(bq);
-	if (ret) {
-		bq_err("No bq2597x device found!\n");
-		return -ENODEV;
-	}
-
+	if (ret)
+		return ret;
 	match = of_match_node(bq2597x_charger_match_table, node);
-	if (match == NULL) {
-		bq_err("device tree match not found!\n");
+	if (!match)
 		return -ENODEV;
-	}
-
-	bq2597x_get_work_mode(bq, &bq->mode);
-
-	if (bq->mode !=  *(int *)match->data) {
-		bq_err("device operation mode mismatch with dts configuration\n");
+	ret = bq2597x_get_work_mode(bq, &bq->mode);
+	if (ret)
+		return ret;
+	if (bq->mode != *(int *)match->data)
 		return -EINVAL;
-	}
-
 	ret = bq2597x_parse_dt(bq, &client->dev);
 	if (ret)
-		return -EIO;
-
+		return ret;
 	ret = bq2597x_init_device(bq);
 	if (ret) {
-		bq_err("Failed to init device\n");
+		bq2597x_enable_charge(bq, false);
+		bq2597x_enable_adc(bq, false);
 		return ret;
 	}
-
-	determine_initial_status(bq);
-
 	ret = bq2597x_psy_register(bq);
+	if (ret) {
+		bq2597x_enable_adc(bq, false);
+		return ret;
+	}
+	ret = devm_add_action_or_reset(bq->dev, bq2597x_cleanup, bq);
 	if (ret)
 		return ret;
 
 	if (client->irq) {
-		ret = devm_request_threaded_irq(&client->dev, client->irq,
-				NULL, bq2597x_charger_interrupt,
-				IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
-				"bq2597x charger irq", bq);
-		if (ret < 0) {
-			bq_err("request irq for irq=%d failed, ret =%d\n",
-							client->irq, ret);
-			goto err_1;
-		}
-		/* no need to enable this irq as a wakeup source */
-		/* enable_irq_wake(client->irq); */
+		ret = devm_request_threaded_irq(bq->dev, client->irq, NULL,
+			bq2597x_charger_interrupt, IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+			"bq2597x charger irq", bq);
+		if (ret)
+			return ret;
 	}
-
-	device_init_wakeup(bq->dev, 1);
+	ret = device_init_wakeup(bq->dev, true);
+	if (ret)
+		return ret;
 	create_debugfs_entry(bq);
-
-	ret = sysfs_create_group(&bq->dev->kobj, &bq2597x_attr_group);
-	if (ret) {
-		bq_err("failed to register sysfs. err: %d\n", ret);
-		goto err_1;
-	}
-
-	/* determine_initial_status(bq); */
-
-	bq_info("bq2597x probe successfully, Part Num:%d\n!",
-				bq->part_no);
-
+	ret = devm_device_add_group(bq->dev, &bq2597x_attr_group);
+	if (ret)
+		return ret;
 	bq->typec_psy = power_supply_get_by_name(
-			"tcpm-source-psy-c440000.spmi:pmic@2:typec@1500");
-	if (IS_ERR(bq->typec_psy)) {
-		ret = PTR_ERR(bq->typec_psy);
-		dev_warn(bq->dev, "Failed to get USB Type-C: %d\n", ret);
-		bq->typec_psy = NULL;
-	}
-
+		"tcpm-source-psy-c440000.spmi:pmic@2:typec@1500");
 	if (bq->typec_psy) {
 		bq->nb.notifier_call = bq2597x_notifier_call;
 		ret = power_supply_reg_notifier(&bq->nb);
-		if (ret) {
-			dev_err(bq->dev,
-				"Failed to register notifier: %d\n", ret);
+		if (ret)
 			return ret;
-		}
+		bq->notifier_registered = true;
 	}
-
+	determine_initial_status(bq);
+	bq_info("probe complete; active charge-pump control is disabled\n");
 	return 0;
-
-err_1:
-	power_supply_unregister(bq->fc2_psy);
-	return ret;
 }
-
 
 static inline bool is_device_suspended(struct bq2597x *bq)
 {
@@ -2260,25 +2358,7 @@ static int bq2597x_resume(struct device *dev)
 
 	return 0;
 }
-static void bq2597x_charger_remove(struct i2c_client *client)
-{
-	struct bq2597x *bq = i2c_get_clientdata(client);
-
-	bq2597x_enable_adc(bq, false);
-
-	power_supply_unregister(bq->fc2_psy);
-
-	mutex_destroy(&bq->charging_disable_lock);
-	mutex_destroy(&bq->data_lock);
-	mutex_destroy(&bq->i2c_rw_lock);
-	mutex_destroy(&bq->irq_complete);
-
-	debugfs_remove_recursive(bq->debug_root);
-
-	sysfs_remove_group(&bq->dev->kobj, &bq2597x_attr_group);
-}
-
-
+/* Managed teardown runs on both probe failure and driver detach. */
 static void bq2597x_charger_shutdown(struct i2c_client *client)
 {
 	struct bq2597x *bq = i2c_get_clientdata(client);
@@ -2309,7 +2389,6 @@ static struct i2c_driver bq2597x_charger_driver = {
 	.id_table	= bq2597x_charger_id,
 
 	.probe		= bq2597x_charger_probe,
-	.remove		= bq2597x_charger_remove,
 	.shutdown	= bq2597x_charger_shutdown,
 };
 

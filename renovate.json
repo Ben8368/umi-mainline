@@ -1,0 +1,71 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "Asia/Shanghai",
+  "schedule": [
+    "* * * * 1"
+  ],
+  "updateNotScheduled": false,
+  "enabledManagers": [
+    "github-actions"
+  ],
+  "includePaths": [
+    ".github/workflows/**"
+  ],
+  "dependencyDashboard": true,
+  "dependencyDashboardApproval": true,
+  "dependencyDashboardLabels": [
+    "dependencies",
+    "pinned"
+  ],
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 2,
+  "automerge": false,
+  "labels": [
+    "dependencies"
+  ],
+  "major": {
+    "dependencyDashboardApproval": true
+  },
+  "vulnerabilityAlerts": {
+    "enabled": false
+  },
+  "osvVulnerabilityAlerts": false,
+  "packageRules": [
+    {
+      "description": "Keep the workflow Python runtime under manual review.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Keep workflow container images and runner versions under manual review.",
+      "matchDatasources": [
+        "docker",
+        "github-runners"
+      ],
+      "enabled": false
+    },
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pin",
+        "pinDigest",
+        "digest"
+      ],
+      "groupName": "GitHub Actions non-major"
+    }
+  ],
+  "commitBody": "Bot-authored-by: Renovate <29139614+renovate[bot]@users.noreply.github.com>"
+}

@@ -23,9 +23,13 @@ referenced here is in LICENSES/.
         Written documentation.  Reuse and translate freely, keep the
         attribution.
 
+DockDSM-derived governance, hooks, workflow and regression files retain their
+MIT terms in LICENSES/MIT-DockDSM.txt; see docs/PROVENANCE.md for scope.
+
 Unless a file says otherwise, the license above applies to it; a
 SPDX-License-Identifier: tag always wins over this table.
 
-Third-party material used as reference while porting (vendor kernel sources,
-vendor device trees, firmware images) is NOT covered by the licenses above and
-is not redistributed here.  See "Third-party material" in README.md.
+Third-party vendor sources, device trees and firmware are not covered by the
+licenses above. Vendor source/DT dumps are not redistributed here. Tracked GPU
+firmware retains its separate source and licensing terms; see firmware/README.md
+and the Third-party material section of README.md.

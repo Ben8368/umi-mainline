@@ -94,14 +94,6 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&bq2597x_master_int_default>;
 
-		ti,bq2597x,bat-ovp-alarm-disable;
-		ti,bq2597x,bat-ocp-disable;
-		ti,bq2597x,bat-ocp-alarm-disable;
-		ti,bq2597x,bat-ucp-alarm-disable;
-		ti,bq2597x,bat-ucp-disable;
-		ti,bq2597x,bat-therm-disable;
-		ti,bq2597x,bus-therm-disable;
-		ti,bq2597x,die-therm-disable;
 
 		ti,bq2597x,bat-ovp-threshold = <4450>;
 		ti,bq2597x,bat-ovp-alarm-threshold = <4450>;
@@ -115,7 +107,9 @@
 		ti,bq2597x,die-therm-threshold = <145>;
 		ti,bq2597x,ac-ovp-threshold = <14>;
 
-		status = "okay";
+		/* Board thresholds/sense resistor need device acceptance.
+		 * Active charge-pump control is unsupported pending that work. */
+		status = "disabled";
 	};
 };
 

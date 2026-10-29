@@ -6,7 +6,7 @@
 #   ... --no-usb-console            不带 USB 串口 + U盘（默认带）
 #   ... --reboot 60                 到点自动重启（方便反复试；默认不重启）
 #   ... --dump-partition sda15      把 log 也写进 /dev/sda15（用 TWRP 读回来，谨慎使用）
-#   ... --root /dev/sda34           切根到真正的 rootfs（默认就是这个，Arch 装在 userdata）
+#   ... --root /dev/sda34           切根到真正的 rootfs（显式切根；默认 none 救援模式）
 #   ... --rootfstype ext4           根文件系统类型（默认 ext4）
 #   ... --root none                 纯救援镜像，不切根
 #
@@ -20,8 +20,8 @@ BB=${BB:-/tmp/armroot/bin/busybox.static}
 USB=1
 REBOOT=""
 DUMPPART=""
-ROOTDEV="/dev/sda34"
-ROOTFSTYPE="ext4"
+ROOTDEV=${ROOTDEV:-none}
+ROOTFSTYPE=${ROOTFSTYPE:-ext4}
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--usb-console) USB=1 ;;
@@ -102,10 +102,16 @@ if [ -n "$ROOTDEV" ]; then
 fi
 
 echo "== 打包 cpio.gz"
+mkdir -p "$WS/out"
+CPIO_FILE=$(mktemp "$WS/out/.initramfs.XXXXXX")
+LIST_FILE=$(mktemp)
+cleanup_archive() { rm -f "$CPIO_FILE" "$CPIO_FILE.gz" "$LIST_FILE"; }
+trap cleanup_archive EXIT
+trap 'exit 1' HUP INT TERM
 cd "$BUILD"
-find . -print0 | cpio --null -o -H newc --quiet | gzip -9 > "$WS/out/initramfs.cpio.gz"
-
-ls -l "$WS/out/initramfs.cpio.gz"
+find . -print0 > "$LIST_FILE"
+cpio --null -o -H newc --quiet < "$LIST_FILE" > "$CPIO_FILE"
+gzip -9 < "$CPIO_FILE" > "$CPIO_FILE.gz"
 
 # ---- 体积上限 ----
 # ABL 自己算 ramdisk 的落点，头里的 ramdisk_addr 是死的（实测被忽略）。
@@ -114,7 +120,7 @@ ls -l "$WS/out/initramfs.cpio.gz"
 # 如果 ABL 把我们这个 ramdisk 摆在同一个位置，超过这个数就会**覆盖 ramoops**
 # （表现：pstore 永远是空的，甚至启动就崩）。
 # 现在只有 663 KB（约 46%），但加了东西容易忘 —— 所以在这里卡一道。
-SIZE=$(wc -c < "$WS/out/initramfs.cpio.gz")
+SIZE=$(wc -c < "$CPIO_FILE.gz")
 LIMIT_WARN=$((1100 * 1024))
 LIMIT_HARD=$((1350 * 1024))
 if [ "$SIZE" -ge "$LIMIT_HARD" ]; then
@@ -127,6 +133,9 @@ elif [ "$SIZE" -ge "$LIMIT_WARN" ]; then
 else
 	echo "== 体积 OK：$SIZE 字节（上限 $LIMIT_HARD，约 $((SIZE * 100 / LIMIT_HARD))%）"
 fi
+
+mv -f "$CPIO_FILE.gz" "$WS/out/initramfs.cpio.gz"
+ls -l "$WS/out/initramfs.cpio.gz"
 
 echo "== 内容预览"
 zcat "$WS/out/initramfs.cpio.gz" | cpio -t --quiet 2>/dev/null | head -20

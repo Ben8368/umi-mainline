@@ -85,17 +85,17 @@ DTB 无效时（arch/arm64/kernel/setup.c:182）：
    while (true) cpu_relax();        ← 无限空转，不会重启！
 ```
 
-**关键判据（记住这条，以后很有用）：**
+**排查线索（不能单独定因）：**
 
 | 屏幕表现 | 含义 |
 |---|---|
-| 黑几秒 → **回到 fastboot** | 要么 ABL 层拒绝（镜像格式/DTB 不匹配），**要么内核早期挂掉后被 ABL 留下的 APSS 看门狗复位**（见 [RISK-AUDIT.md](RISK-AUDIT.md) H2）——用**秒表**区分：<5s 是前者，>8s 是后者 |
+| 黑几秒 → **回到 fastboot** | 可能是 ABL 拒绝，也可能是内核早期出错后被 APSS 看门狗或其他硬件复位。耗时只能作为线索；不能用 `<5s` / `>8s` 单独判定层级。结合 USB 枚举、pstore 和启动日志，再用同一镜像重复对照。 |
 | **一直黑屏、不重启、不回落 fastboot** | 内核跑起来了但卡在某处（DTB 无效空转 / 早期 hang / 或 QCOM_WDT 接手喂狗后的正常卡死表现） |
 | 屏幕出字 | 恭喜，进入真正的调试阶段 |
 
 > 补充：arm64 遇到无效 DTB 时是 `while (true) cpu_relax();` **死转不重启**
 > （`arch/arm64/kernel/setup.c:182`），所以「一直黑屏不重启」也可能只是「DTB 无效」。
-> 完整的原因清单和每条怎么区分，见 **[RISK-AUDIT.md](RISK-AUDIT.md)**。
+> 完整的原因清单和每条怎么区分，见 **[RISK-AUDIT.md](notes/RISK-AUDIT.md)**。
 
 因为主线 arm64 **没有** `CONFIG_ARM64_APPENDED_DTB`（全树 grep 为空；只有 32 位 arm 有 `ARM_APPENDED_DTB`），
 所以 `Image.gz-dtb` 这种下游习惯的打包方式在主线**完全无效** —— DTB 必须放在 boot image 的 dtb 段里。

@@ -8,18 +8,23 @@
 #   - 触摸（fts521 主线移植版；换厂商版用 TOUCH=stfts 并另存名）
 #   - GPU（Adreno 650，DT 打开 gmu/gpu + initramfs 里的 a650 固件）
 #   - WiFi/BT（QCA6390 PCIe，MAC 固定）
-#   - 电量计 / 充电器 / 快充（PM8150B fg + SMB5 + bq25970）
+#   - 电量计 / 主充电器（BQ25970 主动快充默认隔离，见 docs/BATTERY.md）
 #
 # 也就是说：**平时只需要刷这一张**。其它 boot-umi-*.img 都是实验对照，
 # 要么是某个驱动还没合进来的验证版（TOUCH=stfts），要么是历史遗留。
 set -e
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
 NAME=${NAME:-boot-umi.img}
+ROOTDEV=${ROOTDEV:-none}
+ROOTFSTYPE=${ROOTFSTYPE:-ext4}
 
-echo "== [1/2] 编内核（默认配置：全功能）=="
+echo "== [1/3] 编内核（默认配置：全功能）=="
 sh "$WS/scripts/build.sh"
 
-echo "== [2/2] 打包 $WS/out/$NAME =="
+echo "== [2/3] 生成 initramfs（root=${ROOTDEV}）=="
+sh "$WS/scripts/mkinitramfs.sh" --root "$ROOTDEV" --rootfstype "$ROOTFSTYPE"
+
+echo "== [3/3] 打包 $WS/out/$NAME =="
 python3 "$WS/tools/pack-umi.py" \
 	--dtb "$WS/out/sm8250-xiaomi-umi-wifi.dtb" \
 	-o "$WS/out/$NAME"

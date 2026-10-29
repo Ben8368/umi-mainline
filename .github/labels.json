@@ -1,0 +1,132 @@
+[
+  {
+    "name": "bug",
+    "color": "d73a4a",
+    "description": "umi-mainline bug"
+  },
+  {
+    "name": "enhancement",
+    "color": "a2eeef",
+    "description": "umi-mainline enhancement"
+  },
+  {
+    "name": "documentation",
+    "color": "0075ca",
+    "description": "umi-mainline documentation"
+  },
+  {
+    "name": "tests",
+    "color": "1d76db",
+    "description": "umi-mainline tests"
+  },
+  {
+    "name": "ci",
+    "color": "5319e7",
+    "description": "umi-mainline ci"
+  },
+  {
+    "name": "dependencies",
+    "color": "0366d6",
+    "description": "umi-mainline dependencies"
+  },
+  {
+    "name": "kernel",
+    "color": "b60205",
+    "description": "umi-mainline kernel"
+  },
+  {
+    "name": "power",
+    "color": "b60205",
+    "description": "umi-mainline power"
+  },
+  {
+    "name": "firmware",
+    "color": "b60205",
+    "description": "umi-mainline firmware"
+  },
+  {
+    "name": "storage",
+    "color": "b60205",
+    "description": "umi-mainline storage"
+  },
+  {
+    "name": "build",
+    "color": "d4c5f9",
+    "description": "umi-mainline build"
+  },
+  {
+    "name": "hardware-testing",
+    "color": "fbca04",
+    "description": "umi-mainline hardware-testing"
+  },
+  {
+    "name": "needs:hardware-test",
+    "color": "fbca04",
+    "description": "umi-mainline needs:hardware-test"
+  },
+  {
+    "name": "risk:high",
+    "color": "b60205",
+    "description": "umi-mainline risk:high"
+  },
+  {
+    "name": "security",
+    "color": "b60205",
+    "description": "umi-mainline security"
+  },
+  {
+    "name": "data-loss",
+    "color": "b60205",
+    "description": "umi-mainline data-loss"
+  },
+  {
+    "name": "agent:codex",
+    "color": "0052cc",
+    "description": "umi-mainline agent:codex"
+  },
+  {
+    "name": "jules",
+    "color": "0e8a16",
+    "description": "umi-mainline jules"
+  },
+  {
+    "name": "bot:request",
+    "color": "c2e0c6",
+    "description": "umi-mainline bot:request"
+  },
+  {
+    "name": "stale",
+    "color": "ededed",
+    "description": "umi-mainline stale"
+  },
+  {
+    "name": "pinned",
+    "color": "d93f0b",
+    "description": "umi-mainline pinned"
+  },
+  {
+    "name": "arm64",
+    "color": "b60205",
+    "description": "umi-mainline arm64"
+  },
+  {
+    "name": "qemu",
+    "color": "b60205",
+    "description": "umi-mainline qemu"
+  },
+  {
+    "name": "phase-acceptance",
+    "color": "fbca04",
+    "description": "umi-mainline phase-acceptance"
+  },
+  {
+    "name": "docker",
+    "color": "b60205",
+    "description": "umi-mainline docker"
+  },
+  {
+    "name": "guest",
+    "color": "b60205",
+    "description": "umi-mainline guest"
+  }
+]
