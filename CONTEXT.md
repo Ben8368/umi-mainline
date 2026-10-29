@@ -2,7 +2,7 @@
 
 > **最后确认：** 2026-10-29
 > **阶段：** PPS 修复版已按本轮授权写入 boot 并启动救援环境，镜像读回一致；实际 PPS 充电/供电验收待人工执行。
-> **代码基线：** 工作分支基于 master `8900f313d5792e52e051f592dd7a1931c90237cf`（含 PR #4）；PPS 经 PR #5（`codex/umi-pps-charging`）交付，CodeRabbit 意见待提交后复审。
+> **代码基线：** 工作分支基于 master `8900f313d5792e52e051f592dd7a1931c90237cf`（含 PR #4）；PPS 经 PR #5（`codex/umi-pps-charging`）交付，意见修复在 `c12a773`，待当前 tip 的 CI 与 CodeRabbit 最终反馈。
 
 ## 当前决策
 
@@ -20,7 +20,7 @@
 
 ## 最近验证
 
-- 2026-10-29：PR #5 CodeRabbit 意见已改（有效电流比较、BATTERY 证据范围、测试宏提取）；WSL 下 PPS 7/7、reliability 11/11、governance/check-tree 通过；未提交未推送，未重编/未真机。见 [PR #5](https://github.com/Ben8368/umi-mainline/pull/5)。
+- 2026-10-29：PR #5 CodeRabbit 意见修复 `c12a773`（有效电流比较、BATTERY 证据范围、测试宏提取）已推送；本地 WSL PPS 7/7、reliability 11/11、governance/check-tree 通过；远端 CI/CodeRabbit 待对当前 tip 核验，未重编/未真机。见 [PR #5](https://github.com/Ben8368/umi-mainline/pull/5)。
 - 2026-10-29：PPS 修复版 18 项回归与 boot 写入读回已核验，充电未测；见 [设备记录](docs/archive/reviews/2026-10-29-pps-device-flash.md)。
 - 2026-10-29：源码基线 `fd469d9` 内核/DTS 编译与打包通过，见[构建记录](docs/archive/reviews/2026-10-29-image-build.md)。
 - 2026-10-29：PR #2 CodeRabbit 在关闭后取消，见[事件记录](docs/archive/reviews/2026-10-29-coderabbit-cancel.md)。
