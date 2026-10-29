@@ -705,7 +705,8 @@ static int smb5_pps_stop(struct smb5_chip *chip)
 
 /* Run in a sleepable worker, never in TCPM/power_supply notification context.
  * Reissuing CURRENT_NOW each second also renews the PPS contract (<10 s).
- * A communication/register/health failure latches off until an explicit retry.
+ * Communication/register errors and health failures during active PPS latch
+ * off until an explicit retry; the fixed-contract path may recover on health.
  */
 static int smb5_pps_update(struct smb5_chip *chip)
 {
@@ -723,7 +724,7 @@ static int smb5_pps_update(struct smb5_chip *chip)
 	if (ret)
 		return ret;
 	if (health != POWER_SUPPLY_HEALTH_GOOD)
-		return -ERANGE;
+		return chip->pps_enabled ? -ERANGE : smb5_pps_stop(chip);
 	if (chip->user_inhibit || chip->pps_fault)
 		return smb5_pps_stop(chip);
 
