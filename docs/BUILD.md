@@ -16,11 +16,11 @@ wsl -d umi -u root -- sh /mnt/d/project/UMI-mainline/scripts/mkimage.sh
 | 面板（CSOT j2_mp_42_02_0b，DSC cmd） | `patches/panel-xiaomi-umi.c` + `dts/xiaomi-umi-panels.dtsi` |
 | 触摸（ST FTS，fts521 主线移植版） | `fts521/`（`patches/fts-umi.c` 是旧版，不编） |
 | GPU（Adreno 650） | `dts/*.dts` 的 `&gpu`/`&gmu` + `firmware/qcom/a650_*` 打进 initramfs |
-| WiFi/BT（QCA6390 PCIe，MAC 固定） | `dts/sm8250-xiaomi-umi-wifi.dts` |
+| Wi-Fi（QCA6390 PCIe） | Wi-Fi DTS + 同版本 ath11k/MHI/pwrctrl 模块包；rootfs 另需固件 |
 | 电量计 / 主充电器（BQ25970 默认禁用） | `power/qcom_fg.c`、`qcom_pm8150b_charger.c`、`bq25970_charger.c` |
 | 桌面（Plasma Mobile，在 rootfs 里） | `scripts/umi-plasma.sh` |
 
-功能是**一张镜像里累加**的，不要按功能分镜像。`out/archive/` 里的
+功能在同一适配层累加。`boot.img` 不含 rootfs 模块和 Wi-Fi 固件；救援模式也不等于 Wi-Fi、蓝牙或桌面已可用。`out/archive/` 里的
 `boot-umi-*.img` 都是历史实验对照（某次单一驱动的验证版），平时不用管。
 
 ### 只重打镜像、不重编内核
@@ -41,19 +41,38 @@ python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb -o out/boot-umi-st
 ## 1. 编译内核（mkimage.sh 内部做的事）
 
 ```sh
+sh scripts/prepare-tree.sh  # 首次准备或核验 config/kernel.env 固定的源码身份
 sh scripts/build.sh
-# 干的事：同步 dts/ 和驱动补丁进 /root/linux → defconfig + 合并 config/umi.config
-#        → 注入面板/触摸/电量计驱动 → 编 Image.gz + 三个 DTB（-@ 带 __symbols__）
-# 产物：out/Image.gz、out/sm8250-xiaomi-umi*.dtb、out/config-effective
+# 干的事：同步 dts/ 和驱动补丁进默认 /root/linux-6.18.59 → defconfig + 合并 config/umi.config
+#        → 注入面板/触摸/电量计驱动 → 编 Image.gz + 三个 DTB + modules
+# 产物：out/Image.gz、三个 DTB、config-effective、modules-<release>.tar.gz、kernelrelease
 ```
 
 ### 6.18.x 独立构建
 
-6.18.59 的固定源码身份、独立 `TREE` / `OUT` / `WS`、兼容修复、构建命令、产物哈希与运行边界见 [构建记录](archive/reviews/2026-10-29-linux-6.18.59-build.md)。切换版本时使用新的 ext4 源码树和产物目录，避免继承旧树手工补丁或覆盖原镜像；默认构建路径与 CI 目标不随这次实验切换。
+6.18.59 的固定源码身份、独立 `TREE` / `OUT` / `WS`、兼容修复、构建命令、产物哈希与运行边界见 [构建记录](archive/reviews/2026-10-29-linux-6.18.59-build.md)。切换版本时使用新的 ext4 源码树和产物目录，避免继承旧树手工补丁或覆盖原镜像；默认版本统一由 `config/kernel.env` 固定为 6.18.59，构建/配置/DTB/模块辅助脚本共用它；`TREE=` / `OUT=` 仍可显式指定旧版兼容构建。`prepare-tree.sh` 克隆固定标签并比对完整 SHA，拒绝覆盖已有错误版本的目录；6.18 也进入手动编译 CI。
+
+### 模块交付
+
+`build.sh` 会执行 `make Image.gz dtbs modules`，再调用 `export-modules.py`，在普通临时目录中执行 `modules_install` 并生成匹配版本的 depmod 索引（宿主须安装 kmod）。导出不挂载 rootfs、不删除旧版模块、不访问手机。包内为 `lib/modules/<kernelrelease>/`，适用于已由维护者确认目录布局的 rootfs；真实设备安装另需授权。
+
+`out/modules-manifest.json` 记录模块数、内核/配置/模块包 SHA256，`out/kernelrelease` 给出唯一对应版本。不能给 6.18 使用 6.12 的 `.ko`。即使包存在，也需在真实 rootfs 验证 modprobe、QCA6390 固件、PCIe 枚举、网络连接和休眠恢复。
 
 ## 2. 创建 initramfs
 
+BusyBox 默认从官方 GPL 源码构建，源码身份在 `config/source-lock.json`。需要 Python ≥3.12、make、宿主 C 编译器和带静态 libc 的 arm64 **Linux** 交叉工具链（Ubuntu: `gcc-aarch64-linux-gnu libc6-dev-arm64-cross`）；内核用的 `aarch64-none-elf-` 不带 Linux libc，不能用于 BusyBox。
+
+```sh
+python3 scripts/build-busybox.py --jobs 4
+# 离线也可传 --source-archive /path/busybox-1.37.0.tar.bz2，仍强制校验固定 SHA256
+# 若内核与用户态工具链位于不同 WSL 发行版，将源码产物用 BB=/path/busybox.static 显式传入
+```
+
+输出包含 ELF、实际配置和来源 JSON。构建使用通用软件哈希，禁用 1.37.0 与新头文件不兼容且救援不用的 `tc` applet；完整 rootfs 可使用 iproute2。既有预编译 Alpine BusyBox 仍是开放项目的二进制分发，但不再作为自动回退：只有显式 `BB=/path/to/busybox.static` 才选用，路径无效直接失败。
+
 默认救援模式，已安装根分区用 `--root /dev/sda34` 显式选择。所有打包阶段失败都会停止，不发布半成品覆盖旧 initramfs。
+
+打包前强制校验 `firmware/manifest.json` 的完整文件集合和哈希；新增或修改固件须先复核来源并更新清单，失败不覆盖已有 initramfs。
 
 GPU 固件必须在这里面（adreno 是内建驱动，probe 时 rootfs 还没挂上）：
 

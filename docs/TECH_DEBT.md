@@ -17,3 +17,9 @@
 ## TD-004：PPS 暂使用受限 SMB5 通路（P2）
 
 当前实现只提供显式 PPS 合同与 SMB5 主充电，电池端沿用 1.5A FCC，未移植 Android 电荷泵闭环、JEITA 标定或原厂满功率曲线。该妥协允许独立验证协议接线，不等同 25W/30W 快充；后续扩展须先解决 RISK-001/RISK-005，再实现电荷泵保护读回、看门狗服务与故障退出。控制契约见 [PPS](PPS.md)。
+
+## TD-005：源码用户态与模块发布闭包仍需收敛（P2）
+
+BusyBox 1.37.0 静态构建禁用救援不用且与新 libc 头文件不兼容的 tc，以及依赖 x86 的 SHA-NI 配置，保留通用哈希；这不是 rootfs 全部包的源码重建。完整 rootfs 用 iproute2，用户态编译器/libc 固定及可重现归档另行收敛。模块包仅导出到普通目录；旧 `install-modules.sh` 挂载镜像的路径仍属显式设备准备流程，本轮没有执行或据此宣称已安装。见 [BUILD](BUILD.md)。
+
+源码 BusyBox 使用 defconfig 和静态 glibc，救援 initramfs 已超过既有体积预警线，距离硬上限余量有限（具体字节见[构建记录](archive/reviews/2026-10-29-source-parity.md)）。暂保留已通过 applet 检查的配置；后续按 init 的真实命令闭包裁剪或评估源码 musl 工具链，重新验证救援命令，不提高打包安全阈值。

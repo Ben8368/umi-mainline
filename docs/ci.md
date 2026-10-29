@@ -11,7 +11,7 @@ CI 监听面向 master 的 PR、master push、merge_group 和手动触发；不�
 
 PR 使用只读 token、固定完整 action commit、checkout 不保留凭据；从不使用 pull_request_target 执行 PR 内容。labeler / bot-dispatch / stale 只处理 GitHub 元数据，权限按任务最小化，不执行 Issue 验证命令，不向 Actions 注入 PAT。
 
-Linux 目标内核编译通过手动 Kernel compile 工作流在固定输入上验证；外部 checkout 的 ref 直接写完整 SHA 字面量，版本矩阵只选择对应步骤，CI 策略回归约束一一对应，避免动态引用混入编译。它不属于快门禁，不被解释为真机验收。每次 C/DTS 变更合入前应审阅该编译结果；若未运行，PR 明确 not-run 并登记风险。不得将缺失的编译检查描述为通过。
+Linux 目标内核编译通过手动 Kernel compile 工作流在 6.12.94 / 6.18.59 / 7.2.12 固定输入上验证；外部 checkout 的 ref 直接写完整 SHA 字面量，版本矩阵只选择对应步骤，CI 策略回归约束一一对应，避免动态引用混入编译。编译目标包含 Image.gz、DTB 与 modules，并校验模块导出；固件身份随离线回归核对。它不属于快门禁，不被解释为真机验收。每次 C/DTS 变更合入前应审阅该编译结果；若未运行，PR 明确 not-run 并登记风险。不得将缺失的编译检查描述为通过。
 
 分支保护由维护者在默认分支具备工作流后配置 required check: CI result。CodeRabbit 是人工合并的流程门禁，不设置为硬 required check，也不自动合并：须对准备合并的同一 HEAD 完成审查、发布最终反馈并处理有效意见。queued / in_progress / cancelled / skipped / failure 或缺少最终反馈均不得合并或关闭 PR；可以结束会话并在之后恢复检查。关闭 PR 会取消尚未发布的审查。详细步骤见 [AI_RULES](AI_RULES.md#pr-推送与远端验证)。新工作流首次 PR 可以运行 pull_request CI，但 issues/schedule/pull_request_target 以默认分支为准：本 PR 未合并前不宣称这些机器人已在生产触发。
 

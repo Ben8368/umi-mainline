@@ -7,8 +7,10 @@
 #   wsl -d umi -u root -e sh <repo>/scripts/collect-facts.sh
 #   wsl -d umi -u root -e sh .../collect-facts.sh | tee facts.txt
 set -e
-TREE=${TREE:-/root/linux}
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
+# shellcheck source=../config/kernel.env
+. "$WS/config/kernel.env"
+TREE=${TREE:-/root/linux-$UMI_KERNEL_VERSION}
 Q=$TREE/arch/arm64/boot/dts/qcom
 cd "$TREE"
 

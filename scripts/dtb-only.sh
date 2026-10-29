@@ -5,19 +5,22 @@
 #   wsl -d umi -u root -- sh <repo>/scripts/dtb-only.sh sm8250-xiaomi-umi
 set -e
 
-TREE=${TREE:-/root/linux}
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
+# shellcheck source=../config/kernel.env
+. "$WS/config/kernel.env"
+TREE=${TREE:-/root/linux-$UMI_KERNEL_VERSION}
 OUT=${OUT:-$WS/out}
 D="$TREE/arch/arm64/boot/dts/qcom"
 INC=$(gcc -print-file-name=include)
 
 if [ $# -eq 0 ]; then
-	set -- sm8250-xiaomi-umi sm8250-xiaomi-umi-plus
+	set -- sm8250-xiaomi-umi sm8250-xiaomi-umi-plus sm8250-xiaomi-umi-wifi
 fi
 
 # 先把工作区的 dts/ 同步进树里，避免改的是 A 编的是 B
-for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi; do
-	[ -f "$WS/dts/$f" ] && cp -f "$WS/dts/$f" "$D/$f"
+for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi umi-spmi-overlay-guard.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi sm8250-xiaomi-umi-wifi.dts xiaomi-umi-battery.dtsi; do
+	[ -f "$WS/dts/$f" ] || { echo "!! 缺少 DTS 源码: $f" >&2; exit 1; }
+	cp -f "$WS/dts/$f" "$D/$f"
 done
 
 mkdir -p "$OUT"

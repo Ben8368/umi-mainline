@@ -39,7 +39,7 @@ class ReliabilityTests(unittest.TestCase):
     def test_build_failure_and_missing_wifi_never_collect_stale_artifacts(self):
         source = (ROOT / 'scripts/build.sh').read_text()
         section = 'set -e\n' + source[source.index('echo "== [5/6]'):]
-        for mode, expected in [('fail', 3), ('missing-wifi', 3), ('success', 0)]:
+        for mode, expected in [('fail', 3), ('missing-wifi', 3), ('module-export-fail', 4), ('success', 0)]:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix='umi-build-test-') as tmp:
                 base = Path(tmp)
                 out = base / 'kernel/out'
@@ -47,16 +47,20 @@ class ReliabilityTests(unittest.TestCase):
                 dtbs = out / 'arch/arm64/boot/dts/qcom'
                 dtbs.mkdir(parents=True)
                 (ws / 'out').mkdir(parents=True)
+                (ws / 'scripts').mkdir()
+                (ws / 'scripts/export-modules.py').write_text(
+                    'import os,sys\nsys.exit(4 if os.environ["MODE"] == "module-export-fail" else 0)\n')
                 (base / 'bin').mkdir()
                 (out / '.config').write_text('fixture\n')
                 (dtbs / 'sm8250-xiaomi-umi-wifi.dtb').write_text('OLD_WIFI')
                 make = base / 'bin/make'
                 make.write_text('''#!/bin/sh
+case " $* " in *" modules "*) ;; *) exit 19 ;; esac
 printf NEW_KERNEL > "$OUT/arch/arm64/boot/Image.gz"
 printf NEW_BASE > "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi.dtb"
 printf NEW_PLUS > "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-plus.dtb"
 [ "$MODE" != fail ] || exit 2
-[ "$MODE" != success ] || printf NEW_WIFI > "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-wifi.dtb"
+case "$MODE" in success|module-export-fail) printf NEW_WIFI > "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-wifi.dtb" ;; esac
 exit 0
 ''')
                 make.chmod(0o755)
@@ -105,6 +109,8 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_text('fixture')
             (ws / 'out').mkdir()
             (ws / 'initramfs').mkdir()
             (ws / 'initramfs/init').write_text('#!/bin/sh\n\techo fixture\n')
+            (ws / 'scripts').mkdir()
+            (ws / 'scripts/check-firmware.py').write_text('pass\n')
             (ws / 'bin').mkdir()
             bb = ws / 'busybox'
             bb.write_text('#!/bin/sh\nexit 0\n')

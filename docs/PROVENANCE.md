@@ -5,3 +5,5 @@
 治理体系移植自 [Ben8368/DockDSM](https://github.com/Ben8368/DockDSM/tree/bc77c7e7f21e68dea6457568d8318b66452de280)。基准为 bc77c7e7f21e68dea6457568d8318b66452de280（2026-10-28 核对），保留其 [MIT 许可](../LICENSES/MIT-DockDSM.txt)。直接衍生文件：governance-docs-check.py、install-git-hooks.py、git-hooks-test.py、commit-msg、bot-dispatch workflow 与回归、治理回归、Jules setup，以及标签/CodeQL/stale 工作流；项目边界与路由已改写为 umi。
 
 既有 [LICENSE](../LICENSE) 的路径分类继续适用；新增 DockDSM 衍生治理文件依 MIT 来源许可，新的 Linux C 驱动改动沿用原文件 GPL。AI 工具贡献通过工具级 trailer 标记，不替换维护者主作者或第三方版权。完整移植对照见 [记录](archive/reviews/2026-10-28-governance-port.md)。
+
+驱动源码、可编辑 DTS、预编译用户程序与独立固件的逐项边界见[源码清单](OPEN_SOURCE.md)；现有固件哈希见[清单](../firmware/manifest.json)。哈希记录不替代再分发许可，不将 C 字节数组误认成固件源码。

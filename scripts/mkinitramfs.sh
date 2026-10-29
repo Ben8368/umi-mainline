@@ -15,7 +15,9 @@ set -e
 
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
 BUILD=${BUILD:-/tmp/initramfs-build}
-BB=${BB:-/tmp/armroot/bin/busybox.static}
+# Source is the default; an explicit BB= opts into a prebuilt executable.
+BB_EXPLICIT=${BB+x}
+BB=${BB:-$WS/out/busybox/busybox.static}
 
 USB=1
 REBOOT=""
@@ -35,11 +37,11 @@ while [ $# -gt 0 ]; do
 	shift
 done
 
-if [ ! -x "$BB" ]; then
-	echo "== 没有静态 busybox，先跑 fetch-busybox.sh"
-	sh "$WS/scripts/fetch-busybox.sh"
+if [ ! -x "$BB" ] && [ "$BB_EXPLICIT" != x ]; then
+	echo "== 从锁定并校验的 GPL 源码构建 arm64 静态 BusyBox"
+	python3 "$WS/scripts/build-busybox.py" --output "$BB"
 fi
-[ -x "$BB" ] || { echo "!! 拿不到静态 busybox"; exit 2; }
+[ -x "$BB" ] || { echo "!! BusyBox 不可执行: $BB (显式 BB 不自动下载替代品)"; exit 2; }
 
 # ---- 设备侧文本必须是纯 ASCII ----
 # 手机屏幕上的 console 和 panic 屏用的都是 VGA 8x16 字体，没有中文字形 ——
@@ -52,6 +54,9 @@ if LC_ALL=C grep -q '[^ -~	]' "$WS/initramfs/init"; then
 fi
 echo "== init 脚本是纯 ASCII（屏幕上不会出方块）"
 
+# Check opaque payload identities before creating a new ramdisk.
+python3 "$WS/scripts/check-firmware.py"
+
 echo "== 组装 $BUILD"
 rm -rf "$BUILD"
 mkdir -p "$BUILD/bin" "$BUILD/sbin" "$BUILD/proc" "$BUILD/sys" "$BUILD/dev" \
@@ -63,8 +68,8 @@ mkdir -p "$BUILD/bin" "$BUILD/sbin" "$BUILD/proc" "$BUILD/sys" "$BUILD/dev" \
 #   Direct firmware load for qcom/a650_sqe.fw failed with error -2
 # 于是 GPU 停在未初始化状态（devfreq 有节点但 cur_freq=0）。
 #
-# 文件来自本机 MIUI 的 /vendor/firmware（a650_zap.mdt/.b00-.b02、a650_sqe.fw、
-# a650_gmu.bin），放在仓库 firmware/qcom/ 下；qcom/ 和旧式平铺路径各放一份，
+# 文件来源逐项见 firmware/README.md；SQE 来自 linux-firmware，其余分段固件
+# 来自本机原厂分区。这些是固件二进制，不因可下载而成为开源；路径各放一份，
 # 因为 adreno_request_fw() 两种都会试。
 FW_SRC="$WS/firmware/qcom"
 if [ -d "$FW_SRC" ]; then
