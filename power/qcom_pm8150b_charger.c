@@ -701,6 +701,7 @@ static int smb5_pps_stop(struct smb5_chip *chip)
 static int smb5_pps_update(struct smb5_chip *chip)
 {
 	int ret, online, health, current_ua, voltage_uv, min_uv, max_uv, max_ua;
+	int expected_ua;
 
 	online = smb5_source_get(chip, POWER_SUPPLY_PROP_ONLINE);
 	if (online < 0)
@@ -758,8 +759,21 @@ static int smb5_pps_update(struct smb5_chip *chip)
 	if (current_ua < SDP_CURRENT_UA ||
 	    (online != 2 && voltage_uv != SMB5_PPS_MIN_UV))
 		return -ERANGE;
+	/* Compare against the effective request, not the uncapped user target.
+	 * When APDO CURRENT_MAX is below pps_current_ua, TCPM CURRENT_NOW stays
+	 * at the capped value; comparing the target would shed/renegotiate at 1 Hz.
+	 */
+	if (online == 2) {
+		max_ua = smb5_source_get(chip, POWER_SUPPLY_PROP_CURRENT_MAX);
+		if (max_ua < 0)
+			return max_ua;
+		expected_ua = rounddown(min(chip->pps_current_ua, max_ua),
+					SMB5_PPS_STEP_UA);
+	} else {
+		expected_ua = chip->pps_current_ua;
+	}
 	if (online != 2 || voltage_uv != chip->pps_voltage_uv ||
-	    current_ua != chip->pps_current_ua) {
+	    current_ua != expected_ua) {
 		ret = smb5_set_current_limit(chip, SDP_CURRENT_UA);
 		if (ret)
 			return ret;

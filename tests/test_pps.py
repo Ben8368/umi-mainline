@@ -46,7 +46,10 @@ class PpsTests(unittest.TestCase):
     def harness(self):
         constants = ['SMB5_PPS_MIN_UV', 'SMB5_PPS_MAX_UV', 'SMB5_PPS_STEP_UV',
                      'SMB5_PPS_STEP_UA', 'SMB5_PPS_POLL_MS', 'SDP_CURRENT_UA',
-                     'CURRENT_SCALE_FACTOR']
+                     'CURRENT_SCALE_FACTOR', 'USBIN_ADAPTER_ALLOW_OVERRIDE',
+                     'USBIN_ADAPTER_ALLOW_MASK', 'USBIN_ADAPTER_ALLOW_CONTINUOUS',
+                     'FLOAT_VOLTAGE_CFG', 'FLOAT_VOLTAGE_SETTING_MASK',
+                     'FAST_CHARGE_CURRENT_CFG', 'FAST_CHARGE_CURRENT_SETTING_MASK']
         defines = '\n'.join(re.search(r'^#define\s+' + name + r'\s+[^\n]+',
                                       SOURCE, re.M).group(0) for name in constants)
         return r'''
@@ -56,18 +59,14 @@ class PpsTests(unittest.TestCase):
 #define min(a,b) ((a)<(b)?(a):(b))
 #define round_down(a,b) ((a)&~((b)-1))
 #define rounddown(a,b) ((a)/(b)*(b))
+#define BIT(n) (1U<<(n))
+#define GENMASK(h,l) (((~0U)<<(l))&(~0U>>(31-(h))))
 #define READ_ONCE(x) (x)
 #define mutex_lock(p) ((void)0)
 #define mutex_unlock(p) ((void)0)
 #define dev_err_ratelimited(d,fmt,...) ((void)(d),(void)printf(fmt,__VA_ARGS__))
 #define msecs_to_jiffies(x) (x)
-#define USBIN_ADAPTER_ALLOW_OVERRIDE 0x344
-#define USBIN_ADAPTER_ALLOW_MASK 15
-#define USBIN_ADAPTER_ALLOW_CONTINUOUS 8
-#define FLOAT_VOLTAGE_CFG 0x70
-#define FLOAT_VOLTAGE_SETTING_MASK 255
-#define FAST_CHARGE_CURRENT_CFG 0x61
-#define FAST_CHARGE_CURRENT_SETTING_MASK 255
+''' + defines + r'''
 enum power_supply_property {POWER_SUPPLY_PROP_ONLINE,POWER_SUPPLY_PROP_USB_TYPE,
  POWER_SUPPLY_PROP_VOLTAGE_NOW,POWER_SUPPLY_PROP_CURRENT_NOW,POWER_SUPPLY_PROP_VOLTAGE_MIN,
  POWER_SUPPLY_PROP_VOLTAGE_MAX,POWER_SUPPLY_PROP_CURRENT_MAX};
@@ -115,7 +114,7 @@ static struct smb5_chip reset(void) {
  input_limit=500000;charging=0;enabled_calls=0;refuse=0;disable_calls=0;reg_calls=0;
  return (struct smb5_chip){.pps_enabled=true,.pps_voltage_uv=9000000,
  .pps_current_ua=1500000,.input_max_ua=1500000};}
-''' + defines + '\n' + '\n'.join(reliability.function(SOURCE, name) for name in [
+''' + '\n'.join(reliability.function(SOURCE, name) for name in [
             'smb5_pps_valid_target', 'smb5_pps_stop', 'smb5_pps_update',
             'smb5_pd_work', 'smb5_battery_config'])
 
@@ -172,12 +171,17 @@ int main(void) {
  struct smb5_chip c=reset();smb5_pd_work(&c);int first=calls;
  smb5_pd_work(&c);
  if(calls<=first||!charging||c.pps_fault||online!=2)return 1;
+ /* APDO CURRENT_MAX below the user target must keep the capped contract. */
+ c=reset();source_max=1000000;smb5_pd_work(&c);first=calls;
+ smb5_pd_work(&c);
+ if(calls<=first||c.pps_fault||!charging||online!=2||
+    current!=1000000||input_limit!=1000000)return 2;
  for(int i=1;i<=6;i++) {
   c=reset();online=2;c.pps_active=true;charging=1;fail_at=i;
   int ret=smb5_pps_stop(&c);
-  if(!ret||!disable_calls||calls<i)return 2;
+  if(!ret||!disable_calls||calls<i)return 3;
   /* A failed load-disable must not skip the protocol fallback attempt. */
-  if(i==1 && online!=1)return 3;
+  if(i==1 && online!=1)return 4;
  }
  return 0;
 }
@@ -260,18 +264,20 @@ int main(void) {struct smb5_chip c={0};int val=77;
 typedef unsigned char u8;typedef unsigned short u16;
 struct smb5_register {u16 addr;u8 mask,val;};
 struct smb5_chip {void *tcpm_psy,*dev,*regmap;int base;};
+''' + defines + r'''
 static int calls,fail,role_write,enable_write,icl,load,apsd;
 static int regmap_update_bits(void *m,int reg,int mask,int value) {
  if(++calls==fail)return -EIO;
  if(reg>=0x500 && reg<0x600)role_write++;
- if(reg==0x42 && value)enable_write++;
- if(reg==0x342)icl=value;
- if(reg==0x365)load=value;
- if(reg==0x362)apsd=value;
+ if(reg==CHARGING_ENABLE_CMD && value)enable_write++;
+ if(reg==CMD_ICL_OVERRIDE)icl=value;
+ if(reg==USBIN_LOAD_CFG)load=value;
+ if(reg==USBIN_OPTIONS_1_CFG)apsd=value;
  return 0;}
-''' + defines + '\n' + array + '\n' + reliability.function(SOURCE, 'smb5_init_hw') + r'''
+''' + array + '\n' + reliability.function(SOURCE, 'smb5_init_hw') + r'''
 int main(void) {struct smb5_chip c={.tcpm_psy=(void *)1};
- if(smb5_init_hw(&c)||role_write||enable_write||icl!=1||load!=16||apsd)return 1;
+ if(smb5_init_hw(&c)||role_write||enable_write||icl!=ICL_OVERRIDE_BIT||
+    load!=ICL_OVERRIDE_AFTER_APSD_BIT||apsd)return 1;
  int total=calls;
  for(int i=1;i<=total;i++) {calls=0;fail=i;
   if(smb5_init_hw(&c)!=-EIO||calls!=i||role_write||enable_write)return 2;}

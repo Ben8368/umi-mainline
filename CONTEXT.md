@@ -2,7 +2,7 @@
 
 > **最后确认：** 2026-10-29
 > **阶段：** PPS 修复版已按本轮授权写入 boot 并启动救援环境，镜像读回一致；实际 PPS 充电/供电验收待人工执行。
-> **代码基线：** 工作分支基于 master `8900f313d5792e52e051f592dd7a1931c90237cf`（含 PR #4）；PPS 改动经 `codex/umi-pps-charging` 的 PR 交付。
+> **代码基线：** 工作分支基于 master `8900f313d5792e52e051f592dd7a1931c90237cf`（含 PR #4）；PPS 经 PR #5（`codex/umi-pps-charging`）交付，CodeRabbit 意见待提交后复审。
 
 ## 当前决策
 
@@ -20,12 +20,12 @@
 
 ## 最近验证
 
-- 2026-10-29：PPS 修复版 18 项回归、治理/文本与编译打包通过；实机串口、PPS 节点、health=Good、1.5A 上限读值和 boot 写入读回已核验，充电未测；见 [设备记录](docs/archive/reviews/2026-10-29-pps-device-flash.md)。
-- 2026-10-29：源码基线 `fd469d9`；Linux 6.12.94 目标内核/DTS 编译及 `sh scripts/mkimage.sh` 通过，使用 WSL x86_64，未连接/写入手机；镜像 SHA256 与产物记录见[构建记录](docs/archive/reviews/2026-10-29-image-build.md)。
-- 2026-10-29：PR #2 的 `CI result`、CodeQL、lint、governance 与 amd64/arm64 offline 检查通过；CodeRabbit 对 HEAD `7383b65` 在 PR 关闭后取消，原因与证据见[事件记录](docs/archive/reviews/2026-10-29-coderabbit-cancel.md)。
-- 2026-10-29：治理 commit `293c884` 上 11 项可靠性回归通过，实际 C 函数故障注入与脚本错误路径见[修复记录](docs/archive/reviews/2026-10-29-reliability-fixes.md)。
-- 2026-10-29：master `fd469d9` 的 governance / lint / offline（含策略与派单回归）经 [CI result](https://github.com/Ben8368/umi-mainline/actions/runs/40807337474) 通过。
-- 2026-10-29：治理移植范围及远端源身份见[移植记录](docs/archive/reviews/2026-10-28-governance-port.md)。
+- 2026-10-29：PR #5 CodeRabbit 意见已改（有效电流比较、BATTERY 证据范围、测试宏提取）；WSL 下 PPS 7/7、reliability 11/11、governance/check-tree 通过；未提交未推送，未重编/未真机。见 [PR #5](https://github.com/Ben8368/umi-mainline/pull/5)。
+- 2026-10-29：PPS 修复版 18 项回归与 boot 写入读回已核验，充电未测；见 [设备记录](docs/archive/reviews/2026-10-29-pps-device-flash.md)。
+- 2026-10-29：源码基线 `fd469d9` 内核/DTS 编译与打包通过，见[构建记录](docs/archive/reviews/2026-10-29-image-build.md)。
+- 2026-10-29：PR #2 CodeRabbit 在关闭后取消，见[事件记录](docs/archive/reviews/2026-10-29-coderabbit-cancel.md)。
+- 2026-10-29：治理可靠性回归见[修复记录](docs/archive/reviews/2026-10-29-reliability-fixes.md)；master CI 见 [CI result](https://github.com/Ben8368/umi-mainline/actions/runs/40807337474)。
+- 2026-10-29：治理移植范围见[移植记录](docs/archive/reviews/2026-10-28-governance-port.md)。
 
 ## 按需入口
 
