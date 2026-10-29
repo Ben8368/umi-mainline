@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Umi ABL adds downstream PMIC names alongside the upstream pmic@N nodes.
+ * Both names carry the same SPMI USID and otherwise register twice (-EEXIST).
+ * Keep the overlay destinations, but let only the native nodes bind drivers.
+ * The reg tuples are <USID SPMI_USID>, where SPMI_USID is 0.
+ * These eight aliases and their USIDs were read from the booted umi DT.
+ * Do not disable pmxprairie@8/@9: they have no native duplicate here.
+ */
+&spmi_bus {
+	qcom,pm8150@0 { reg = <0x0 0>; status = "disabled"; };
+	qcom,pm8150@1 { reg = <0x1 0>; status = "disabled"; };
+	qcom,pm8150b@2 { reg = <0x2 0>; status = "disabled"; };
+	qcom,pm8150b@3 { reg = <0x3 0>; status = "disabled"; };
+	qcom,pm8150l@4 { reg = <0x4 0>; status = "disabled"; };
+	qcom,pm8150l@5 { reg = <0x5 0>; status = "disabled"; };
+	qcom,pm8009@a { reg = <0xa 0>; status = "disabled"; };
+	qcom,pm8009@b { reg = <0xb 0>; status = "disabled"; };
+};

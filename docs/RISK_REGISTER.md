@@ -10,6 +10,10 @@
 
 历史 6.12/7.2 实测不能代替本轮新镜像验收；CI 不验证设备。关闭要求见 [测试矩阵](test-matrix.md)，特别是屏幕恢复、触摸、Wi-Fi、切根与错误路径。
 
+6.18.59 运行闭包仍未完整验收：ath11k / MHI / PCI_PWRCTRL_PWRSEQ 为模块，`Image.gz dtbs` 不生成或安装这些模块；新树未带入旧树手工 PCIe early-poweron 补丁，须核验上游 PCI_PWRCTRL 的等价时序及固件。屏幕恢复、长期稳定性、切根和异常路径仍须独立取证。
+
+首次黑屏、触控 deferred 与 SPMI 重复注册的[修复及实机证据](archive/reviews/2026-10-29-linux-6.18.59-boot-fixes.md)已归档；单次亮屏、触摸事件与 GPU 初始化不关闭上述剩余风险。软件请求 reboot-to-bootloader 或 poweroff 后回到原 6.12 的现象仍待定位，不能把旧系统启动误算作新镜像或关机通过；停止测试时使用已获授权的 bootloader 关机入口。
+
 ## RISK-003：外部机器人端到端未验收（P2）
 
 配置文件、标签与离线回归不等于 CodeRabbit / Jules / Renovate App 已授权本仓库或实际接单。关闭要求：指定仓库 App 范围、审查/接单链接、真实交付、停止/交接与人工审查记录。凭据与额外计费不自动创建，详见 [机器人约定](bot-automation.md)。

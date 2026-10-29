@@ -745,3 +745,4 @@
  * overlay 用 &label 找目标，label 不全就整体失败 -> ABL 静默回 fastboot。
  * 这个文件给 overlay 要的 224 个 label 建了空占位节点（自动生成，别手改）。 */
 #include "umi-dtbo-stubs.dtsi"
+#include "umi-spmi-overlay-guard.dtsi"

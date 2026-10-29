@@ -13,15 +13,16 @@
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
 #include <linux/types.h>
+#include <linux/version.h>
 #include <linux/workqueue.h>
 
 /*
  * 6.12 只有 devm_power_supply_get_by_phandle(dev, prop)；新内核把它改名为
- * devm_power_supply_get_by_reference()。这个驱动是按新名字写的，兼容一下。
+ * devm_power_supply_get_by_reference()（上游从 6.17 起）。函数声明不是宏，
+ * 不能用 #ifndef 检测，否则会覆盖新 API 并调用已移除的旧名字。
  */
-#ifndef devm_power_supply_get_by_reference
-#define devm_power_supply_get_by_reference(dev, prop) \
-	devm_power_supply_get_by_phandle(dev, prop)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 17, 0)
+#define devm_power_supply_get_by_reference devm_power_supply_get_by_phandle
 #endif
 
 /* SOC */

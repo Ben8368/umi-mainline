@@ -801,15 +801,15 @@ static int umi_panel_probe(struct mipi_dsi_device *dsi)
 	int ret;
 
 	/*
-	 * 7.x 把 drm_panel_init() 换成了 devm_drm_panel_alloc()：panel 结构体
+	 * 新内核提供 devm_drm_panel_alloc()：panel 结构体
 	 * 内嵌在上下文里，由分配器一并初始化（含 funcs 和 connector_type）。
 	 * 它是宏，所以 #ifdef 可以拿来当特性探测，两个内核版本都能编。
 	 */
 #ifdef devm_drm_panel_alloc
 	ctx = devm_drm_panel_alloc(&dsi->dev, struct umi_panel, panel,
 				   &umi_panel_funcs, DRM_MODE_CONNECTOR_DSI);
-	if (!ctx)
-		return -ENOMEM;
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 #else
 	ctx = devm_kzalloc(&dsi->dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)

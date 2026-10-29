@@ -47,6 +47,10 @@ sh scripts/build.sh
 # 产物：out/Image.gz、out/sm8250-xiaomi-umi*.dtb、out/config-effective
 ```
 
+### 6.18.x 独立构建
+
+6.18.59 的固定源码身份、独立 `TREE` / `OUT` / `WS`、兼容修复、构建命令、产物哈希与运行边界见 [构建记录](archive/reviews/2026-10-29-linux-6.18.59-build.md)。切换版本时使用新的 ext4 源码树和产物目录，避免继承旧树手工补丁或覆盖原镜像；默认构建路径与 CI 目标不随这次实验切换。
+
 ## 2. 创建 initramfs
 
 默认救援模式，已安装根分区用 `--root /dev/sda34` 显式选择。所有打包阶段失败都会停止，不发布半成品覆盖旧 initramfs。

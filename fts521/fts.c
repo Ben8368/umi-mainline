@@ -3222,10 +3222,10 @@ static void fts_suspend_work(struct work_struct *work)
 static int fts_fb_state_chg_callback(struct notifier_block *nb,
 				     unsigned long val, void *data)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+#ifndef FB_EVENT_BLANK
 	/*
-	 * 7.x 的 fbdev notifier 只剩 FB_EVENT_FB_REGISTERED / UNREGISTERED，
-	 * FB_EVENT_BLANK 和 FB_BLANK_* 都被移除了。屏亮灭改由 PM 回调
+	 * 新内核的 fbdev notifier 不再提供 FB_EVENT_BLANK。
+	 * 按实际头文件探测，兼容 6.18 等已移除该事件的内核。屏亮灭由 PM 回调
 	 * （fts_pm_suspend / fts_pm_resume）承担，这里无事可做。
 	 */
 	(void)nb;
