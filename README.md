@@ -197,6 +197,8 @@ Power drivers can program charging voltage/current and protection registers;
 compiling them is not proof that their board parameters are safe. BQ25970 is
 disabled by default and active charge-pump enable requests are rejected. See
 [charging limits and validation](docs/BATTERY.md).
+An experimental TCPM/SMB5 PPS path can be explicitly enabled for manual tests;
+see [PPS controls and acceptance](docs/PPS.md). It does not enable BQ25970.
 
 ## 中文速览
 
