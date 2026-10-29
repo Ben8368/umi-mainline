@@ -274,7 +274,7 @@ offset 56 处有 `ARM\x64` 魔数）—— 一个光秃秃的 blob 三种都不�
 |---|---|---|---|
 | **0** | 电脑上先跑 `tools\watch-usb.ps1`；然后 `fastboot boot` **你自己备份的原厂 boot.img** | 能正常启动 Android | **证明 `fastboot boot` 这条路、ABL 的 v2 头解析、你的打包环境全都是通的。** 这一步失败就完全不用往下走 —— 问题不在我们的内核 |
 | **1** | `fastboot boot out\boot-umi-fbtest.img` | 屏幕红绿闪 | 闪 → 屏还活着（R2 排除），屏幕调试有意义；不闪 → **ABL 关屏了**，直接跳到步骤 3 靠 USB/pstore |
-| **2** | 掐秒表 `fastboot boot out\boot-umi-p1.img` | 几秒回到 fastboot？ | **< 5 s** → ABL 层（R1 或 payload 格式）；**> 8 s** → 内核层（走步骤 3）。注意：因为 `setup_machine_fdt` 失败是**卡死**、panic 也不重启，所以「回 fastboot」本身就指向 ABL 或硬件复位 |
+| **2** | 记录 `fastboot boot out\boot-umi-p1.img` 的返回耗时 | 几秒回到 fastboot？ | 这里只是排查线索，耗时不能单独区分 ABL 拒绝与内核异常后复位；结合 fastboot 返回信息、USB、pstore 和启动日志继续判断 |
 | **3** | 同一步骤 2，盯着 `watch-usb.ps1` | 出现 `1D6B:0104` | **出现 = 内核 + initramfs + 用户态全部跑通**，剩下的只是「屏幕为什么没显示」和「面板驱动」的问题，不是「内核起不来」 |
 | **4** | 什么都看不到就再 boot 一次同镜像 | 屏幕上有 `==== [2] pstore` 的内容 | 上一次的完整 dmesg 被 ramoops 存下来了 → 直接看崩在哪一行 |
 | **5** | `fastboot boot out\boot-umi-p1-v0-append.img` | 和步骤 2 对比 | 如果 **v0-append 能跑、v2 不能**，就说明 ABL 的 dtb 段解析和我们想的不一样（R4）；反过来说明 v2 没问题 |

@@ -222,6 +222,10 @@ class DispatchTests(unittest.TestCase):
         self.input['issue']['body'] = self.body.replace('\n', '\r\n')
         self.run_dispatch(True)
 
+    def test_authorization_checkbox_is_case_insensitive(self):
+        self.input['issue']['body'] = self.body.replace('[x]', '[X]')
+        self.run_dispatch(True)
+
     def test_api_failure_stops_without_label(self):
         self.input['permissionError'] = True
         output = self.run_dispatch(False, expect_error=True)

@@ -103,5 +103,30 @@
     "name": "pinned",
     "color": "d93f0b",
     "description": "umi-mainline pinned"
+  },
+  {
+    "name": "arm64",
+    "color": "b60205",
+    "description": "umi-mainline arm64"
+  },
+  {
+    "name": "qemu",
+    "color": "b60205",
+    "description": "umi-mainline qemu"
+  },
+  {
+    "name": "phase-acceptance",
+    "color": "fbca04",
+    "description": "umi-mainline phase-acceptance"
+  },
+  {
+    "name": "docker",
+    "color": "b60205",
+    "description": "umi-mainline docker"
+  },
+  {
+    "name": "guest",
+    "color": "b60205",
+    "description": "umi-mainline guest"
   }
 ]

@@ -52,7 +52,7 @@ def main() -> int:
         # install script
         install = subprocess.run(
             [sys.executable, str(ROOT / 'scripts' / 'install-git-hooks.py'), str(repo)],
-            text=True, capture_output=True, env=env, check=False)
+            text=True, capture_output=True, env=env, cwd=fixture, check=False)
         if install.returncode != 0:
             print(install.stderr)
             return 1
@@ -93,6 +93,35 @@ def main() -> int:
                     failures += 1
             else:
                 print(f'PASS {name}')
+
+        # An external caller must still detect hooks in the target repository.
+        protected_repo = fixture / 'repo-with-existing-hook'
+        (protected_repo / '.githooks').mkdir(parents=True)
+        (protected_repo / '.githooks' / 'commit-msg').write_text('#!/bin/sh\n', encoding='utf-8')
+        checked_result = subprocess.run(
+            ['git', '-C', str(protected_repo), 'init', '--quiet'],
+            text=True, capture_output=True, env=env, check=False)
+        if checked_result.returncode != 0:
+            raise AssertionError(checked_result.stderr or checked_result.stdout)
+        existing_hook = protected_repo / '.git' / 'hooks' / 'pre-commit'
+        existing_hook.write_text('#!/bin/sh\nexit 1\n', encoding='utf-8')
+        install_with_hook = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts' / 'install-git-hooks.py'), str(protected_repo)],
+            text=True, capture_output=True, env=env, cwd=fixture, check=False)
+        if install_with_hook.returncode == 0:
+            print('FAIL external install replaced the default hooks directory')
+            failures += 1
+        if not existing_hook.is_file():
+            print('FAIL external install removed an existing hook')
+            failures += 1
+        configured_path = subprocess.run(
+            ['git', '-C', str(protected_repo), 'config', '--local', '--get', 'core.hooksPath'],
+            text=True, capture_output=True, env=env, check=False)
+        if configured_path.returncode == 0:
+            print('FAIL external install changed core.hooksPath despite an existing hook')
+            failures += 1
+        if install_with_hook.returncode != 0 and existing_hook.is_file() and configured_path.returncode != 0:
+            print('PASS external caller preserves existing hooks')
     if failures:
         print(f'{failures} git-hooks tests failed')
         return 1

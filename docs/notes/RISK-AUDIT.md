@@ -49,7 +49,7 @@
 | # | 假设 | 机理 | 证据 / 现状 | 已做的保险 | 实机怎么区分 |
 |---|---|---|---|---|---|
 | **H1** | ABL 挑不到 DTB | v2 头 `dtb_size=0`，主线 arm64 不支持 appended DTB | 你 12 个镜像全是 0；设备自己的 DTB 里 board-id=43 | 新打包器把 DTB 放进 dtb 段，board-id=43 | 看 `bootimg.py info` 输出；失败就换 `multiid` DTB |
-| **H2** | **看门狗复位** | ABL 开了狗，`QCOM_WDT=m` 没人喂 | defconfig 里是 `=m`；Android 靠 ramdisk 里的模块喂 | **`CONFIG_QCOM_WDT=y`**（已加） | **掐秒表**：<5s 回 fastboot = ABL 层；>8s = 内核层 |
+| **H2** | **看门狗复位假设** | ABL 开了狗，`QCOM_WDT=m` 没人喂 | defconfig 里是 `=m`；Android 靠 ramdisk 里的模块喂 | **`CONFIG_QCOM_WDT=y`**（已加） | 回 fastboot 的耗时仅作线索；要结合 USB、pstore 和启动日志确认是否发生复位及其来源 |
 | **H3** | **ABL 跳转前把屏幕关了** | 面板 DSI 被关掉，写 0x9c000000 也没人扫出去 | 现象是「黑屏」而不是「定格在开机 logo」 | 无解（需要面板驱动）→ 靠 USB/pstore 通道 | **裸机 fbtest**：红绿闪 = 屏还活着；不闪 = 屏被关了 |
 | **H4** | 内核在 console 起来之前就挂了 | `console=tty0` 要等 simpledrm 在 `device_initcall` 才绑定 | 内核机制如此（见第 2 节） | **umi-beacon**（极早期刷屏信标）+ pstore | 信标版镜像看屏幕颜色 |
 | **H5** | 帧缓冲参数不对 | 地址/stride/format 错 → 花屏或全黑 | 地址 0x9c000000 与下游 DTB 的 cont_splash 一致；stride 按 1080*4 | 和 elish（已知能跑）完全一致的写法 | 花屏/斜切 → 换 stride（4352/4096） |
@@ -166,7 +166,7 @@ start_kernel
 |---|---|---|---|
 | **0** | 电脑上跑 `tools\watch-usb.ps1` | 它会一直盯 USB | 后面每一步都靠它当「不看屏幕的眼睛」 |
 | **1** | `fastboot boot out\boot-umi-fbtest.img` | 红绿闪？ | 闪 → 屏还活着（H3 排除）；不闪 → 屏被关/地址不对 |
-| **2** | 掐秒表 `fastboot boot out\boot-umi-p1.img` | 几秒回到 fastboot？ | <5s → ABL 层（换 multiid DTB 再试）；>8s → 内核层（走第 3 步） |
+| **2** | 记录 `fastboot boot out\boot-umi-p1.img` 的返回耗时 | 几秒回到 fastboot？ | 耗时不能单独区分 ABL 拒绝与内核异常后复位；查看 fastboot 返回信息并继续检查 USB、pstore 和启动日志 |
 | **3** | 同上，盯着 watch-usb 输出 | 出现 `1D6B:0104`？ | 出现 → **内核跑到用户态了**，只是屏幕没显示 |
 | **4** | 再 boot 一次 | 屏幕上出现 pstore 内容？ | 有 → 上一次的 log 捞到了，直接看崩在哪 |
 | **5** | `add-beacon.sh` 编信标内核 → `boot-umi-beacon.img` | 屏幕什么颜色？ | 蓝/青/绿/黄 = 卡在对应阶段之后；黑 = 还没到 postcore 或屏被关 |

@@ -142,10 +142,12 @@ def add_adr(case: Path, filename: str, status: str = '已接受') -> None:
                      encoding='utf-8', newline='\n')
 
 
-def set_adr_status(case: Path, status: str, successor: str = '') -> None:
+def set_adr_status(case: Path, status: str, successor: str = '', scope: str = '') -> None:
     lines = ['- 状态：' + status]
     if successor:
         lines.append(f'- 替代决定：[ADR 0002]({successor})')
+    if scope:
+        lines.append(f'- 替代范围：{scope}')
     mutate(case, 'docs/ADR/0001-fixture.md', '- 状态：已接受', '\n'.join(lines))
     mutate(case, 'docs/ADR/README.md', '| 已接受 |', f'| {status} |')
 
@@ -173,6 +175,9 @@ def main() -> int:
                 mutate(case, 'docs/ADR/README.md', '| 已接受 |', '| 部分替代 |'))),
             ('replaced-without-link', False, '缺少指向替代 ADR 的链接',
              lambda case: set_adr_status(case, '已替代')),
+            ('replaced-without-scope', False, '已替代缺少“替代范围”说明', lambda case: (
+                add_adr(case, '0002-fixture.md'),
+                set_adr_status(case, '已替代', '0002-fixture.md'))),
             ('adr-duplicate-number', False, '编号 0001 重复',
              lambda case: add_adr(case, '0001-other.md')),
             ('replaced-non-adr-link', False, '编号不同的 ADR 文件',
@@ -181,7 +186,7 @@ def main() -> int:
              lambda case: set_adr_status(case, '已替代', '0001-fixture.md')),
             ('replaced-valid-link', True, '', lambda case: (
                 add_adr(case, '0002-fixture.md'),
-                set_adr_status(case, '已替代', '0002-fixture.md'))),
+                set_adr_status(case, '已替代', '0002-fixture.md', 'fixture 决策范围'))),
         ]
 
         for name, accepted, fragment, prepare in cases:

@@ -30,6 +30,9 @@ def install(root: Path | None = None) -> None:
         raise RuntimeError(f'Existing core.hooksPath is preserved: {configured}')
     if not configured:
         default_hooks = Path(git(root, ['rev-parse', '--git-path', 'hooks']))
+        if not default_hooks.is_absolute():
+            default_hooks = repo / default_hooks
+        default_hooks = default_hooks.resolve()
         if default_hooks.is_dir():
             for entry in default_hooks.iterdir():
                 if entry.is_file() and not entry.name.endswith('.sample'):

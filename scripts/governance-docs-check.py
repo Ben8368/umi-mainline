@@ -152,8 +152,8 @@ def check_adrs(root: Path) -> None:
                         or target.name[:4] == number):
                     ERRORS.append(
                         f'docs/ADR/{entry.name}: 替代链接必须指向存在的、编号不同的 ADR 文件')
-            if status == '部分替代' and not re.search(r'^- 替代范围：\S', content, re.M):
-                ERRORS.append(f'docs/ADR/{entry.name}: 部分替代缺少“替代范围”说明')
+            if not re.search(r'^- 替代范围：\S', content, re.M):
+                ERRORS.append(f'docs/ADR/{entry.name}: {status}缺少“替代范围”说明')
 
     for number in sorted(set(index) - found):
         ERRORS.append(f'docs/ADR/README.md: 索引中的 ADR {number} 没有对应文件')

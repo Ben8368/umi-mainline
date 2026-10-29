@@ -27,6 +27,21 @@
 - `python3 -m unittest discover -s tests -p 'test_*.py' -v`：11 项可靠性回归。
 - `git diff --check`。
 
-反向验证：在临时目录将新增策略测试用于旧 HEAD 的工作流，单项测试按预期退出 1；用于新配置则通过。
+反向验证可复现（在仓库根目录执行；第一段预期退出 1，第二段预期退出 0）：
+
+```sh
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+git archive ab81a6632cca6b7ee3ac39396e6c607c6808d8f3 | tar -x -C "$tmp"
+git show 733e9441ccb41643798538785517050b8046bfda:tests/ci-policy.py > "$tmp/tests/ci-policy.py"
+set +e
+(cd "$tmp" && python3 tests/ci-policy.py PolicyTests.test_kernel_build_uses_one_literal_pinned_checkout_per_version)
+old_rc=$?
+set -e
+test "$old_rc" -eq 1
+python3 tests/ci-policy.py PolicyTests.test_kernel_build_uses_one_literal_pinned_checkout_per_version
+```
+
+该策略回归来自 PR #2 的 `tests/ci-policy.py`：它要求 `version` 矩阵中的每个版本恰好对应一个固定 SHA 字面量的外部 checkout，并拒绝动态 `ref`。旧 HEAD `ab81a6632cca6b7ee3ac39396e6c607c6808d8f3` 使用 `include` / `matrix.sha`；测试先因矩阵结构与固定配置不符而失败。新 HEAD `733e9441ccb41643798538785517050b8046bfda` 使用按版本筛选的固定字面量，测试通过。
 
 远端新 HEAD 的 CI / CodeQL / CodeRabbit 由推送后重新运行确认，本记录不将其计为已通过。完整 Linux 内核编译、手机启动及供电测试未运行，沿用 RISK-001/002。

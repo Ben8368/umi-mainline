@@ -105,14 +105,14 @@ powershell -ExecutionPolicy Bypass -File tools\watch-usb.ps1
 
 > 完整的 log 提取方案（七条通道）见 **[LOG-EXTRACTION.md](notes/LOG-EXTRACTION.md)**。
 
-### 步骤 A1 —— 掐秒表（区分 ABL 层和内核层）
+### 步骤 A1 —— 记录启动耗时（辅助排查）
 
 执行 `fastboot boot` 时**掐秒表**，记录「从执行命令到重新出现 fastboot」的时间：
 
 | 时间 | 结论 | 下一步 |
 |---|---|---|
-| **< 5 秒** | ABL 层面就拒绝了（镜像格式/DTB 匹配） | 换 `scripts/multiid-dtb.sh` 生成的 DTB 再试；复核 `pack-umi.py` 的 info 输出 |
-| **> 8 秒** | 内核跑起来了，然后挂了/卡了（可能被看门狗复位） | 进步骤 B/C，用 USB + pstore 捞日志 |
+| 几秒内返回 | ABL 拒绝和内核早期异常后复位都可能 | 先检查 fastboot 返回信息、USB 枚举和 pstore；不能只按耗时归因 |
+| 延迟较长后返回 | 内核可能已开始执行，也可能有其他复位原因 | 用 USB + pstore 取日志，并与同一镜像的重复结果对照；不能把耗时当成定论 |
 | 一直黑屏、不回落 fastboot | 内核卡死（`QCOM_WDT` 接手喂狗后的正常表现） | 步骤 C（pstore）+ 步骤 F（信标） |
 
 ### 步骤 A2 —— 裸机打屏测试（判断屏幕通道是否可用）
@@ -235,8 +235,7 @@ python tools\decode-panic-qr.py "https://umi.local/panic?a=aarch64&v=6.12.94-umi
 
 | 表现 | 含义 | 下一步 |
 |---|---|---|
-| 黑几秒 → 回 fastboot（<5s） | ABL 层拒绝镜像 | 检查 boot.img 的 dtb_size / board-id（步骤 A2），试 multiid DTB |
-| 黑几秒 → 回 fastboot（>8s） | 内核跑起来后挂了/被看门狗复位 | 步骤 C 捞 pstore；步骤 F 看信标颜色 |
+| 黑几秒 → 回 fastboot | ABL 拒绝、内核早期异常后复位等原因都可能 | 检查 fastboot 返回信息、USB 枚举与 pstore；必要时用同一镜像重复对照 |
 | 一直黑屏，不重启 | 内核卡死（QCOM_WDT 接手喂狗后的表现） | 步骤 C 捞 pstore；步骤 F 看信标颜色 |
 | USB 出现 1D6B:0104 | **内核 + initramfs + 用户态全通了**，只是屏幕没显示 | 接串口拿 log，转去修显示 |
 | 出现 kernel log | 成功 | 继续看哪个驱动没起来 |
