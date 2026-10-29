@@ -12,7 +12,7 @@
 
 6.18.59 运行闭包仍未完整验收：ath11k / MHI / PCI_PWRCTRL_PWRSEQ 为模块，`Image.gz dtbs` 不生成或安装这些模块；新树未带入旧树手工 PCIe early-poweron 补丁，须核验上游 PCI_PWRCTRL 的等价时序及固件。屏幕恢复、长期稳定性、切根和异常路径仍须独立取证。
 
-首次黑屏、触控 deferred 与 SPMI 重复注册的[修复及实机证据](archive/reviews/2026-10-29-linux-6.18.59-boot-fixes.md)已归档；单次亮屏、触摸事件与 GPU 初始化不关闭上述剩余风险。软件请求 reboot-to-bootloader 或 poweroff 后回到原 6.12 的现象仍待定位，不能把旧系统启动误算作新镜像或关机通过；停止测试时使用已获授权的 bootloader 关机入口。
+首次黑屏、触控 deferred 与 SPMI 重复注册的[修复及实机证据](archive/reviews/2026-10-29-linux-6.18.59-boot-fixes.md)已归档；单次亮屏、触摸事件与 GPU 初始化不关闭上述剩余风险。首次 `reboot-to-bootloader` 是从原 6.12.94 救援系统执行，当时 6.18 镜像尚未启动，因此不能证明 6.18 上的该行为。另一次是在 6.18.59 救援环境执行 `poweroff -f` 后再次运行原 6.12.94 #10；该软件关机目标异常仍待定位。停止测试时使用已获授权的 bootloader 关机入口。
 
 ## RISK-003：外部机器人端到端未验收（P2）
 
