@@ -143,6 +143,10 @@ int main(void) {
  if(charging||!c.pps_fault||enabled_calls)return 1;
  c=reset();health=2;smb5_pd_work(&c);
  if(charging||!c.pps_fault||enabled_calls)return 2;
+ c=reset();c.pps_enabled=false;health=2;smb5_pd_work(&c);
+ if(charging||c.pps_fault||c.pps_enabled)return 12;
+ health=POWER_SUPPLY_HEALTH_GOOD;smb5_pd_work(&c);
+ if(!charging||c.pps_fault||c.pps_enabled||input_limit!=1500000)return 13;
  c=reset();source_max=1000000;smb5_pd_work(&c);
  if(!charging||input_limit!=1000000||current!=1000000)return 3;
  c=reset();online=0;smb5_pd_work(&c);

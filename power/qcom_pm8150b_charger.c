@@ -24,7 +24,16 @@
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
 #include <linux/types.h>
+#include <linux/version.h>
 #include <linux/workqueue.h>
+
+/*
+ * 6.12 使用 phandle API；上游从 6.17 起改名为 reference API。
+ * 函数声明不是宏，不能用 #ifndef 检测。
+ */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 17, 0)
+#define devm_power_supply_get_by_reference devm_power_supply_get_by_phandle
+#endif
 
 /* clang-format off */
 #define BATTERY_CHARGER_STATUS_1			0x06
@@ -696,7 +705,8 @@ static int smb5_pps_stop(struct smb5_chip *chip)
 
 /* Run in a sleepable worker, never in TCPM/power_supply notification context.
  * Reissuing CURRENT_NOW each second also renews the PPS contract (<10 s).
- * A communication/register/health failure latches off until an explicit retry.
+ * Communication/register errors and health failures during active PPS latch
+ * off until an explicit retry; the fixed-contract path may recover on health.
  */
 static int smb5_pps_update(struct smb5_chip *chip)
 {
@@ -714,7 +724,7 @@ static int smb5_pps_update(struct smb5_chip *chip)
 	if (ret)
 		return ret;
 	if (health != POWER_SUPPLY_HEALTH_GOOD)
-		return -ERANGE;
+		return chip->pps_enabled ? -ERANGE : smb5_pps_stop(chip);
 	if (chip->user_inhibit || chip->pps_fault)
 		return smb5_pps_stop(chip);
 
@@ -1382,7 +1392,7 @@ static int smb5_probe(struct platform_device *pdev)
 	chip->pps_current_ua = SDP_CURRENT_UA;
 	platform_set_drvdata(pdev, chip);
 	if (device_property_present(chip->dev, "usb-c-power-supply")) {
-		chip->tcpm_psy = devm_power_supply_get_by_phandle(chip->dev,
+		chip->tcpm_psy = devm_power_supply_get_by_reference(chip->dev,
 							       "usb-c-power-supply");
 		if (IS_ERR(chip->tcpm_psy))
 			return dev_err_probe(chip->dev, PTR_ERR(chip->tcpm_psy),

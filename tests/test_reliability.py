@@ -152,6 +152,114 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_text('fixture')
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, int(broken), result.stdout + result.stderr)
 
+    def test_actual_panel_allocation_failure_contracts(self):
+        source = (ROOT / 'patches/panel-xiaomi-umi.c').read_text()
+        probe = function(source, 'umi_panel_probe')
+        allocation = probe[probe.index('#ifdef devm_drm_panel_alloc'):probe.index('\tctx->dsi = dsi;')]
+        for managed in [False, True]:
+            with self.subTest(managed=managed):
+                self.run_c(r'''
+#include <errno.h>
+#include <stdint.h>
+#include <stddef.h>
+#define GFP_KERNEL 0
+#define DRM_MODE_CONNECTOR_DSI 0
+#define IS_ERR(p) ((uintptr_t)(p) >= (uintptr_t)-4095)
+#define PTR_ERR(p) ((intptr_t)(p))
+struct mipi_dsi_device { int dev; };
+struct umi_panel { struct mipi_dsi_device *dsi; };
+static struct umi_panel panel;
+static int error;
+static struct umi_panel *allocate(void) {
+    if (!error) return &panel;
+''' + ('    return (void *)(intptr_t)error;\n' if managed else '    return NULL;\n') + r'''
+}
+''' + ('#define devm_drm_panel_alloc(...) allocate()\n' if managed else
+       '#define devm_kzalloc(...) allocate()\n') + r'''
+static int probe_allocation(struct mipi_dsi_device *dsi) {
+    struct umi_panel *ctx;
+''' + allocation + r'''
+    ctx->dsi = dsi;
+    return 0;
+}
+int main(void) {
+    struct mipi_dsi_device dsi;
+    error = -ENOMEM;
+    if (probe_allocation(&dsi) != -ENOMEM) return 1;
+''' + ('    error = -517;\n    if (probe_allocation(&dsi) != -517) return 2;\n' if managed else '') + r'''
+    error = 0;
+    if (probe_allocation(&dsi) || panel.dsi != &dsi) return 3;
+    return 0;
+}
+''')
+
+    def test_actual_touch_notifier_with_and_without_blank_event(self):
+        source = (ROOT / 'fts521/fts.c').read_text()
+        callback = function(source, 'fts_fb_state_chg_callback')
+        for legacy in [False, True]:
+            with self.subTest(legacy=legacy):
+                preamble = r'''
+#include <stddef.h>
+#define KERNEL_VERSION(a,b,c) (((a) << 16) | ((b) << 8) | (c))
+#define LINUX_VERSION_CODE KERNEL_VERSION(6,18,59)
+struct notifier_block { int unused; };
+'''
+                if legacy:
+                    preamble += r'''
+#define FB_EVENT_BLANK 0x09
+#define NOTIFY_OK 0x0001
+#define container_of(ptr, type, member) ((type *)((char *)(ptr) - offsetof(type, member)))
+#define logError(...) ((void)0)
+struct fts_ts_info { struct notifier_block notifier; };
+struct fb_event { void *data; };
+'''
+                self.run_c(preamble + callback + r'''
+int main(void) {
+    struct notifier_block nb = {0};
+    if (fts_fb_state_chg_callback(&nb, 0x05, NULL) != 0) return 1;
+''' + ('    if (fts_fb_state_chg_callback(&nb, FB_EVENT_BLANK, NULL) != NOTIFY_OK) return 2;\n'
+       if legacy else '    if (fts_fb_state_chg_callback(&nb, 0x09, NULL) != 0) return 2;\n') + r'''
+    return 0;
+}
+''')
+
+    def test_actual_supply_lookup_api_selection(self):
+        versions = [(6, 12, 94), (6, 16, 0), (6, 17, 0), (6, 18, 59), (7, 2, 12)]
+        for driver, version in [(driver, version) for driver in
+                                ['qcom_fg.c', 'qcom_pm8150b_charger.c'] for version in versions]:
+            source = (ROOT / 'power' / driver).read_text()
+            start = source.index('/*\n * 6.12')
+            compatibility = source[start:source.index('#endif', start) + len('#endif')]
+            with self.subTest(driver=driver, version=version):
+                api = ('devm_power_supply_get_by_phandle' if version < (6, 17, 0)
+                       else 'devm_power_supply_get_by_reference')
+                self.run_c(r'''
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#define KERNEL_VERSION(a,b,c) (((a) << 16) | ((b) << 8) | (c))
+''' + '#define LINUX_VERSION_CODE KERNEL_VERSION(%d,%d,%d)\n' % version + r'''
+struct device { int unused; };
+struct power_supply { int unused; };
+static struct device device;
+static struct power_supply supply, *result;
+static int bad_args;
+static struct power_supply *''' + api + r'''(struct device *dev, const char *prop) {
+    if (dev != &device || strcmp(prop, "power-supplies")) bad_args = 1;
+    return result;
+}
+''' + compatibility + r'''
+int main(void) {
+    struct power_supply *values[] = {&supply, NULL, (void *)(intptr_t)-517};
+    for (unsigned int i = 0; i < sizeof(values)/sizeof(values[0]); i++) {
+        result = values[i];
+        if (devm_power_supply_get_by_reference(&device, "power-supplies") != result) return 1;
+        if (bad_args) return 2;
+    }
+    return 0;
+}
+''')
+
     def test_actual_panel_parser_multiline_invalid_and_capacity(self):
         body = function((ROOT / 'patches/panel-xiaomi-umi.c').read_text(), 'umi_panel_dsi_store')
         preamble = r'''

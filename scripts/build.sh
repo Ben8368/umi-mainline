@@ -58,7 +58,7 @@ fi
 mkdir -p "$WS/out"
 
 echo "== [1/6] 同步 DTS 和面板驱动到内核树"
-for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi sm8250-xiaomi-umi-wifi.dts xiaomi-umi-battery.dtsi; do
+for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi umi-spmi-overlay-guard.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi sm8250-xiaomi-umi-wifi.dts xiaomi-umi-battery.dtsi; do
 	[ -f "$WS/dts/$f" ] || continue
 	cp -f "$WS/dts/$f" "$TREE/arch/arm64/boot/dts/qcom/$f"
 done
@@ -232,6 +232,13 @@ fi
 if [ -f "$TREE/drivers/dma/qcom/gpi.c" ]; then
 	python3 "$WS/patches/gpi-sm8250-ee-offset.py" \
 		"$TREE/drivers/dma/qcom/gpi.c" || { echo "!! GPI patch failed"; exit 2; }
+fi
+
+# ---- UBWC：umi ABL 把根 compatible 改成 kona，沿用 SM8250 的现有配置 ----
+# 6.12 没有该数据库，保持其原有路径。
+if [ -f "$TREE/drivers/soc/qcom/ubwc_config.c" ]; then
+	python3 "$WS/patches/ubwc-sm8250-kona.py" \
+		"$TREE/drivers/soc/qcom/ubwc_config.c" || { echo "!! UBWC patch failed"; exit 2; }
 fi
 
 # ---- shared-GPIO：7.x 不能对 reserved 行做代理 ----
