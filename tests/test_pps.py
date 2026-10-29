@@ -276,8 +276,9 @@ static int regmap_update_bits(void *m,int reg,int mask,int value) {
  return 0;}
 ''' + array + '\n' + reliability.function(SOURCE, 'smb5_init_hw') + r'''
 int main(void) {struct smb5_chip c={.tcpm_psy=(void *)1};
- if(smb5_init_hw(&c)||role_write||enable_write||icl!=ICL_OVERRIDE_BIT||
-    load!=ICL_OVERRIDE_AFTER_APSD_BIT||apsd)return 1;
+ /* Keep expectations independent from the driver macros under test. */
+ if(smb5_init_hw(&c)||role_write||enable_write||icl!=0x1||
+    load!=0x10||apsd)return 1;
  int total=calls;
  for(int i=1;i<=total;i++) {calls=0;fail=i;
   if(smb5_init_hw(&c)!=-EIO||calls!=i||role_write||enable_write)return 2;}
