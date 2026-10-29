@@ -14,7 +14,7 @@
 
 ## 近期优先级
 
-1. 将 CodeRabbit 完成门禁纳入治理文档并经 PR 审查合入；未完成的审查不得通过关闭或合并 PR 结束。
+1. 将 CodeRabbit 完成门禁纳入治理文档并经 PR 审查合入；未完成的审查不得通过关闭或合并 PR 结束。动机与取消证据见[事件记录](docs/archive/reviews/2026-10-29-coderabbit-cancel.md)。
 2. 设备重新连接后，以当前镜像执行 `fastboot boot`，按[测试矩阵](docs/test-matrix.md)记录显示、触控、启动和供电证据。
 3. 核实默认分支上的机器人工作流触发和权限边界，按[风险台账](docs/RISK_REGISTER.md)记录结果。
 
@@ -22,7 +22,8 @@
 
 - 2026-10-29：源码基线 `fd469d9`；Linux 6.12.94 目标内核/DTS 编译及 `sh scripts/mkimage.sh` 通过，使用 WSL x86_64，未连接/写入手机；镜像 SHA256 与产物记录见[构建记录](docs/archive/reviews/2026-10-29-image-build.md)。
 - 2026-10-29：PR #2 的 `CI result`、CodeQL、lint、governance 与 amd64/arm64 offline 检查通过；CodeRabbit 对 HEAD `7383b65` 在 PR 关闭后取消，原因与证据见[事件记录](docs/archive/reviews/2026-10-29-coderabbit-cancel.md)。
-- 2026-10-29：11 项可靠性回归与治理/策略/派单检查通过，实际 C 函数故障注入与脚本错误路径见[修复记录](docs/archive/reviews/2026-10-29-reliability-fixes.md)。
+- 2026-10-29：治理 commit `293c884` 上 11 项可靠性回归通过，实际 C 函数故障注入与脚本错误路径见[修复记录](docs/archive/reviews/2026-10-29-reliability-fixes.md)。
+- 2026-10-29：master `fd469d9` 的 governance / lint / offline（含策略与派单回归）经 [CI result](https://github.com/Ben8368/umi-mainline/actions/runs/40807337474) 通过。
 - 2026-10-29：治理移植范围及远端源身份见[移植记录](docs/archive/reviews/2026-10-28-governance-port.md)。
 
 ## 按需入口
