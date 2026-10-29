@@ -1,6 +1,6 @@
 # 机器人自动化操作约定
 
-边界见 [ADR 0002](ADR/0002-ci-and-bot-boundaries.md)，当前启用/验收状态只写 [CONTEXT](../CONTEXT.md)。不从 DockDSM 继承任何授权、额度或活跃任务。
+边界见 [ADR 0002](ADR/0002-ci-and-bot-boundaries.md) 与 [ADR 0004](ADR/0004-agent-pr-and-jules-delegation.md)，当前启用/验收状态只写 [CONTEXT](../CONTEXT.md)。本仓库授权与账户额度由维护者明确提供，不从 DockDSM 继承任何授权、额度或活跃任务。
 
 ## 分工与门禁
 
@@ -10,7 +10,11 @@ CodeRabbit 服务端 Triage Rules 不能由 YAML 创建。若启用低风险 aut
 
 ## Issue → Jules
 
-使用 Small task for Jules 表单，填写 Documentation / Tests / Tooling、精确文件清单、改动、可观察正反例、验证命令，勾选本单授权、依赖已合入、额度与本地独占文件确认。bot-dispatch 用最新 Issue 校验作者及触发者当前 write/maintain/admin 权限；公开 Issue、机器人 actor、关闭 Issue、保护标签、重复/通配/越界路径、缺字段与 API 失败均拒绝。
+维护者于 2026-10-29 授权：开发 Agent 可在已授权任务内，将简单、低风险、可独立验收且符合下述路径准入的工作包派给 Jules，无需再逐单询问维护者。适用例子是普通文档修订、小型离线测试与已准入工具；复杂、风险不明或涉及受保护路径的工作由开发 Agent 本地处理。派单 Agent 负责拆分、排除文件冲突、检查回执、审阅 diff、复跑验证和 PR 交付；Jules 不递归派单。治理规则修改属于受保护范围，不能因改动简单而派给 Jules。
+
+维护者于 2026-10-29 提供的账户额度为每日 100 条任务；这是账户总额度，不代表当日剩余额度、并发量或必须用满的目标。派单前核对账户实际剩余额度；无法确认时暂停派单。每日重置时点以账户实际显示为准。日额度不改变下述在途容量门禁，不能因日额度提升而扩大同时在途规模或重复派发。
+
+使用 Small task for Jules 表单，填写 Documentation / Tests / Tooling、精确文件清单、改动、可观察正反例、验证命令，由派单 Agent 在上述常设授权范围内勾选本单授权，并确认依赖已合入、剩余额度与本地独占文件；超出范围须维护者另行授权。Agent 使用维护者已授权且具有仓库写权限的账户提交 Issue，不绕过机器人 actor 禁令或获取新凭据。bot-dispatch 用最新 Issue 校验作者及触发者当前 write/maintain/admin 权限；公开 Issue、机器人 actor、关闭 Issue、保护标签、重复/通配/越界路径、缺字段与 API 失败均拒绝。
 
 Documentation/Tests 最多三个精确文件；Tooling 最多六个，只开放 scripts/dev/summarize-test-results.py、tests/dev/summarize-test-results.py、docs/dev/test-results.md，必须含实现文件。它们只是未来允许的新建路径，不代表工具已经实现。测试不可更改治理/署名/CI/派单门禁或内核/充电/镜像验收测试；不能修改 dts、patches、power、fts521、stfts、initramfs、固件或构建入口。机器路径规则以 workflow 为权威源。
 
@@ -22,7 +26,7 @@ Documentation/Tests 最多三个精确文件；Tooling 最多六个，只开放 
 
 Codex 活跃 PR 标 agent:codex，Jules 产出 PR 标 jules；同分支只有一个写入者。交接前在服务端停止旧任务，移除标签本身不会停止运行。未知本地占用、已关闭但仍运行的外部任务无法由 Actions 完全观察，维护者必须逐单检查。
 
-任务读取 AGENTS / CONTEXT / LESSONS；输出命令、结果和未覆盖项，不弱化断言、不扩大范围、不递归派单。一个任务一个 master PR，依赖串行合入。维护者审阅最终增删改名 diff、重跑检查，记录首次验收、返工和越界；十个样本后再考虑扩容，不填额度。额外计费由维护者处理。
+任务读取 AGENTS / CONTEXT / LESSONS；输出命令、结果和未覆盖项，不弱化断言、不扩大范围，Jules 不递归派单。所有 Agent 的开发改动均在工作分支提交；一个任务一个面向 master 的 PR，依赖串行合入，不直接写主分支。维护者审阅最终增删改名 diff、重跑检查，记录首次验收、返工和越界；十个样本后再考虑扩容，不填额度。额外计费由维护者处理。
 
 队列 pending 可能被后来的请求替换，不自动重试；运行取消/无回执须逐单核对。出现越界或无法确认写入者时停止新派单、先停服务端任务再接管。缺失或失败不是通过。
 

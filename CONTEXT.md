@@ -7,7 +7,7 @@
 ## 当前决策
 
 - 维护 Ben8368/umi-mainline，保留原贡献者与第三方归属，见 [来源](docs/PROVENANCE.md)。
-- 采用 DockDSM 治理、署名和机器人约束，按 umi 内核/驱动证据分层；见 [ADR 0001](docs/ADR/0001-governance-port.md)。
+- 采用 DockDSM 治理、署名和机器人约束，按 umi 内核/驱动证据分层；见 [ADR 0001](docs/ADR/0001-governance-port.md)。Agent 改动必须经工作分支与 PR；允许将简单低风险工作派给 Jules，授权与账户额度见[机器人约定](docs/bot-automation.md)及 [ADR 0004](docs/ADR/0004-agent-pr-and-jules-delegation.md)。
 - 开发调试 root/SSH/USB 权限保留；主动快充保持禁用，真实参数与硬件保护尚未验收。
 - PR #2 的 10 条既有 CodeRabbit 可执行意见已修复；但新 HEAD `7383b6525b6ba2f43c8a85707c52da0be4421777` 的审查在合并关闭 PR 后被取消，未生成最终反馈。以后必须等准备合并的当前 HEAD 获得 CodeRabbit 最终反馈并处理有效意见；检查未完成时 PR 保持开放，会话可先结束。详见 [AI_RULES](docs/AI_RULES.md#pr-推送与远端验证) 与[事件记录](docs/archive/reviews/2026-10-29-coderabbit-cancel.md)。
 - 已生成救援启动镜像，默认 `ROOTDEV=none`；镜像仅供 `fastboot boot` 核验，不写设备分区。设备重新连接前不做真机结论。
