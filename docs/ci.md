@@ -13,6 +13,6 @@ PR 使用只读 token、固定完整 action commit、checkout 不保留凭据；
 
 Linux 目标内核编译通过手动 Kernel compile 工作流在固定输入上验证；外部 checkout 的 ref 直接写完整 SHA 字面量，版本矩阵只选择对应步骤，CI 策略回归约束一一对应，避免动态引用混入编译。它不属于快门禁，不被解释为真机验收。每次 C/DTS 变更合入前应审阅该编译结果；若未运行，PR 明确 not-run 并登记风险。不得将缺失的编译检查描述为通过。
 
-分支保护由维护者在默认分支具备工作流后配置 required check: CI result。CodeRabbit 使用流程审查门禁，不能设置为硬 required check；无自动合并。新工作流首次 PR 可以运行 pull_request CI，但 issues/schedule/pull_request_target 以默认分支为准：本 PR 未合并前不宣称这些机器人已在生产触发。
+分支保护由维护者在默认分支具备工作流后配置 required check: CI result。CodeRabbit 是人工合并的流程门禁，不设置为硬 required check，也不自动合并：须对准备合并的同一 HEAD 完成审查、发布最终反馈并处理有效意见。queued / in_progress / cancelled / skipped / failure 或缺少最终反馈均不得合并或关闭 PR；可以结束会话并在之后恢复检查。关闭 PR 会取消尚未发布的审查。详细步骤见 [AI_RULES](AI_RULES.md#pr-推送与远端验证)。新工作流首次 PR 可以运行 pull_request CI，但 issues/schedule/pull_request_target 以默认分支为准：本 PR 未合并前不宣称这些机器人已在生产触发。
 
 版本升级由依赖机器人提出 PR，固定身份和测试不可减弱，见 [依赖](dependency-locks.md)。本地验证见 [environment](environment.md)。

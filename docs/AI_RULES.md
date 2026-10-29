@@ -42,7 +42,15 @@ Conventional Commit 类型前缀英文，标题和正文中文。主作者保持
 
 ### PR 推送与远端验证
 
-本地验证与提交完成后，仅在用户授权时一次性推送工作分支并开 PR，不创建依赖堆叠 PR。不阻塞等待远端检查；汇报 PR、HEAD SHA 和 CI result / CodeRabbit 待核验。合并前维护者核对 CI result success 和 CodeRabbit success；服务不可用时须书面说明，不把 CodeRabbit 配成 required check。无自动合并、无自动发布。只有明确要求本轮合并时才等检查并执行合并。
+本地验证与提交完成后，仅在用户授权时一次性推送工作分支并开 PR，不创建依赖堆叠 PR。推送后不阻塞会话等待远端检查：汇报 PR、HEAD SHA 和待核验项后，可以结束会话或转做其他工作，之后再查询结果。
+
+合并是独立门禁，不能因用户要求本轮合并、等待时间过长或检查服务不可用而跳过：
+
+1. 对准备合并的**当前 HEAD SHA**，确认 `CI result` 为 success。
+2. 等待 CodeRabbit 对同一 HEAD 完成审查并发布最终反馈。`queued`、`in_progress`、`cancelled`、`skipped`、失败或没有最终反馈都不算通过。PR 被合并或关闭会取消尚未发布的 CodeRabbit 审查，因此审查未完成时保持 PR 开放，不合并、不关闭。
+3. 逐项核对最终反馈中的有效意见。修复后推送新 commit 时，回到第 1 步，等新 HEAD 的 CI 与 CodeRabbit 最终结果；所有有效意见处理完毕后才可合并。
+
+远端检查未结束时，记录 PR、HEAD SHA 和 pending 状态即可结束会话，不需要让会话保持运行。稍后续作时先查询该 SHA 的检查和 CodeRabbit 已发布反馈，再决定修复或合并。CodeRabbit 尚无结果不能以书面备注、人工推断或“服务不可用”为由绕过此门禁；若长期不可用，PR 保持开放并报告阻塞。CodeRabbit 不设为硬 required check，但它是人工合并的流程门禁。无自动合并、无自动发布。只有用户明确授权合并，且上述门禁满足后才执行。
 
 ## 机器人协作
 

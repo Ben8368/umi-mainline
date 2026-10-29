@@ -4,7 +4,7 @@
 
 ## 分工与门禁
 
-CodeRabbit 自动审查 base 为 master 的非 draft PR，按 .coderabbit.yaml 读取本项目规则，聚焦构建错误、供电安全、资源生命周期、固件来源与真机证据。所有自动写入 finishing_touches 默认关闭。维护者在评估实际 diff 后合并；禁止自动合并或发布。CI result 及 CodeRabbit success 在合入前复核，服务故障由维护者记录原因。
+CodeRabbit 自动审查 base 为 master 的非 draft PR，按 .coderabbit.yaml 读取本项目规则，聚焦构建错误、供电安全、资源生命周期、固件来源与真机证据。所有自动写入 finishing_touches 默认关闭。维护者在评估实际 diff 后合并；禁止自动合并或发布。合并前须确认当前 HEAD 的 CI result 成功，并且 CodeRabbit 已完成、发布最终反馈且有效意见已处理。审查待运行、运行中、失败、取消、跳过或没有最终反馈时，不得合并或关闭 PR；保持 PR 开放即可结束会话，后续再查。服务故障不构成绕过门禁的理由，详见 [AI_RULES](AI_RULES.md#pr-推送与远端验证)。
 
 CodeRabbit 服务端 Triage Rules 不能由 YAML 创建。若启用低风险 autofix，只限定本仓库、非 draft、Risk/Blast radius/Review effort=Low、Security risk=Minimal、已审查；最多两轮，单写入者且不可碰内核、供电、磁盘、固件、CI/治理权限。本轮默认仅审查，不授予持续自动写入权限。收费、App 新授权或范围扩大须维护者确认。
 

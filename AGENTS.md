@@ -30,7 +30,7 @@ AGENTS.md 是 AI 协作唯一入口；CLAUDE.md 与 .cursorrules 只做摘要。
 - 源码改动后、完整验证前输出 🚦 Audit Report，写明阻断、跟进及验证计划；格式见 AI_RULES。
 - 当前阶段只写 CONTEXT，开放假设写 RISK_REGISTER，实现妥协写 TECH_DEBT，长期决定写 ADR。
 - 提交标题与正文使用中文，类型前缀与 trailer 保持英文；Codex 使用 Co-authored-by: Codex <codex@openai.com>。
-- PR 推送后非阻塞汇报链接与待核验项；人工合并前核对 CI result 和 CodeRabbit，禁止自动合并。
+- PR 推送后非阻塞汇报链接、HEAD SHA 与待核验项。合并前须确认当前 HEAD 的 CI result 成功，且 CodeRabbit 已完成并发布最终反馈、所有有效意见已处理；状态待运行、取消或无最终反馈时保持 PR 开放，不合并也不关闭。会话可先结束，稍后再查结果；禁止自动合并。
 - 默认中文汇报，文件使用 UTF-8 / LF；验证结果不得把未运行写成通过。
 
 ## 治理文档自治理
