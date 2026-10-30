@@ -106,14 +106,13 @@ class Controller:
             self.desired = 0
         elif capacity <= self.config.lower:
             self.desired = 1
-        elif self.desired is None:
-            self.desired = actual
 
         try:
             # Reassert inhibition while holding off, including before USB attach
             # when the hardware bit can be zero without user_inhibit being set.
             # An active PPS contract below UPPER is never periodically cancelled.
-            if self.desired == 0 or actual != 1 or self.last_request != 1:
+            if (self.desired is not None and
+                    (self.desired == 0 or actual != 1 or self.last_request != 1)):
                 self.supplies.set_enabled(self.desired)
                 self.last_request = self.desired
             readback = self.supplies.enabled()
@@ -129,6 +128,8 @@ class Controller:
 
         if errors:
             return 'ERROR stop requested; ' + '; '.join(errors)
+        if self.desired is None:
+            return f'OK capacity={capacity} requested=unchanged enabled={readback}'
         if readback != self.desired:
             # Enable is asynchronous and can be blocked by kernel health/faults.
             # Never clear pps_fault or claim that accepting a write means charging.

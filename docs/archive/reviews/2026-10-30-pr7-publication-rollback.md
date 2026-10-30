@@ -51,3 +51,14 @@ CodeRabbit 于 `2879f4e1f88f3912779f6df0c0b550bb752edf39` 的最终评审又列�
 `f0518b95665036669f23a9723e8ada2b14cd2a2a` 的 CI result、其他检查及 CodeRabbit 最终评审均完成。CodeRabbit 提出一个有效意见：完整构建交付组的 manifest 没有 DTB 哈希，遇到无法完成回滚的混合输出时无法对照识别 DTB 内容。本轮在收集构建产物后、生成清单前记录三个 DTB 的 SHA256；不扩展其他文件的哈希项，并在导出成功回归中校验名称集合与每个文件的哈希。
 
 对应 72 项离线回归、仓库 ShellCheck、治理文档及 CI/派单测试均已在 WSL ext4 验证通过；详细命令与结果沿用上节，代码检查和治理检查在本次文档更新后再运行。该意见修复推送后，`f0518b9` 结果不能替代新 HEAD 的门禁；新 HEAD 检查 pending 时保持 PR 开放。L2/L3 继续 not-run。
+
+## `c1dab8a` 最终评审追加意见
+
+`c1dab8a5c48c9c415fb020385d7ded74f9b3fd80` 的 CI result 和 CodeRabbit 最终评审均完成。CodeRabbit 指出服务在中间 SOC 重启时把 `charging_enabled` 当前值复制为 `desired`，进而可能写入 `0` 并在重新连接 USB 后保持停充至下限。该意见有效。
+
+修复后，中间区间启动只读 `charging_enabled` 并报告 `requested=unchanged`，不写入、不把瞬时硬件状态提升为策略；只有容量到达 `UPPER` 或 `LOWER` 才建立策略目标。服务已经在本进程建立的停充/许可策略仍按原逻辑保持和重申。`docs/CHARGE-LIMIT.md` 同步说明启动契约。
+
+- `python3 -m unittest discover -s tests -p test_charge_limit.py -v`：exit 0，16 项通过；覆盖两种读回状态、中间重启后的 USB 重新接入，以及到上下限才建立目标。
+- `python3 -m unittest discover -s tests -p 'test_*.py' -v`：exit 0，74 项通过，无 skipped。
+
+这项修复尚待推送；推送后重新核验同一 HEAD 的 CI result 与 CodeRabbit 最终反馈。L2/L3 仍 not-run。

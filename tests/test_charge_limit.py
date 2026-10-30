@@ -54,12 +54,36 @@ class ChargeLimitTests(unittest.TestCase):
             self.assertEqual(supply.actual, expected)
         self.assertEqual(supply.writes, [1, 0, 0, 1])
 
-    def test_restart_inside_window_uses_readback(self):
+    def test_restart_inside_window_reads_back_without_committing_a_strategy(self):
         for actual in (0, 1):
             supply = FakeSupplies(68, actual)
             controller = policy.Controller(supply, policy.Config())
-            controller.step()
+            result = controller.step()
+            self.assertEqual(result, f'OK capacity=68 requested=unchanged enabled={actual}')
+            self.assertIsNone(controller.desired)
+            self.assertIsNone(controller.last_request)
+            self.assertEqual(supply.writes, [])
             self.assertEqual(supply.actual, actual)
+
+    def test_mid_window_restart_does_not_inhibit_after_usb_reattach(self):
+        supply = FakeSupplies(68, 0)
+        controller = policy.Controller(supply, policy.Config())
+        self.assertIn('requested=unchanged enabled=0', controller.step())
+        # No prior policy is inferred from a no-source/readback zero state.
+        supply.actual = 1
+        self.assertIn('requested=unchanged enabled=1', controller.step())
+        self.assertIsNone(controller.desired)
+        self.assertEqual(supply.writes, [])
+
+    def test_mid_window_restart_establishes_policy_only_at_a_boundary(self):
+        for capacity, expected in ((70, 0), (65, 1)):
+            supply = FakeSupplies(68, 0)
+            controller = policy.Controller(supply, policy.Config())
+            controller.step()
+            supply.soc = capacity
+            controller.step()
+            self.assertEqual(controller.desired, expected)
+            self.assertEqual(supply.writes, [expected])
 
     def test_off_is_inhibited_even_when_unplugged_hardware_already_zero(self):
         supply = FakeSupplies(80, 0)
