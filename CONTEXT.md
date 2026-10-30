@@ -1,8 +1,8 @@
 # 当前状态
 
 > **最后确认：** 2026-10-30
-> **阶段：** PR #7 三项 CodeRabbit 意见与独立发现的 ELF/限充绑定缺陷已修复，80 项离线及治理/静态检查通过，独立复核完成；新 HEAD 远端待核验，L2/L3 本轮 not-run。
-> **代码基线：** 本地 `codex/review-workflow` 基于 `837c7d5` 修复；交付现有 PR #7 的 `codex/umi-6.18-open-source-parity`，用户已授权检查、修复及门禁满足后合并。
+> **阶段：** PR #7 `32b122d` 的审查已完成，新发现的 ELF 页偏移缺陷及计数歧义已修复，81 项离线、治理/静态检查及增量独立复核通过；新 HEAD 远端待核验，L2/L3 本轮 not-run。
+> **代码基线：** 本地 `codex/review-workflow` 基于 `32b122d` 修复；交付现有 PR #7 的 `codex/umi-6.18-open-source-parity`，用户已授权检查、修复及门禁满足后合并。
 
 ## 当前决策
 
@@ -20,7 +20,7 @@
 
 ## 最近验证
 
-- 2026-10-30：三项机器人意见与独立发现的 ELF 程序头/限充名称缺陷已修复；80 项离线及治理/静态检查通过，独立复核完成并抽核既有 L2 输入/产物，新 HEAD 远端待核验，见[合并前复核](docs/archive/reviews/2026-10-30-pr7-merge-audit.md)。
+- 2026-10-30：ELF 页偏移与计数歧义续审修复后，81 项离线、治理/静态检查及增量独立复核通过；既有 L2 输入/产物已抽核，新 HEAD 门禁待核验，见[合并前复核](docs/archive/reviews/2026-10-30-pr7-merge-audit.md)。
 - 2026-10-30：分层审查、PR 证据字段和路径指令已更新；76 项离线与治理/静态检查通过，三个旧行为反例均被运行断言捕获；独立复核与远端 not-run，见[流程记录](docs/archive/reviews/2026-10-30-review-workflow.md)。
 - 2026-10-30：修复 PR #7 `fd7dc74` 的三项 CodeRabbit 意见，75 项离线回归及 ShellCheck、治理文档、CI/派单/钩子检查通过；新 HEAD 远端检查待完成，L2/L3 not-run，见[续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。
 - 2026-10-30：模块交付回滚与两组验收命令修复，67 项离线及交付专项 15 项通过；见 [续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。未改 C/DTS，沿用已核验的 6.18 编译证据；设备 not-run。

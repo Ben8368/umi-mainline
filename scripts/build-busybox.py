@@ -52,6 +52,11 @@ def verify_binary(path):
             file_offset, vaddr, _, filesz, memsz = struct.unpack_from('<QQQQQ', data, header + 8)
             if file_offset + filesz > len(data) or filesz > memsz:
                 raise ValueError('invalid ELF PT_LOAD file range')
+            # The target uses 4 KiB pages (also the minimum AArch64 page size).
+            # elf_map() subtracts the virtual page offset before mmap; never
+            # use the build host's page size to validate this target binary.
+            if filesz and (file_offset - vaddr) % 4096:
+                raise ValueError('ELF PT_LOAD file and virtual page offsets differ')
             if vaddr + memsz > 1 << 64:
                 raise ValueError('invalid ELF PT_LOAD memory range')
             if flags & 1 and vaddr <= entry < vaddr + memsz:

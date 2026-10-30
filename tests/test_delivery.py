@@ -142,6 +142,25 @@ class DeliveryTests(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, 'program headers'):
                             BUSYBOX.verify_binary(binary)
 
+    def test_busybox_file_mappings_require_page_congruence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / 'busybox'
+            for file_offset, vaddr, filesz, accepted in (
+                    (1, 0x400000, 123, False),  # Reported mmap offset of 1.
+                    (0, 0x400001, 124, False),  # Reverse mismatch.
+                    (1, 0x400001, 123, True),   # Equal nonzero page offsets.
+                    (1, 0x400000, 0, True)):    # BSS-only: no file mapping.
+                with self.subTest(file_offset=file_offset, vaddr=vaddr, filesz=filesz):
+                    data = elf()
+                    struct.pack_into('<QQ', data, 72, file_offset, vaddr)
+                    struct.pack_into('<Q', data, 96, filesz)
+                    binary.write_bytes(data)
+                    if accepted:
+                        BUSYBOX.verify_binary(binary)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'page offsets differ'):
+                            BUSYBOX.verify_binary(binary)
+
     def test_source_archive_refuses_traversal_and_wrong_root(self):
         for name in ('../../escape', 'other/Makefile', 'busybox-1.37.0/../../escape'):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
