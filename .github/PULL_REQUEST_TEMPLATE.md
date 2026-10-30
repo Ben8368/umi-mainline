@@ -25,7 +25,7 @@
 ## Evidence
 
 - [ ] `python3 scripts/governance-docs-check.py`
-- [ ] 相关 CI / 本地命令结果（未结束时标注“待核验”；合入前当前 HEAD 的 `CI result` 须 success，且 CodeRabbit 须已完成并发布最终反馈、有效意见已处理。queued / in_progress / cancelled / skipped / failure 或无最终反馈时保持 PR 开放；会话可结束，稍后续查。见 [AI_RULES](../docs/AI_RULES.md#pr-推送与远端验证)）
+- [ ] 相关 CI / 本地命令结果（未结束时标注“待核验”；合入前当前 HEAD 的 `CI result` 须 success，且 CodeRabbit 须已完成并发布最终反馈、有效意见已处理。queued / in_progress / cancelled / skipped / failure 或无最终反馈时保持 PR 开放；会话可结束，稍后续查。见 [AI_RULES](https://github.com/Ben8368/umi-mainline/blob/master/docs/AI_RULES.md#pr-推送与远端验证)）
 - [ ] CONTEXT / RISK / TD / ADR 已更新到唯一事实源（如适用）
 - [ ] AI / 依赖机器人的改动与建议未降低测试强度或绕过人工审查（如适用）
 - [ ] 故障回归先确认正常前置状态；涉及时序时检查中间写入/顺序；关键缺陷的旧行为反例确实触发目标断言（不适用时说明）
@@ -37,7 +37,7 @@
 - 意见逐项处置：评论链接 → 触发条件 → 接受/部分接受/不适用及依据 → 修复 commit / 验证结果。
 - 专项复核覆盖与未覆盖项；新 HEAD 是否影响先前结论：
 
-审查与反例要求见 [QUALITY](../docs/QUALITY.md#分层审查与反例验证)；复选框和机器人摘要不替代上述证据。
+审查与反例要求见 [QUALITY](https://github.com/Ben8368/umi-mainline/blob/master/docs/QUALITY.md#分层审查与反例验证)；复选框和机器人摘要不替代上述证据。
 
 ## Risk / Tech debt
 

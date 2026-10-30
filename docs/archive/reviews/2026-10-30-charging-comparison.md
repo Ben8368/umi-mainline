@@ -1,5 +1,7 @@
 # 2026-10-30 umi-linux 充电方案对比与取优
 
+> 更正：本记录原“固定本树下划线 psy 名称”的结论错误；静态描述符会被 probe 覆盖，实际导出名为 `pm8150b-charger`。限充实现、假 sysfs 夹具与当前[控制契约](../../CHARGE-LIMIT.md)已按独立复核修正；下述旧结果只证明当时夹具行为，不证明真实驱动名称匹配。
+
 ## 范围与来源
 
 维护者要求对比 misaka-link/umi-linux，取优且保留 PPS、开源优先。本轮宿主 Windows x64 / PowerShell；离线验证使用 WSL umi / Linux x86_64 / sh。工作分支 `codex/charging-policy-and-pps`，起点 `309ea0be85e8e4c07f8d32fda845f505859c9a7e`。无手机操作、供电/刷写、提交、推送或合并。

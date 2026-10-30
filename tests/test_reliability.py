@@ -195,13 +195,12 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_text('fixture')
             shutil.copyfile(ROOT / 'scripts/build-busybox.py', ws / 'scripts/build-busybox.py')
             (ws / 'bin').mkdir()
             bb = ws / 'busybox'
-            data = bytearray(120)
-            data[:6] = b'\x7fELF\x02\x01'
-            struct.pack_into('<H', data, 18, 183)
-            struct.pack_into('<Q', data, 32, 64)
-            struct.pack_into('<HH', data, 54, 56, 1)
-            struct.pack_into('<I', data, 64, 1)
-            struct.pack_into('<I', data, 68, 1)
+            data = bytearray(124)
+            struct.pack_into('<16sHHIQQQIHHHHHH', data, 0,
+                             b'\x7fELF\x02\x01\x01', 2, 183, 1, 0x400078, 64, 0, 0,
+                             64, 56, 1, 0, 0, 0)
+            struct.pack_into('<IIQQQQQQ', data, 64, 1, 5, 0, 0x400000, 0, 124, 124, 0x1000)
+            data[120:] = b'\xc0\x03\x5f\xd6'
             bb.write_bytes(data)
             bb.chmod(0o755)
             cpio = ws / 'bin/cpio'

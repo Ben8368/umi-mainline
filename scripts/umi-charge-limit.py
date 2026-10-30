@@ -56,7 +56,7 @@ class Supplies:
     """Bind the actual names exported by this tree; never select the first psy."""
     def __init__(self, root):
         self.battery = root / 'class/power_supply/qcom-battery'
-        self.charger = root / 'class/power_supply/pm8150b_charger'
+        self.charger = root / 'class/power_supply/pm8150b-charger'
 
     @staticmethod
     def verify_type(path, expected):

@@ -21,7 +21,7 @@
 
 - 正常读数达到 `UPPER` 时请求停充，达到 `LOWER` 时允许充电；中间区间保持本进程已建立的策略。服务在中间 SOC 启动时只读 `charging_enabled` 并报告实际状态，不把读回值提交成策略目标。不保存持久化猜测值。
 - capacity 或 `charging_enabled` 读取失败，以及控制写入或读回失败时，建立停充目标并重试；故障恢复后仍须达到 `LOWER` 才恢复充电许可。
-- 固定绑定本树的 `qcom-battery` 和 **`pm8150b_charger`（下划线）**，并验证 `type=Battery/USB`。不按目录顺序选择首个设备；对方文档中的连字符名字不能直接套用。
+- 固定绑定本树的 `qcom-battery` 和 **`pm8150b-charger`（连字符）**，并验证 `type=Battery/USB`。名称依据 `smb5_probe()` 的 `%s-charger` 与 match data `pm8150b`；静态描述符的下划线默认名会在注册前被覆盖。不按目录顺序选择首个设备，也不回退到下划线别名。
 - 每轮重读状态；停充期间反复确认/重申禁止，避免 USB 插入前硬件使能为零却没有软件禁止位。读数非法或读取失败时尝试停充，恢复有效读数后须到下限才恢复许可。写入/读回失败明确报错并重试；无法确认或物理切断时软件不作保证。
 - `charging_enabled=1` 只授予许可：内核 health、预算或锁存故障仍可拒绝负载。异步读回为零时报告等待，不清除 `pps_fault`。电流、电压、温控及故障退出仍归内核管理。
 - 低于上限的活动 PPS 不被周期性取消。到上限写零后，现有 SMB5 退出 PPS、降载并设置 `user_inhibit`；到下限只允许普通充电，不自动重新进入 PPS。PPS 接口、APDO、续约与原有限值全部保留，再次 PPS 按 [PPS](PPS.md) 人工开启。
@@ -68,7 +68,7 @@ journalctl -u umi-charge-limit.service -f
 systemctl disable --now umi-charge-limit.service
 ```
 
-上述停用保留最后充电许可，避免退出时意外恢复负载。如需恢复普通充电，确认设备条件允许后人工写 `1` 到 `/sys/class/power_supply/pm8150b_charger/charging_enabled`；这不会重新请求 PPS，也不会清除内核故障。若停充失败、异常升温或无法确认状态，断开输入并排查，不能只反复重启服务。
+上述停用保留最后充电许可，避免退出时意外恢复负载。如需恢复普通充电，确认设备条件允许后人工写 `1` 到 `/sys/class/power_supply/pm8150b-charger/charging_enabled`；这不会重新请求 PPS，也不会清除内核故障。若停充失败、异常升温或无法确认状态，断开输入并排查，不能只反复重启服务。
 
 ## 验收
 

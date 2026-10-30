@@ -4,6 +4,7 @@
 import importlib.util
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -166,7 +167,7 @@ class ChargeLimitTests(unittest.TestCase):
 
     def fixture(self, root):
         battery = root / 'class/power_supply/qcom-battery'
-        charger = root / 'class/power_supply/pm8150b_charger'
+        charger = root / 'class/power_supply/pm8150b-charger'
         battery.mkdir(parents=True)
         charger.mkdir(parents=True)
         (battery / 'type').write_text('Battery\n')
@@ -177,6 +178,37 @@ class ChargeLimitTests(unittest.TestCase):
         for name in ('pps_enable', 'pps_voltage_uv', 'pps_current_ua'):
             (charger / name).write_text('UNCHANGED\n')
         return battery, charger
+
+    def test_charger_binding_matches_probe_name_not_descriptor_default(self):
+        source = (ROOT / 'power/qcom_pm8150b_charger.c').read_text(encoding='utf-8')
+        probe = source.split('static int smb5_probe(', 1)[1]
+        naming = re.search(r'desc->name\s*=\s*devm_kasprintf\(chip->dev, GFP_KERNEL,\s*'
+                           r'"([^"]+)",\s*\(const char \*\)device_get_match_data\(chip->dev\)\)',
+                           probe)
+        match = re.search(r'\.compatible\s*=\s*"qcom,pm8150b-charger",\s*'
+                          r'\.data\s*=\s*"([^"]+)"', source)
+        self.assertIsNotNone(naming)
+        self.assertIsNotNone(match)
+        exported = naming.group(1) % match.group(1)
+        self.assertEqual(exported, 'pm8150b-charger')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, charger = self.fixture(root)
+            self.assertEqual(charger.name, exported)
+            supply = policy.Supplies(root)
+            self.assertEqual(supply.charger.name, exported)
+            self.assertTrue(policy.Controller(supply, policy.Config()).step().startswith('OK'))
+            self.assertEqual((charger / 'charging_enabled').read_text(), '0\n')
+
+    def test_missing_driver_supply_never_falls_back_to_descriptor_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, charger = self.fixture(root)
+            decoy = charger.with_name('pm8150b_charger')
+            charger.rename(decoy)
+            controller = policy.Controller(policy.Supplies(root), policy.Config())
+            self.assertIn('stop FAILED', controller.step())
+            self.assertEqual((decoy / 'charging_enabled').read_text(), '1\n')
 
     def test_real_file_backend_limits_writes_and_never_creates_missing_attribute(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -27,26 +27,37 @@ def sha256(path):
 
 
 def verify_binary(path):
-    """Do not execute target code: require little-endian ELF64/AArch64, no PT_INTERP."""
+    """Check ELF load ranges and entry point without executing target code."""
     data = path.read_bytes()
     if len(data) < 64 or data[:6] != b'\x7fELF\x02\x01':
         raise ValueError('BusyBox must be little-endian ELF64')
     if struct.unpack_from('<H', data, 18)[0] != 183:
         raise ValueError('BusyBox must target AArch64, not the build host')
+    if struct.unpack_from('<H', data, 16)[0] not in (2, 3):
+        raise ValueError('BusyBox must be ET_EXEC or ET_DYN')
+    entry = struct.unpack_from('<Q', data, 24)[0]
     offset = struct.unpack_from('<Q', data, 32)[0]
     entry_size, count = struct.unpack_from('<HH', data, 54)
-    if entry_size < 56 or count == 0 or offset + entry_size * count > len(data):
+    # Match load_elf_phdrs() in the pinned Linux tree, not extensible ELF records.
+    if (entry_size != 56 or count == 0 or entry_size * count > 65536
+            or offset + entry_size * count > len(data)):
         raise ValueError('invalid ELF program headers')
-    executable_load = False
+    executable_entry = False
     for i in range(count):
         header = offset + i * entry_size
         kind, flags = struct.unpack_from('<II', data, header)
         if kind == 3:
             raise ValueError('BusyBox must be static (no PT_INTERP)')
-        if kind == 1 and flags & 1:
-            executable_load = True
-    if not executable_load:
-        raise ValueError('BusyBox must have an executable PT_LOAD segment')
+        if kind == 1:
+            file_offset, vaddr, _, filesz, memsz = struct.unpack_from('<QQQQQ', data, header + 8)
+            if file_offset + filesz > len(data) or filesz > memsz:
+                raise ValueError('invalid ELF PT_LOAD file range')
+            if vaddr + memsz > 1 << 64:
+                raise ValueError('invalid ELF PT_LOAD memory range')
+            if flags & 1 and vaddr <= entry < vaddr + memsz:
+                executable_entry = True
+    if not executable_entry:
+        raise ValueError('BusyBox entry must lie in an executable PT_LOAD segment')
 
 
 def publish_files(stage, dest, names):

@@ -51,4 +51,42 @@ Windows x64 / PowerShell 7.6.5；执行环境 Windows + WSL Ubuntu-24.04 / Linux
 
 初次心跳反例直接替换比较表达式，因 expected_ua 未使用而触发编译错误；该次不算捕获缺陷。改为只替换 expected_ua 的 capped 赋值后，确认由运行断言拒绝。
 
+从仓库根目录在 Linux/WSL 执行下列完整命令；入口为内嵌 Python，不需要额外脚本。每次只替换导入模块的 SOURCE 内存字符串，未改磁盘驱动；断言检查具体 C 返回码，编译错误或其他测试异常会使核验失败。健康故障变体的返回 2 对应停充/锁存状态断言，心跳变体的返回 7 对应中间写入/续约断言：
+
+```sh
+python3 - <<'PY'
+import re
+import sys
+import unittest
+
+sys.path.insert(0, 'tests')
+import test_pps
+
+original = test_pps.SOURCE
+health = 'return chip->pps_enabled ? -ERANGE : smb5_pps_stop(chip);'
+capped = r'expected_ua = rounddown\(min\(chip->pps_current_ua, max_ua\),\s+SMB5_PPS_STEP_UA\);'
+mutant, count = re.subn(capped, 'expected_ua = chip->pps_current_ua;', original)
+assert count == 1 and original.count(health) == 1
+health_test = 'test_health_fault_stops_running_charge_and_fixed_contract_recovers'
+heartbeat_test = 'test_heartbeat_sends_new_request_and_stop_attempts_all_operations'
+cases = [
+    ('health-no-stop', original.replace(health, 'return chip->pps_enabled ? -ERANGE : 0;'),
+     health_test, 'AssertionError: 2 != 0'),
+    ('health-fixed-latches', original.replace(health, 'return -ERANGE;'),
+     health_test, 'AssertionError: 2 != 0'),
+    ('heartbeat-uncapped-target', mutant, heartbeat_test, 'AssertionError: 7 != 0'),
+]
+try:
+    for name, source, method, expected in cases:
+        test_pps.SOURCE = source
+        result = unittest.TestResult()
+        test_pps.PpsTests(method).run(result)
+        assert not result.errors and len(result.failures) == 1, (name, result.errors, result.failures)
+        assert expected in result.failures[0][1], result.failures[0][1]
+        print(name + ': rejected by intended runtime assertion')
+finally:
+    test_pps.SOURCE = original
+PY
+```
+
 L2 内核编译、L3 真机均 not-run；本记录初验时远端 CI/CodeRabbit 为 not-run。按后续授权提交推送后，须重新核验新 HEAD；基线的远端结果不覆盖本轮改动。合并前须核验独立专项复核及新 HEAD 完整门禁。

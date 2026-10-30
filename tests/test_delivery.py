@@ -27,13 +27,16 @@ BUSYBOX = load('build-busybox')
 
 
 def elf(machine=183, interpreter=False, load=True, executable=True):
-    data = bytearray(120)
-    data[:6] = b'\x7fELF\x02\x01'
-    struct.pack_into('<H', data, 18, machine)
-    struct.pack_into('<Q', data, 32, 64)
-    struct.pack_into('<HH', data, 54, 56, 1)
-    struct.pack_into('<I', data, 64, 3 if interpreter else 1 if load else 4)
-    struct.pack_into('<I', data, 68, int(load and executable))
+    # Independent ELF64 fixture: one file-backed RX segment and an AArch64 RET.
+    data = bytearray(124)
+    struct.pack_into('<16sHHIQQQIHHHHHH', data, 0,
+                     b'\x7fELF\x02\x01\x01', 2, machine, 1, 0x400078, 64, 0, 0,
+                     64, 56, 1, 0, 0, 0)
+    struct.pack_into('<IIQQQQQQ', data, 64,
+                     3 if interpreter else 1 if load else 4,
+                     5 if load and executable else 4,
+                     0, 0x400000, 0, 124, 124, 0x1000)
+    data[120:] = b'\xc0\x03\x5f\xd6'
     return data
 
 
@@ -81,6 +84,63 @@ class DeliveryTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):
                         BUSYBOX.verify_binary(path)
+
+    def test_busybox_load_ranges_and_entrypoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / 'busybox'
+            # Both executable and static PIE headers are valid structural inputs.
+            for kind in (2, 3):
+                data = elf()
+                struct.pack_into('<H', data, 16, kind)
+                binary.write_bytes(data)
+                BUSYBOX.verify_binary(binary)
+            fields = [
+                ('ET_NONE', 16, '<H', 0), ('ET_REL', 16, '<H', 1),
+                ('ET_CORE', 16, '<H', 4),
+                ('file-offset-after-EOF', 72, '<Q', 125),
+                ('file-end-after-EOF', 96, '<Q', 125),
+                ('file-larger-than-memory', 104, '<Q', 123),
+                ('empty-memory', 104, '<Q', 0),
+                ('memory-overflow', 80, '<Q', (1 << 64) - 1),
+                ('entry-before-segment', 24, '<Q', 0x3fffff),
+                ('entry-at-exclusive-end', 24, '<Q', 0x40007c),
+            ]
+            for name, offset, fmt, value in fields:
+                with self.subTest(name=name):
+                    data = elf()
+                    struct.pack_into(fmt, data, offset, value)
+                    binary.write_bytes(data)
+                    with self.assertRaises(ValueError):
+                        BUSYBOX.verify_binary(binary)
+            # A valid first executable segment must not mask a bad later LOAD.
+            data = elf() + bytearray(56)
+            struct.pack_into('<H', data, 56, 2)
+            struct.pack_into('<IIQQQQQQ', data, 120, 1, 4, 181, 0x500000, 0, 4, 4, 0x1000)
+            binary.write_bytes(data)
+            with self.assertRaisesRegex(ValueError, 'PT_LOAD file range'):
+                BUSYBOX.verify_binary(binary)
+
+    def test_busybox_program_headers_match_linux_loader_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / 'busybox'
+            for size in (0, 55, 57, 64):
+                with self.subTest(size=size):
+                    data = elf() + bytearray(8)
+                    struct.pack_into('<H', data, 54, size)
+                    binary.write_bytes(data)
+                    with self.assertRaisesRegex(ValueError, 'program headers'):
+                        BUSYBOX.verify_binary(binary)
+            # Linux caps the full program-header table at 64 KiB.
+            for count, accepted in ((1170, True), (1171, False)):
+                with self.subTest(count=count):
+                    data = elf() + bytearray(56 * (count - 1))
+                    struct.pack_into('<H', data, 56, count)
+                    binary.write_bytes(data)
+                    if accepted:
+                        BUSYBOX.verify_binary(binary)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'program headers'):
+                            BUSYBOX.verify_binary(binary)
 
     def test_source_archive_refuses_traversal_and_wrong_root(self):
         for name in ('../../escape', 'other/Makefile', 'busybox-1.37.0/../../escape'):
