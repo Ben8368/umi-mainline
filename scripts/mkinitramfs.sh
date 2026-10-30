@@ -16,7 +16,7 @@ set -e
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
 BUILD=${BUILD:-/tmp/initramfs-build}
 # Source is the default; an explicit BB= opts into a prebuilt executable.
-BB_EXPLICIT=${BB+x}
+BB_EXPLICIT=${BB:+x}
 BB=${BB:-$WS/out/busybox/busybox.static}
 
 USB=1

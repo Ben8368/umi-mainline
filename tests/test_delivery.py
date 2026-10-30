@@ -200,6 +200,9 @@ done
                     self.assertEqual(manifest['archive_sha256'], MODULES.sha256(archive))
                     with tarfile.open(archive) as tar:
                         self.assertIn('lib/modules/6.18.59-umi/kernel/drivers/wifi.ko', tar.getnames())
+                        for member in tar.getmembers():
+                            self.assertEqual((member.uid, member.gid, member.uname, member.gname),
+                                             (0, 0, 'root', 'root'))
                 else:
                     self.assertNotEqual(run.returncode, 0)
                     self.assertEqual(archive.read_text(), 'PREVIOUS')
@@ -209,8 +212,8 @@ done
     def test_initramfs_source_default_and_explicit_binary_failure(self):
         source = (ROOT / 'scripts/mkinitramfs.sh').read_text()
         selection = source[source.index('WS=${'):source.index('# ---- 设备侧文本')]
-        for explicit in (False, True):
-            with self.subTest(explicit=explicit), tempfile.TemporaryDirectory() as tmp:
+        for bb in (None, '', 'missing-prebuilt'):
+            with self.subTest(bb=bb), tempfile.TemporaryDirectory() as tmp:
                 ws = Path(tmp)
                 (ws / 'scripts').mkdir()
                 (ws / 'scripts/build-busybox.py').write_text(
@@ -218,12 +221,12 @@ done
                     'p.write_text("SOURCE"); p.chmod(0o755)\n')
                 env = {key: val for key, val in os.environ.items() if key != 'BB'}
                 env['WS'] = str(ws)
-                if explicit:
-                    env['BB'] = str(ws / 'missing-prebuilt')
+                if bb is not None:
+                    env['BB'] = str(ws / bb) if bb else ''
                 run = subprocess.run(['sh', '-c', 'set -e\n' + selection], env=env,
                                      capture_output=True, text=True)
-                self.assertEqual(run.returncode, 2 if explicit else 0, run.stderr)
-                self.assertEqual((ws / 'out/busybox/busybox.static').exists(), not explicit)
+                self.assertEqual(run.returncode, 2 if bb else 0, run.stderr)
+                self.assertEqual((ws / 'out/busybox/busybox.static').exists(), not bool(bb))
 
 
     def test_prepare_tree_refuses_existing_nonrepository_or_wrong_revision(self):

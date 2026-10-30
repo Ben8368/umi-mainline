@@ -21,6 +21,8 @@ SMB5 用 TCPM 合同限制输入，PD/PPS 时关闭 APSD，HVDCP 自动升压保
 
 ## 人工测试
 
+可选 [SOC 限充服务](CHARGE-LIMIT.md)保留本 PPS 通路：到电量上限会停充并退出 PPS，下限仅恢复普通充电许可，不自动重启 PPS；运行期间不要叠加其他策略写入者。专门验证 PPS 时先明确是否启用 SOC 策略及测试电量区间。
+
 救援内核需内建 `CONFIG_REGULATOR_QCOM_USB_VBUS=y`，并实例化 PM8150B ADC 的 USB_IN_I/USB_IN_V_16 通道；否则 Type-C deferred 或 SMB5 因 IIO 通道缺失拒绝绑定。实机修复与 boot 回退文件见[设备记录](archive/reviews/2026-10-29-pps-device-flash.md)。
 
 只在 umi 上使用。镜像默认救援模式 `ROOTDEV=none`，不会自动选择真实根分区。临时引导加载到 RAM，退出测试后重启返回原安装系统；不需要刷写分区。PPS 充电器占用 USB 口，先准备独立串口或自行配置的无线 shell；救援镜像不保证现成 Wi-Fi SSH。不要在尚无控制通道时拔掉 USB 控制线。

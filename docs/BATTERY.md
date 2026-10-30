@@ -14,6 +14,8 @@ BQ25970 节点默认 disabled，驱动拒绝主动 enable（-EOPNOTSUPP），Typ
 
 ## 普通 USB 充电契约
 
+用户态 SOC 区间限充及与 PPS 的交互见 [限充专题](CHARGE-LIMIT.md)；策略服务只请求充电许可，内核继续负责协议、限流与保护。
+
 默认 Wi-Fi DTB 使用 TCPM + SMB5。TCPM 的 `CURRENT_NOW` 是源允许的电流预算，不是实际测量；PM8150B Type-C 驱动没有 `get_current_limit` 回调，Rp-default/传统 USB 源可能报告 0mA，不能据此判断充电器不支持供电。接口依据见 [Linux TCPM](https://github.com/torvalds/linux/blob/v6.18/drivers/usb/typec/tcpm/tcpm.c)。
 
 - 非 PD、TCPM 预算为零时才启用 BC1.2；重新检测后的 DCP/CDP 预算至多 1.5A，并受本地上限约束。SDP 未接入 USB 枚举预算，只允许 100mA；高负载时可能仍净放电，见 [TD-007](TECH_DEBT.md#td-007普通-usb-枚举预算与遗留充电路径尚未接通p1)。

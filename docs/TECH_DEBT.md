@@ -35,3 +35,7 @@ CS35L41 I²C、SPI 红外模块先由固定主线源码编译交付；本机音�
 ## TD-007：普通 USB 枚举预算与遗留充电路径尚未接通（P1）
 
 默认 TCPM 路径已区分 CC/PD 与 BC1.2，但 SDP 尚无 USB gadget 枚举/挂起预算通知，先限制为未取得枚举预算的 100mA；不能保证电脑 USB 下净充电。FLOAT/OCP/未知结果不提升负载。没有 TCPM phandle 的遗留分支仍无完整的普通充电安全策略，不用于默认 Wi-Fi DTB，也不作为已支持的充电模式。关闭要求：接通 USB 配置/挂起/复位事件与预算撤销，限制所有入口，并覆盖 SDP 枚举、挂起、拔插及错误注入；非 TCPM 路径须统一策略或显式退役。不得简单把 TCPM 的零预算替换为 500mA/1.5A。见 [充电审计](archive/reviews/2026-10-30-charging-audit.md)。
+
+## TD-008：SOC 限充采用可选用户态轮询（P2）
+
+[限充服务](CHARGE-LIMIT.md)依赖目标 rootfs 的 Python >=3.11 和 systemd，未接入 BusyBox 救援 initramfs，也不随构建自动安装/启用。30 秒轮询及进程故障重启窗口不能保证硬 SOC 截止；独占锁只约束同一实现，其他策略/人工 PPS 写入须协调。暂不新增未经验证的内核原生 threshold ABI。关闭要求：目标依赖/部署验收、上下限完整循环、拔插及重启/并发回归；需要内核原生方案时另行实现并验收，保留 PPS 显式开启契约。实现和离线证据见[对比记录](archive/reviews/2026-10-30-charging-comparison.md)。

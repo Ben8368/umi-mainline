@@ -300,6 +300,18 @@ struct smb5_register {
 	u8 val;
 };
 
+/* Every mutable property exported by smb5_properties, sampled under pd_lock. */
+static const enum power_supply_property smb5_poll_properties[] = {
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_HEALTH,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_USB_TYPE,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
+	POWER_SUPPLY_PROP_CHARGING_ENABLED,
+};
+
 /**
  * struct smb5_chip - smb5 chip structure
  * @dev:		Device reference for power_supply
@@ -341,6 +353,8 @@ struct smb5_chip {
 	int pps_voltage_uv;
 	int pps_current_ua;
 	int input_max_ua;
+	bool poll_snapshot_valid;
+	int poll_values[ARRAY_SIZE(smb5_poll_properties)];
 };
 
 static enum power_supply_property smb5_properties[] = {
@@ -516,6 +530,7 @@ static int smb5_set_prop_charging_enabled(struct smb5_chip *chip, unsigned int v
 }
 
 static void smb5_pd_work(struct smb5_chip *chip);
+static bool smb5_poll_changed(struct smb5_chip *chip);
 
 static void smb5_status_change_work(struct work_struct *work)
 {
@@ -932,6 +947,7 @@ static int smb5_pps_update(struct smb5_chip *chip)
 static void smb5_pd_work(struct smb5_chip *chip)
 {
 	int ret, stop_ret;
+	bool changed;
 
 	mutex_lock(&chip->pd_lock);
 	if (chip->pd_stopping) {
@@ -947,9 +963,11 @@ static void smb5_pd_work(struct smb5_chip *chip)
 		dev_err_ratelimited(chip->dev, "PD/PPS stopped: error=%d fallback=%d\n",
 				    ret, stop_ret);
 	}
+	changed = smb5_poll_changed(chip);
 	mutex_unlock(&chip->pd_lock);
-	/* Publish polling-driven start/stop/full/health changes to the fuel gauge. */
-	power_supply_changed(chip->chg_psy);
+	/* Keep policy errors visible even if the sampled properties are unchanged. */
+	if (ret || changed)
+		power_supply_changed(chip->chg_psy);
 	if (!READ_ONCE(chip->pd_stopping))
 		schedule_delayed_work(&chip->status_change_work,
 				      msecs_to_jiffies(SMB5_PPS_POLL_MS));
@@ -1196,6 +1214,28 @@ static int smb5_get_property(struct power_supply *psy,
 		dev_err(chip->dev, "invalid property: %d\n", psp);
 		return -EINVAL;
 	}
+}
+
+static bool smb5_poll_changed(struct smb5_chip *chip)
+{
+	int values[ARRAY_SIZE(smb5_poll_properties)];
+	union power_supply_propval val;
+	bool changed;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(smb5_poll_properties); i++) {
+		if (smb5_get_property(chip->chg_psy, smb5_poll_properties[i], &val)) {
+			/* Do not compare against a partial or stale snapshot after an error. */
+			chip->poll_snapshot_valid = false;
+			return true;
+		}
+		values[i] = val.intval;
+	}
+	changed = !chip->poll_snapshot_valid ||
+		  memcmp(values, chip->poll_values, sizeof(values));
+	memcpy(chip->poll_values, values, sizeof(values));
+	chip->poll_snapshot_valid = true;
+	return changed;
 }
 
 static int smb5_set_property(struct power_supply *psy,

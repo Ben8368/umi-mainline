@@ -15,11 +15,53 @@ import test_reliability as reliability
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / 'power/qcom_pm8150b_charger.c').read_text(encoding='utf-8')
-SOURCE = re.sub(r'^static void smb5_pd_work\([^\n]+;\n', '', SOURCE, flags=re.M)
+SOURCE = re.sub(r'^static (?:void smb5_pd_work|bool smb5_poll_changed)\([^\n]+;\n',
+                '', SOURCE, flags=re.M)
 
 
 class PpsTests(unittest.TestCase):
     run_c = reliability.ReliabilityTests.run_c
+
+    def test_soc_inhibit_exits_pps_and_resume_cannot_enable_pps_or_clear_faults(self):
+        self.run_c(r'''
+#include <stdbool.h>
+#include <errno.h>
+#define mutex_lock(p) ((void)0)
+#define mutex_unlock(p) ((void)0)
+#define READ_ONCE(x) (x)
+#define dev_err(...) ((void)0)
+#define system_wq ((void *)0)
+enum power_supply_property {POWER_SUPPLY_PROP_CURRENT_MAX,POWER_SUPPLY_PROP_CHARGING_ENABLED};
+union power_supply_propval {int intval;};
+struct smb5_chip {void *tcpm_psy,*dev;int pd_lock,status_change_work;
+ bool user_inhibit,pps_enabled,pps_fault,pd_stopping;};
+struct power_supply {struct smb5_chip *chip;};
+static int stops,scheduled,stop_error;
+static struct smb5_chip *power_supply_get_drvdata(struct power_supply *p) {return p->chip;}
+static int smb5_set_current_limit(struct smb5_chip *c,int v) {return 0;}
+static int smb5_set_prop_charging_enabled(struct smb5_chip *c,int v) {return 0;}
+static int smb5_pps_stop(struct smb5_chip *c) {stops++;return stop_error;}
+static void mod_delayed_work(void *q,int *w,int n) {scheduled++;}
+''' + reliability.function(SOURCE, 'smb5_set_property') + r'''
+int main(void) {
+ struct smb5_chip c={.tcpm_psy=(void *)1,.pps_enabled=true,.pps_fault=true};
+ struct power_supply p={&c};union power_supply_propval v={0};
+ if(smb5_set_property(&p,POWER_SUPPLY_PROP_CHARGING_ENABLED,&v)||
+    !c.user_inhibit||c.pps_enabled||!c.pps_fault||stops!=1||scheduled!=1)return 1;
+ v.intval=1;
+ if(smb5_set_property(&p,POWER_SUPPLY_PROP_CHARGING_ENABLED,&v)||
+    c.user_inhibit||c.pps_enabled||!c.pps_fault||stops!=1||scheduled!=2)return 2;
+ /* Reconcile permission=1 during a valid PPS session must preserve it. */
+ c.pps_enabled=true;c.pps_fault=false;
+ if(smb5_set_property(&p,POWER_SUPPLY_PROP_CHARGING_ENABLED,&v)||!c.pps_enabled)return 3;
+ stop_error=-EIO;v.intval=0;
+ if(smb5_set_property(&p,POWER_SUPPLY_PROP_CHARGING_ENABLED,&v)!=-EIO||
+    !c.user_inhibit||c.pps_enabled)return 4;
+ v.intval=2;
+ if(smb5_set_property(&p,POWER_SUPPLY_PROP_CHARGING_ENABLED,&v)!=-EINVAL)return 5;
+ return 0;
+}
+''')
 
     def test_rescue_audit_rejects_modular_vbus_provider(self):
         audit = ROOT / 'tools/config-audit.py'
@@ -59,10 +101,15 @@ class PpsTests(unittest.TestCase):
                      'FAST_CHARGE_CURRENT_CFG', 'FAST_CHARGE_CURRENT_SETTING_MASK']
         defines = '\n'.join(re.search(r'^#define\s+' + name + r'\s+[^\n]+',
                                       SOURCE, re.M).group(0) for name in constants)
+        poll_properties = re.search(r'^static const enum power_supply_property '
+                                    r'smb5_poll_properties\[\] = \{.*?^};',
+                                    SOURCE, re.M | re.S).group(0)
         return r'''
 #include <stdbool.h>
 #include <stdio.h>
 #include <errno.h>
+#include <string.h>
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define min(a,b) ((a)<(b)?(a):(b))
 #define round_down(a,b) ((a)&~((b)-1))
 #define rounddown(a,b) ((a)/(b)*(b))
@@ -76,16 +123,22 @@ class PpsTests(unittest.TestCase):
 ''' + defines + r'''
 enum power_supply_property {POWER_SUPPLY_PROP_ONLINE,POWER_SUPPLY_PROP_USB_TYPE,
  POWER_SUPPLY_PROP_VOLTAGE_NOW,POWER_SUPPLY_PROP_CURRENT_NOW,POWER_SUPPLY_PROP_VOLTAGE_MIN,
- POWER_SUPPLY_PROP_VOLTAGE_MAX,POWER_SUPPLY_PROP_CURRENT_MAX};
+ POWER_SUPPLY_PROP_VOLTAGE_MAX,POWER_SUPPLY_PROP_CURRENT_MAX,
+ POWER_SUPPLY_PROP_STATUS,POWER_SUPPLY_PROP_HEALTH,POWER_SUPPLY_PROP_CHARGING_ENABLED};
+union power_supply_propval {int intval;};
+''' + poll_properties + r'''
 enum {POWER_SUPPLY_HEALTH_GOOD=1,POWER_SUPPLY_USB_TYPE_C=6,
  POWER_SUPPLY_USB_TYPE_PD=7,POWER_SUPPLY_USB_TYPE_PD_PPS=8};
 struct battery_info {int voltage_max_design_uv,constant_charge_current_max_ua;};
 struct smb5_chip {bool apsd_enabled,pps_enabled,pps_active,pps_fault,user_inhibit,pd_stopping;
  int pps_error,pps_voltage_uv,pps_current_ua,input_max_ua,pd_lock,base,status_change_work;
+ bool poll_snapshot_valid;int poll_values[ARRAY_SIZE(smb5_poll_properties)];
  void *dev,*regmap,*chg_psy;struct battery_info *batt_info;};
 static int calls,fail_at,online,voltage,current,source_max,health,usb_type;
 static int input_limit,charging,enabled_calls,refuse,disable_calls,reg_calls,fv_reg,fcc_reg;
 static int apsd_status,apsd_result,apsd_options,reruns,notified,unsafe_transition;
+static int measured_current,poll_override,poll_override_value,poll_failure,poll_reads;
+static int scheduled;
 static int step(void) {return ++calls==fail_at ? -EIO : 0;}
 static int smb5_source_get(struct smb5_chip *c,enum power_supply_property p) {
  int ret=step(); if(ret)return ret;
@@ -95,8 +148,8 @@ static int smb5_source_get(struct smb5_chip *c,enum power_supply_property p) {
  case POWER_SUPPLY_PROP_CURRENT_NOW:return current;
  case POWER_SUPPLY_PROP_VOLTAGE_MIN:return 3300000;
  case POWER_SUPPLY_PROP_VOLTAGE_MAX:return 11000000;
- case POWER_SUPPLY_PROP_CURRENT_MAX:return source_max;}
- return -EINVAL;}
+ case POWER_SUPPLY_PROP_CURRENT_MAX:return source_max;
+ default:return -EINVAL;}}
 static int smb5_source_set(struct smb5_chip *c,enum power_supply_property p,int v) {
  int ret=step();if(ret)return ret;
  if(p==POWER_SUPPLY_PROP_VOLTAGE_NOW && voltage!=v && (charging||input_limit>100000))
@@ -124,19 +177,97 @@ static int regmap_read(void *m,int reg,unsigned *val) {
  int ret=step();if(ret)return ret;
  *val=reg==APSD_STATUS?apsd_status:apsd_result;return 0;}
 static void power_supply_changed(void *p) {notified++;}
-static void schedule_delayed_work(int *w,int delay) {}
+static void schedule_delayed_work(int *w,int delay) {scheduled++;}
+/* Telemetry reads are independent of policy I/O failure injection. */
+static int smb5_get_property(void *p,enum power_supply_property prop,
+                             union power_supply_propval *val) {
+ poll_reads++;
+ if((int)prop==poll_failure)return -EIO;
+ if((int)prop==poll_override) {val->intval=poll_override_value;return 0;}
+ switch(prop) {
+ case POWER_SUPPLY_PROP_STATUS:val->intval=charging;break;
+ case POWER_SUPPLY_PROP_HEALTH:val->intval=health;break;
+ case POWER_SUPPLY_PROP_CURRENT_NOW:val->intval=measured_current;break;
+ case POWER_SUPPLY_PROP_VOLTAGE_NOW:val->intval=voltage;break;
+ case POWER_SUPPLY_PROP_ONLINE:val->intval=online;break;
+ case POWER_SUPPLY_PROP_USB_TYPE:val->intval=usb_type;break;
+ case POWER_SUPPLY_PROP_CURRENT_MAX:val->intval=input_limit;break;
+ case POWER_SUPPLY_PROP_CHARGING_ENABLED:val->intval=charging;break;
+ default:return -EINVAL;
+ }
+ return 0;}
 static struct smb5_chip reset(void) {
  calls=0;fail_at=0;online=1;voltage=5000000;current=1500000;
  source_max=3000000;health=POWER_SUPPLY_HEALTH_GOOD;usb_type=POWER_SUPPLY_USB_TYPE_PD_PPS;
  input_limit=500000;charging=0;enabled_calls=0;refuse=0;disable_calls=0;reg_calls=0;
  apsd_status=APSD_DTC_STATUS_DONE_BIT;apsd_result=DCP_CHARGER_BIT;
  apsd_options=0;reruns=0;notified=0;unsafe_transition=0;
+ measured_current=1000000;poll_override=-1;poll_failure=-1;poll_reads=0;scheduled=0;
  return (struct smb5_chip){.pps_enabled=true,.pps_voltage_uv=9000000,
  .pps_current_ua=1500000,.input_max_ua=1500000};}
 ''' + '\n'.join(reliability.function(SOURCE, name) for name in [
             'smb5_pps_valid_target', 'smb5_set_apsd', 'smb5_bc12_current',
             'smb5_pps_stop', 'smb5_pps_update',
-            'smb5_pd_work', 'smb5_battery_config'])
+            'smb5_poll_changed', 'smb5_pd_work', 'smb5_battery_config'])
+
+    def test_poll_notifies_each_mutable_property_but_suppresses_identical_samples(self):
+        public = re.search(r'smb5_properties\[\] = \{(.*?)\n};', SOURCE, re.S).group(1)
+        sampled = re.search(r'smb5_poll_properties\[\] = \{(.*?)\n};', SOURCE, re.S).group(1)
+        properties = lambda text: set(re.findall(r'POWER_SUPPLY_PROP_\w+', text))
+        self.assertEqual(properties(sampled), properties(public) - {
+            'POWER_SUPPLY_PROP_MANUFACTURER', 'POWER_SUPPLY_PROP_MODEL_NAME'})
+        self.run_c(self.harness() + r'''
+int main(void) {
+ struct smb5_chip c=reset();smb5_pd_work(&c);
+ if(notified!=1||!c.poll_snapshot_valid)return 1;
+ smb5_pd_work(&c);
+ if(notified!=1||scheduled!=2)return 2;
+ for(unsigned i=0;i<ARRAY_SIZE(smb5_poll_properties);i++) {
+  c=reset();smb5_pd_work(&c);
+  poll_override=smb5_poll_properties[i];poll_override_value=c.poll_values[i]+1;
+  smb5_pd_work(&c);
+  if(notified!=2||c.poll_values[i]!=poll_override_value)return 3;
+  smb5_pd_work(&c);
+  if(notified!=2)return 4;
+ }
+ c=reset();smb5_pd_work(&c);
+ int reads=poll_reads,queued=scheduled;c.pd_stopping=true;
+ smb5_pd_work(&c);
+ if(poll_reads!=reads||scheduled!=queued||notified!=1)return 5;
+ return 0;
+}
+''')
+
+    def test_poll_read_errors_notify_invalidate_and_recover_without_partial_cache(self):
+        self.run_c(self.harness() + r'''
+int main(void) {
+ for(unsigned i=0;i<ARRAY_SIZE(smb5_poll_properties);i++) {
+  struct smb5_chip c=reset();smb5_pd_work(&c);
+  int old[ARRAY_SIZE(smb5_poll_properties)];memcpy(old,c.poll_values,sizeof(old));
+  measured_current++;poll_failure=smb5_poll_properties[i];
+  smb5_pd_work(&c);
+  if(notified!=2||c.poll_snapshot_valid||memcmp(old,c.poll_values,sizeof(old)))return 1;
+  smb5_pd_work(&c);
+  if(notified!=3||c.poll_snapshot_valid||c.pps_fault||!charging)return 2;
+  poll_failure=-1;smb5_pd_work(&c);
+  if(notified!=4||!c.poll_snapshot_valid)return 3;
+  smb5_pd_work(&c);
+  if(notified!=4)return 4;
+ }
+ /* Policy failures must notify even if exported measurements are unchanged. */
+ struct smb5_chip c=reset();smb5_pd_work(&c);
+ for(unsigned i=0;i<ARRAY_SIZE(smb5_poll_properties);i++) {
+  if(smb5_poll_properties[i]==POWER_SUPPLY_PROP_STATUS||
+     smb5_poll_properties[i]==POWER_SUPPLY_PROP_CHARGING_ENABLED)c.poll_values[i]=0;
+  if(smb5_poll_properties[i]==POWER_SUPPLY_PROP_ONLINE)c.poll_values[i]=1;
+  if(smb5_poll_properties[i]==POWER_SUPPLY_PROP_VOLTAGE_NOW)c.poll_values[i]=5000000;
+  if(smb5_poll_properties[i]==POWER_SUPPLY_PROP_CURRENT_MAX)c.poll_values[i]=100000;
+ }
+ fail_at=calls+1;smb5_pd_work(&c);
+ if(notified!=2||!c.pps_fault||charging)return 5;
+ return 0;
+}
+''')
 
     def test_success_and_every_policy_io_failure_latches_off(self):
         self.run_c(self.harness() + r'''

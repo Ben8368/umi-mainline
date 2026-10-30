@@ -18,6 +18,13 @@ def sha256(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def root_owner(info):
+    """Give installed modules root ownership regardless of the build user."""
+    info.uid = info.gid = 0
+    info.uname = info.gname = 'root'
+    return info
+
+
 def validate_modules(base, release, source_order):
     """Reject missing modules/indexes and links escaping the staged release."""
     moddir = base / 'lib/modules' / release
@@ -90,7 +97,7 @@ def export(tree, out, dest, tc):
         moddir, count = validate_modules(stage, release, (out / 'modules.order').read_text())
         archive = tmp / f'modules-{release}.tar.gz'
         with tarfile.open(archive, 'w:gz') as tar:
-            tar.add(moddir, arcname=f'lib/modules/{release}')
+            tar.add(moddir, arcname=f'lib/modules/{release}', filter=root_owner)
         manifest = {
             'kernelrelease': release, 'module_count': count,
             'archive': archive.name, 'archive_sha256': sha256(archive),
