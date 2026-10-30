@@ -119,6 +119,42 @@ exit 0
                     self.assertIn('TREE=', result.stdout)
                     self.assertNotIn('无法读取默认内核树提交', result.stderr)
 
+    def test_default_dtb_tree_must_match_pinned_revision_but_explicit_tree_is_compatible(self):
+        source = (ROOT / 'scripts/dtb-only.sh').read_text()
+        start = source.index('WS=${WS:-')
+        end = source.index('OUT=${OUT:-', start)
+        selection = source[start:end]
+        revision = '1253a6aa5d104312bf0992afacc15220ae35bdf9'
+        cases = [('pinned', None, revision, 0), ('wrong', None, 'wrong-revision', 1),
+                 ('unreadable', None, None, 1), ('explicit', '/custom/tree', None, 0),
+                 ('empty-default', '', revision, 0)]
+        for name, tree, git_result, expected in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                ws = base / 'workspace'
+                (ws / 'config').mkdir(parents=True)
+                shutil.copyfile(ROOT / 'config/kernel.env', ws / 'config/kernel.env')
+                bindir = base / 'bin'
+                bindir.mkdir()
+                git = bindir / 'git'
+                if git_result is None:
+                    git.write_text('#!/bin/sh\nexit 1\n')
+                else:
+                    git.write_text('#!/bin/sh\nprintf "%s\\n" "$PINNED_REVISION"\n')
+                git.chmod(0o755)
+                env = {**os.environ, 'WS': str(ws),
+                       'PATH': str(bindir) + os.pathsep + os.environ['PATH']}
+                env.pop('TREE', None)
+                if tree is not None:
+                    env['TREE'] = tree
+                env['PINNED_REVISION'] = git_result or ''
+                result = subprocess.run(['sh', '-c', selection + 'printf "TREE=%s\\n" "$TREE"'],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                if expected == 0:
+                    self.assertIn('TREE=', result.stdout)
+                    self.assertNotIn('无法读取默认内核树提交', result.stderr)
+
     def test_mkimage_generates_fresh_initramfs_and_stops_if_it_fails(self):
         for failed in [False, True]:
             with self.subTest(failed=failed), tempfile.TemporaryDirectory(prefix='umi-image-test-') as tmp:
@@ -165,6 +201,7 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_text('fixture')
             struct.pack_into('<Q', data, 32, 64)
             struct.pack_into('<HH', data, 54, 56, 1)
             struct.pack_into('<I', data, 64, 1)
+            struct.pack_into('<I', data, 68, 1)
             bb.write_bytes(data)
             bb.chmod(0o755)
             cpio = ws / 'bin/cpio'

@@ -8,7 +8,22 @@ set -e
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
 # shellcheck source=../config/kernel.env
 . "$WS/config/kernel.env"
-TREE=${TREE:-/root/linux-$UMI_KERNEL_VERSION}
+if [ -n "${TREE:-}" ]; then
+	TREE_IS_DEFAULT=0
+else
+	TREE=/root/linux-$UMI_KERNEL_VERSION
+	TREE_IS_DEFAULT=1
+fi
+if [ "$TREE_IS_DEFAULT" = 1 ]; then
+	ACTUAL_REVISION=$(git -C "$TREE" rev-parse HEAD 2>/dev/null) || {
+		echo "!! 无法读取默认内核树提交: $TREE" >&2
+		exit 1
+	}
+	[ "$ACTUAL_REVISION" = "$UMI_KERNEL_REVISION" ] || {
+		echo "!! 默认内核树提交错误: $ACTUAL_REVISION; 期望 $UMI_KERNEL_REVISION ($UMI_KERNEL_VERSION)" >&2
+		exit 1
+	}
+fi
 OUT=${OUT:-$WS/out}
 D="$TREE/arch/arm64/boot/dts/qcom"
 INC=$(gcc -print-file-name=include)

@@ -26,13 +26,14 @@ MODULES = load('export-modules')
 BUSYBOX = load('build-busybox')
 
 
-def elf(machine=183, interpreter=False):
+def elf(machine=183, interpreter=False, load=True, executable=True):
     data = bytearray(120)
     data[:6] = b'\x7fELF\x02\x01'
     struct.pack_into('<H', data, 18, machine)
     struct.pack_into('<Q', data, 32, 64)
     struct.pack_into('<HH', data, 54, 56, 1)
-    struct.pack_into('<I', data, 64, 3 if interpreter else 1)
+    struct.pack_into('<I', data, 64, 3 if interpreter else 1 if load else 4)
+    struct.pack_into('<I', data, 68, int(load and executable))
     return data
 
 
@@ -67,9 +68,10 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(previous.read_text(), 'LAST_GOOD')
             self.assertFalse((ws / 'assembly').exists())
 
-    def test_busybox_rejects_wrong_arch_dynamic_and_truncated_executables(self):
+    def test_busybox_rejects_wrong_arch_dynamic_unloadable_and_truncated_executables(self):
         for data, accepted in [(elf(), True), (elf(62), False),
                                (elf(interpreter=True), False), (b'#! /bin/sh', False),
+                               (elf(load=False), False), (elf(executable=False), False),
                                (elf()[:80], False)]:
             with self.subTest(accepted=accepted), tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / 'busybox'
@@ -420,7 +422,8 @@ done
             self.assertEqual((backup_dirs[0] / names[1]).read_bytes(), b'OLD-' + names[1].encode())
 
     def test_busybox_cli_verifies_prebuilt_architecture_and_static_linking(self):
-        for data, expected in ((elf(), 0), (elf(62), 1), (elf(interpreter=True), 1)):
+        for data, expected in ((elf(), 0), (elf(62), 1), (elf(interpreter=True), 1),
+                               (elf(load=False), 1), (elf(executable=False), 1)):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
                 binary = Path(tmp) / 'busybox'
                 binary.write_bytes(data)

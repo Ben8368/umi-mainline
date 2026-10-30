@@ -1,13 +1,13 @@
 # 当前状态
 
 > **最后确认：** 2026-10-30
-> **阶段：** PR #7 修复限充服务在中间 SOC 重启时提交未建立策略的问题；74 项离线回归及静态/治理检查通过，推送后须核验新 HEAD 远端门禁；L3 not-run。
-> **代码基线：** 本地工作分支 `codex/charging-policy-and-pps`，修复基于 `c1dab8a`，交付现有 PR #7；用户已授权跟进，并在门禁满足且无有效问题时合并。
+> **阶段：** PR #7 `fd7dc74` 的 CodeRabbit 三项意见已修复，75 项离线与静态/治理检查通过；提交推送后须核验新 HEAD 远端门禁；L2/L3 not-run。
+> **代码基线：** 本地工作分支 `codex/charging-policy-and-pps`，修复基于 `fd7dc74`，交付现有 PR #7。用户已授权跟进，并在门禁满足且无有效问题时合并。
 
 ## 当前决策
 
 - 维护 Ben8368/umi-mainline，保留原贡献者与第三方归属，见 [来源](docs/PROVENANCE.md)。默认 Linux 6.18.59，驱动与固件分层见 [源码清单](docs/OPEN_SOURCE.md)；逐项缺口见 [硬件矩阵](docs/HARDWARE_SUPPORT.md)。
-- Agent 改动经工作分支和 PR；本轮提交/推送至 PR #7 的 `codex/umi-6.18-open-source-parity`。`c1dab8a` 的 CI 与 CodeRabbit 已完成，并发现限充服务重启策略意见；本地修复和回归见[续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)，新 HEAD 远端门禁仍待核验。满足门禁后按用户授权合并，不启用自动合并。
+- Agent 改动经工作分支和 PR；本轮提交/推送至 PR #7 的 `codex/umi-6.18-open-source-parity`。`fd7dc74` 的 CI 已完成，CodeRabbit 最终反馈发现 BusyBox ELF 可执行段校验、默认 DTB 树提交校验和限充故障策略文档三项意见；修复与复验见[续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。满足新 HEAD 门禁后按用户授权合并，不启用自动合并。
 - 新增限充策略吸收 umi-linux 的 70/65 滞回，以开源实现保持 PPS；本轮用户明确授权将限充与审查修复一起交付现有 PR，不自动部署到设备或救援镜像，见 [限充](docs/CHARGE-LIMIT.md)。
 - 开发 root/SSH/USB 权限保留。历史 boot 写入与 PPS 实验授权不扩大为本轮；BQ25970 仍禁用，不猜保护参数，见 [PPS](docs/PPS.md)及 [ADR 0005](docs/ADR/0005-explicit-pps-bringup.md)。
 - 默认打包 Wi-Fi DTB、救援 `ROOTDEV=none`；plus 是未验收实验变体。模块只导出到普通目录，真实 rootfs 安装、刷写、分区或供电操作须本轮明确授权。
@@ -16,11 +16,11 @@
 
 1. 按 [充电审计](docs/archive/reviews/2026-10-30-charging-audit.md) 优先验收 [普通充电](docs/BATTERY.md) 的 USB/固定 PD 充入电流、保护和温升；源码修复与编译已完成，无本轮真机供电/刷写授权。
 2. 基础充电验收后再推进快充和 [PPS](docs/PPS.md)，先处理 RISK-001/005 与 TD-004/007；BQ25970 保持禁用，不猜电芯/热保护参数。
-3. 其余 [硬件验收](docs/test-matrix.md) 后置；核验 PR #7 新 HEAD 的 CI 与 CodeRabbit 最终反馈，处理有效意见；门禁未完成时保持 PR 开放。
+3. 其余 [硬件验收](docs/test-matrix.md) 后置；修复已验证，推送后核验新 HEAD CI 与 CodeRabbit 最终反馈；门禁未完成时保持 PR 开放。
 
 ## 最近验证
 
-- 2026-10-30：PR #7 CodeRabbit 追加意见、DTB SHA256 与限充重启策略修复，74 项离线、ShellCheck、仓库/治理/CI策略/派单回归通过；新 HEAD 远端检查、L2/L3 not-run，见[续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。
+- 2026-10-30：修复 PR #7 `fd7dc74` 的三项 CodeRabbit 意见，75 项离线回归及 ShellCheck、治理文档、CI/派单/钩子检查通过；新 HEAD 远端检查待完成，L2/L3 not-run，见[续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。
 - 2026-10-30：模块交付回滚与两组验收命令修复，67 项离线及交付专项 15 项通过；见 [续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。未改 C/DTS，沿用已核验的 6.18 编译证据；设备 not-run。
 - 2026-10-30：PR #7 的脚本、通知去重、CI 依赖与证据数字修复；64 项离线、非 root 交付 12 项及 6.18/三个 DTB/1372 模块通过，见 [修复记录](docs/archive/reviews/2026-10-30-pr7-review-fixes.md)。新代码远端检查与设备 not-run。
 - 2026-10-30：取优限充服务，14 项策略/假 sysfs/进程回归及当时全套 62 项通过；真实 SMB5 setter 验证退出/保留 PPS 与故障锁存契约，见 [对比记录](docs/archive/reviews/2026-10-30-charging-comparison.md)。限充轮未改 C/DTS；设备 not-run。

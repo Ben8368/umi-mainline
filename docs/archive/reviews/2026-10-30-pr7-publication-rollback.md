@@ -61,4 +61,20 @@ CodeRabbit 于 `2879f4e1f88f3912779f6df0c0b550bb752edf39` 的最终评审又列�
 - `python3 -m unittest discover -s tests -p test_charge_limit.py -v`：exit 0，16 项通过；覆盖两种读回状态、中间重启后的 USB 重新接入，以及到上下限才建立目标。
 - `python3 -m unittest discover -s tests -p 'test_*.py' -v`：exit 0，74 项通过，无 skipped。
 
-这项修复尚待推送；推送后重新核验同一 HEAD 的 CI result 与 CodeRabbit 最终反馈。L2/L3 仍 not-run。
+这项修复已在 `fd7dc740d570b6d3e56ee3eebbe837844a563a85` 推送并通过该 SHA 的 CI result；CodeRabbit 最终反馈仍指出文档遗漏故障停充策略，且另有两项默认 BusyBox ELF 可执行段与 `dtb-only.sh` 固定树校验意见。以下三项均核实为有效，修复后必须针对新 HEAD 重新核验 CI 与 CodeRabbit。L2/L3 仍 not-run。
+
+## `fd7dc74` 最终评审追加意见
+
+- `scripts/build-busybox.py` 原先检查 ELF64/AArch64、程序头边界和无 `PT_INTERP`，但未要求存在带 PF_X 标志的 `PT_LOAD`，非可执行静态 ELF 会被接受。现增加检查，并在交付回归中覆盖无 `PT_LOAD`、无可执行加载段的文件及 CLI 路径。
+- `scripts/dtb-only.sh` 默认内核树原先未核对完整固定 SHA。现仅对默认树核对 `UMI_KERNEL_REVISION`；非空显式 `TREE` 继续兼容，空值仍采用默认树。可靠性回归覆盖固定 SHA、不符、不可读、显式路径和空值。
+- `docs/CHARGE-LIMIT.md` 现区分正常上下限目标与读取/控制失败时建立的停充目标，并说明有效状态恢复后仍需到 `LOWER` 才恢复许可。
+
+🚦 Audit Report：三项 CodeRabbit 意见均已修复并有针对性回归；本地无剩余阻断。🔴 PR 合入仍被新 HEAD 的远端 CI result 与 CodeRabbit 最终反馈阻断，推送后保持 PR 开放直到两项门禁完成。🟡 L2/L3、本轮真实 BusyBox 源码构建与设备验收 not-run，不影响本次仅限脚本/文档审查修复的离线交付范围。
+
+验证在 WSL Linux x86_64 / sh / ext4 隔离工作树完成：
+
+- `python3 -m unittest discover -s tests -p 'test_*.py' -v`：exit 0，75 项通过、0 skipped；含 BusyBox 无加载段/不可执行加载段拒绝、CLI 检查和 DTB 默认/显式 TREE 策略回归。
+- `python3 scripts/check-tree.py`：exit 0，299 paths、29 个 shell 文件、0 errors，含 ShellCheck error 级。
+- `python3 scripts/governance-docs-check.py`、`python3 tests/governance-docs.py`、`python3 tests/ci-policy.py`（6 项）、`python3 tests/bot-dispatch.py`（22 项）、`python3 scripts/git-hooks-test.py`（7 场景）及 `git diff --check`：均 exit 0。
+
+提交推送后，`fd7dc74` 的旧结果不覆盖新 SHA。待新 HEAD 的 CI result success、CodeRabbit 发布最终反馈且无未处理有效意见后，再按已授权合并；未启用自动合并。L2/L3 及真实 BusyBox 构建仍 not-run。

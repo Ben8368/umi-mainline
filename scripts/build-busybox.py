@@ -37,9 +37,16 @@ def verify_binary(path):
     entry_size, count = struct.unpack_from('<HH', data, 54)
     if entry_size < 56 or count == 0 or offset + entry_size * count > len(data):
         raise ValueError('invalid ELF program headers')
-    if any(struct.unpack_from('<I', data, offset + i * entry_size)[0] == 3
-           for i in range(count)):
-        raise ValueError('BusyBox must be static (no PT_INTERP)')
+    executable_load = False
+    for i in range(count):
+        header = offset + i * entry_size
+        kind, flags = struct.unpack_from('<II', data, header)
+        if kind == 3:
+            raise ValueError('BusyBox must be static (no PT_INTERP)')
+        if kind == 1 and flags & 1:
+            executable_load = True
+    if not executable_load:
+        raise ValueError('BusyBox must have an executable PT_LOAD segment')
 
 
 def publish_files(stage, dest, names):
