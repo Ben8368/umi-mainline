@@ -46,7 +46,14 @@ class PpsTests(unittest.TestCase):
     def harness(self):
         constants = ['SMB5_PPS_MIN_UV', 'SMB5_PPS_MAX_UV', 'SMB5_PPS_STEP_UV',
                      'SMB5_PPS_STEP_UA', 'SMB5_PPS_POLL_MS', 'SDP_CURRENT_UA',
-                     'CURRENT_SCALE_FACTOR', 'USBIN_ADAPTER_ALLOW_OVERRIDE',
+                     'CURRENT_SCALE_FACTOR', 'USB_DEFAULT_CURRENT_UA', 'BC12_CURRENT_UA',
+                     'USBIN_OPTIONS_1_CFG', 'BC1P2_SRC_DETECT_BIT', 'HVDCP_EN_BIT',
+                     'HVDCP_AUTH_ALG_EN_CFG_BIT', 'HVDCP_AUTONOMOUS_MODE_EN_CFG_BIT',
+                     'HVDCP_NO_AUTH_QC3_CFG_BIT', 'CMD_APSD', 'APSD_RERUN_BIT',
+                     'APSD_STATUS', 'APSD_RESULT_STATUS', 'APSD_DTC_STATUS_DONE_BIT',
+                     'APSD_RESULT_STATUS_MASK', 'DCP_CHARGER_BIT', 'CDP_CHARGER_BIT',
+                     'SDP_CHARGER_BIT', 'FLOAT_CHARGER_BIT', 'OCP_CHARGER_BIT',
+                     'USBIN_ADAPTER_ALLOW_OVERRIDE',
                      'USBIN_ADAPTER_ALLOW_MASK', 'USBIN_ADAPTER_ALLOW_CONTINUOUS',
                      'FLOAT_VOLTAGE_CFG', 'FLOAT_VOLTAGE_SETTING_MASK',
                      'FAST_CHARGE_CURRENT_CFG', 'FAST_CHARGE_CURRENT_SETTING_MASK']
@@ -70,13 +77,15 @@ class PpsTests(unittest.TestCase):
 enum power_supply_property {POWER_SUPPLY_PROP_ONLINE,POWER_SUPPLY_PROP_USB_TYPE,
  POWER_SUPPLY_PROP_VOLTAGE_NOW,POWER_SUPPLY_PROP_CURRENT_NOW,POWER_SUPPLY_PROP_VOLTAGE_MIN,
  POWER_SUPPLY_PROP_VOLTAGE_MAX,POWER_SUPPLY_PROP_CURRENT_MAX};
-enum {POWER_SUPPLY_HEALTH_GOOD=1,POWER_SUPPLY_USB_TYPE_PD_PPS=8};
+enum {POWER_SUPPLY_HEALTH_GOOD=1,POWER_SUPPLY_USB_TYPE_C=6,
+ POWER_SUPPLY_USB_TYPE_PD=7,POWER_SUPPLY_USB_TYPE_PD_PPS=8};
 struct battery_info {int voltage_max_design_uv,constant_charge_current_max_ua;};
-struct smb5_chip {bool pps_enabled,pps_active,pps_fault,user_inhibit,pd_stopping;
+struct smb5_chip {bool apsd_enabled,pps_enabled,pps_active,pps_fault,user_inhibit,pd_stopping;
  int pps_error,pps_voltage_uv,pps_current_ua,input_max_ua,pd_lock,base,status_change_work;
- void *dev,*regmap;struct battery_info *batt_info;};
+ void *dev,*regmap,*chg_psy;struct battery_info *batt_info;};
 static int calls,fail_at,online,voltage,current,source_max,health,usb_type;
 static int input_limit,charging,enabled_calls,refuse,disable_calls,reg_calls,fv_reg,fcc_reg;
+static int apsd_status,apsd_result,apsd_options,reruns,notified,unsafe_transition;
 static int step(void) {return ++calls==fail_at ? -EIO : 0;}
 static int smb5_source_get(struct smb5_chip *c,enum power_supply_property p) {
  int ret=step(); if(ret)return ret;
@@ -90,6 +99,8 @@ static int smb5_source_get(struct smb5_chip *c,enum power_supply_property p) {
  return -EINVAL;}
 static int smb5_source_set(struct smb5_chip *c,enum power_supply_property p,int v) {
  int ret=step();if(ret)return ret;
+ if(p==POWER_SUPPLY_PROP_VOLTAGE_NOW && voltage!=v && (charging||input_limit>100000))
+  unsafe_transition++;
  if(p==POWER_SUPPLY_PROP_ONLINE) {if(!refuse)online=v;if(v==1){voltage=5000000;current=1500000;}}
  if(p==POWER_SUPPLY_PROP_CURRENT_NOW)current=v;
  if(p==POWER_SUPPLY_PROP_VOLTAGE_NOW)voltage=v;
@@ -106,16 +117,25 @@ static int regmap_update_bits(void *m,int reg,int mask,int val) {
  reg_calls++;int ret=step();if(ret)return ret;
  if(reg==FLOAT_VOLTAGE_CFG)fv_reg=val;
  if(reg==FAST_CHARGE_CURRENT_CFG)fcc_reg=val;
+ if(reg==USBIN_OPTIONS_1_CFG)apsd_options=(apsd_options&~mask)|(val&mask);
+ if(reg==CMD_APSD)reruns++;
  return 0;}
+static int regmap_read(void *m,int reg,unsigned *val) {
+ int ret=step();if(ret)return ret;
+ *val=reg==APSD_STATUS?apsd_status:apsd_result;return 0;}
+static void power_supply_changed(void *p) {notified++;}
 static void schedule_delayed_work(int *w,int delay) {}
 static struct smb5_chip reset(void) {
  calls=0;fail_at=0;online=1;voltage=5000000;current=1500000;
  source_max=3000000;health=POWER_SUPPLY_HEALTH_GOOD;usb_type=POWER_SUPPLY_USB_TYPE_PD_PPS;
  input_limit=500000;charging=0;enabled_calls=0;refuse=0;disable_calls=0;reg_calls=0;
+ apsd_status=APSD_DTC_STATUS_DONE_BIT;apsd_result=DCP_CHARGER_BIT;
+ apsd_options=0;reruns=0;notified=0;unsafe_transition=0;
  return (struct smb5_chip){.pps_enabled=true,.pps_voltage_uv=9000000,
  .pps_current_ua=1500000,.input_max_ua=1500000};}
 ''' + '\n'.join(reliability.function(SOURCE, name) for name in [
-            'smb5_pps_valid_target', 'smb5_pps_stop', 'smb5_pps_update',
+            'smb5_pps_valid_target', 'smb5_set_apsd', 'smb5_bc12_current',
+            'smb5_pps_stop', 'smb5_pps_update',
             'smb5_pd_work', 'smb5_battery_config'])
 
     def test_success_and_every_policy_io_failure_latches_off(self):
@@ -191,6 +211,92 @@ int main(void) {
 }
 ''')
 
+    def test_non_pd_detection_pending_recovery_and_contract_precedence(self):
+        self.run_c(self.harness() + r'''
+int main(void) {
+ struct smb5_chip c=reset();c.pps_enabled=false;usb_type=POWER_SUPPLY_USB_TYPE_C;
+ current=0;voltage=0;smb5_pd_work(&c);
+ if(charging||c.pps_fault||input_limit>100000||!notified)return 1;
+ voltage=5000000;smb5_pd_work(&c);
+ /* A stale DONE/DCP result must not enable charging in the rerun cycle. */
+ if(charging||c.pps_fault||reruns!=1||!c.apsd_enabled||apsd_options!=8)return 2;
+ apsd_status=0;smb5_pd_work(&c);
+ if(charging||c.pps_fault||reruns!=1)return 3;
+ apsd_status=1;smb5_pd_work(&c);
+ if(!charging||c.pps_fault||input_limit!=1500000||reruns!=1)return 4;
+ apsd_result=CDP_CHARGER_BIT;smb5_pd_work(&c);
+ if(!charging||input_limit!=1500000)return 5;
+ apsd_result=SDP_CHARGER_BIT;smb5_pd_work(&c);
+ if(!charging||input_limit!=100000)return 6;
+ unsigned unknowns[]={0,FLOAT_CHARGER_BIT,OCP_CHARGER_BIT,
+  SDP_CHARGER_BIT|DCP_CHARGER_BIT};
+ for(unsigned i=0;i<sizeof(unknowns)/sizeof(*unknowns);i++) {
+  apsd_result=unknowns[i];smb5_pd_work(&c);
+  if(charging||input_limit||c.pps_fault)return 7;
+ }
+ /* A PD budget of zero is never replaced by stale BC1.2 detection. */
+ usb_type=POWER_SUPPLY_USB_TYPE_PD;apsd_result=DCP_CHARGER_BIT;smb5_pd_work(&c);
+ if(charging||input_limit||c.apsd_enabled||apsd_options)return 8;
+ current=100000;smb5_pd_work(&c);
+ if(!charging||input_limit!=100000||c.pps_fault)return 9;
+ /* Rp 1.5A/3A owns the limit; do not start BC1.2 in that case. */
+ usb_type=POWER_SUPPLY_USB_TYPE_C;current=3000000;smb5_pd_work(&c);
+ if(!charging||input_limit!=1500000||c.apsd_enabled)return 10;
+ current=0;smb5_pd_work(&c);smb5_pd_work(&c);
+ online=0;smb5_pd_work(&c);
+ if(charging||c.apsd_enabled||apsd_options||c.pps_fault)return 11;
+ online=1;smb5_pd_work(&c);
+ if(charging||reruns!=3||c.pps_fault)return 12;
+ c.user_inhibit=true;smb5_pd_work(&c);
+ if(charging||c.pps_fault)return 13;
+ return 0;
+}
+''')
+
+    def test_every_non_pd_detection_io_failure_stops_load(self):
+        self.run_c(self.harness() + r'''
+int main(void) {
+ for(int enabled=0;enabled<=1;enabled++) {
+  struct smb5_chip c=reset();c.pps_enabled=false;c.apsd_enabled=enabled;
+  usb_type=POWER_SUPPLY_USB_TYPE_C;current=0;smb5_pd_work(&c);
+  int total=calls;
+  for(int i=1;i<=total;i++) {
+   c=reset();c.pps_enabled=false;c.apsd_enabled=enabled;charging=1;
+   usb_type=POWER_SUPPLY_USB_TYPE_C;current=0;fail_at=i;smb5_pd_work(&c);
+   if(charging||!disable_calls||input_limit>100000||!c.pps_fault) {
+    printf("BC1.2 failure enabled=%d call=%d/%d\n",enabled,i,total);return 1;
+   }
+  }
+ }
+ return 0;
+}
+''')
+
+    def test_failed_detection_rerun_cannot_leave_bc12_on_during_pd_retry(self):
+        self.run_c(self.harness() + r'''
+int main(void) {
+ struct smb5_chip c=reset();fail_at=2;
+ if(smb5_set_apsd(&c,true)!=-EIO||!c.apsd_enabled||apsd_options!=8)return 1;
+ fail_at=0;
+ if(smb5_set_apsd(&c,false)||c.apsd_enabled||apsd_options)return 2;
+ return 0;
+}
+''')
+
+    def test_pps_voltage_changes_shed_load_and_publish_state(self):
+        self.run_c(self.harness() + r'''
+int main(void) {
+ struct smb5_chip c=reset();charging=1;input_limit=1500000;smb5_pd_work(&c);
+ if(c.pps_fault||!charging||unsafe_transition||!notified)return 1;
+ int disables=disable_calls;c.pps_voltage_uv=5000000;smb5_pd_work(&c);
+ if(c.pps_fault||!charging||unsafe_transition||disable_calls<=disables||notified!=2)
+  return 2;
+ disables=disable_calls;smb5_pd_work(&c);
+ if(c.pps_fault||!charging||disable_calls!=disables||unsafe_transition)return 3;
+ return 0;
+}
+''')
+
     def test_target_boundaries_and_pm8150b_register_encoding(self):
         self.run_c(self.harness() + r'''
 int main(void) {
@@ -218,7 +324,8 @@ int main(void) {
                  'CHARGER_ERROR_STATUS_BAT_OV_BIT', 'CHARGER_ERROR_STATUS_SFT_EXPIRE_BIT',
                  'CHARGER_ERROR_STATUS_BAT_TERM_MISSING_BIT', 'BAT_TEMP_STATUS_TOO_COLD_BIT',
                  'BAT_TEMP_STATUS_TOO_HOT_BIT', 'BAT_TEMP_STATUS_COLD_SOFT_BIT',
-                 'BAT_TEMP_STATUS_HOT_SOFT_BIT']
+                 'BAT_TEMP_STATUS_HOT_SOFT_BIT', 'BAT_TEMP_STATUS_TOO_COLD_AFP_BIT',
+                 'BAT_TEMP_STATUS_TOO_HOT_AFP_BIT']
         defines = '\n'.join(re.search(r'^#define\s+' + name + r'\s+[^\n]+',
                                       SOURCE, re.M).group(0) for name in names)
         self.run_c(r'''
@@ -244,12 +351,73 @@ int main(void) {struct smb5_chip c={0};int val=77;
   if(smb5_get_prop_health(&c,&val)||val==POWER_SUPPLY_HEALTH_GOOD)return 2;}
  fault=0;
  unsigned temps[]={BAT_TEMP_STATUS_TOO_COLD_BIT,BAT_TEMP_STATUS_TOO_HOT_BIT,
-  BAT_TEMP_STATUS_COLD_SOFT_BIT,BAT_TEMP_STATUS_HOT_SOFT_BIT};
- for(unsigned i=0;i<4;i++) {calls=0;temp=temps[i];
+  BAT_TEMP_STATUS_COLD_SOFT_BIT,BAT_TEMP_STATUS_HOT_SOFT_BIT,
+  BAT_TEMP_STATUS_TOO_COLD_AFP_BIT,BAT_TEMP_STATUS_TOO_HOT_AFP_BIT};
+ for(unsigned i=0;i<sizeof(temps)/sizeof(*temps);i++) {calls=0;temp=temps[i];
   if(smb5_get_prop_health(&c,&val)||val==POWER_SUPPLY_HEALTH_GOOD)return 3;}
  temp=0;calls=0;
  if(smb5_get_prop_health(&c,&val)||val!=POWER_SUPPLY_HEALTH_GOOD)return 4;
  return 0;}
+''')
+
+    def test_input_telemetry_scales_buck_current_and_propagates_errors(self):
+        self.run_c(r'''
+#include <errno.h>
+#include <limits.h>
+#define dev_err(...) ((void)0)
+#define IS_ERR(p) (0)
+#define PTR_ERR(p) (-EIO)
+struct iio_channel {int unused;};
+struct smb5_chip {void *dev;struct iio_channel *usb_in_i_chan;};
+static int online=1,online_ret,adc_ret,adc_value,reads;
+static int smb5_get_prop_usb_online(struct smb5_chip *c,int *v) {
+ *v=online;return online_ret;}
+static int iio_read_channel_processed(struct iio_channel *c,int *v) {
+ reads++;*v=adc_value;return adc_ret;}
+''' + reliability.function(SOURCE, 'smb5_get_iio_chan') + r'''
+int main(void) {
+ struct iio_channel i,v;struct smb5_chip c={.usb_in_i_chan=&i};int out=77;
+ adc_value=200000;
+ if(smb5_get_iio_chan(&c,&i,&out)||out!=1000000)return 1;
+ adc_value=5000000;
+ if(smb5_get_iio_chan(&c,&v,&out)||out!=5000000)return 2;
+ online_ret=-EIO;out=77;reads=0;
+ if(smb5_get_iio_chan(&c,&i,&out)!=-EIO||out!=77||reads)return 3;
+ online_ret=0;adc_ret=-EIO;
+ if(smb5_get_iio_chan(&c,&i,&out)!=-EIO)return 4;
+ adc_ret=0;adc_value=INT_MAX;
+ if(smb5_get_iio_chan(&c,&i,&out)!=-ERANGE)return 5;
+ adc_value=-1;
+ if(smb5_get_iio_chan(&c,&i,&out)!=-ERANGE)return 6;
+ online=0;reads=0;
+ if(smb5_get_iio_chan(&c,&i,&out)||out||reads)return 7;
+ return 0;
+}
+''')
+
+    def test_fuel_gauge_teardown_stops_notifier_and_work_before_freeing_data(self):
+        fg = (ROOT / 'power/qcom_fg.c').read_text(encoding='utf-8')
+        self.run_c(r'''
+#include <stdbool.h>
+struct qcom_fg_chip {void *chg_psy,*batt_psy,*batt_info,*sram_wq;
+ int nb,status_changed_work;};
+struct platform_device {struct qcom_fg_chip *data;};
+static int sequence;
+static struct qcom_fg_chip *platform_get_drvdata(struct platform_device *p) {
+ return p->data;}
+static void power_supply_unreg_notifier(int *n) {sequence=sequence*10+1;}
+static void cancel_delayed_work_sync(int *w) {sequence=sequence*10+2;}
+static void power_supply_put_battery_info(void *p,void *b) {sequence=sequence*10+3;}
+static void destroy_workqueue(void *w) {sequence=sequence*10+4;}
+''' + reliability.function(fg, 'qcom_fg_remove') + r'''
+int main(void) {
+ struct qcom_fg_chip c={.chg_psy=(void *)1,.sram_wq=(void *)2};
+ struct platform_device p={.data=&c};qcom_fg_remove(&p);
+ if(sequence!=1234)return 1;
+ sequence=0;c.chg_psy=0;c.sram_wq=0;qcom_fg_remove(&p);
+ if(sequence!=3)return 2;
+ return 0;
+}
 ''')
 
     def test_pd_init_never_enables_load_or_overwrites_tcpm_roles(self):

@@ -24,8 +24,14 @@ BusyBox 1.37.0 静态构建禁用救援不用且与新 libc 头文件不兼容�
 
 源码 BusyBox 使用 defconfig 和静态 glibc，救援 initramfs 已超过既有体积预警线，距离硬上限余量有限（具体字节见[构建记录](archive/reviews/2026-10-29-source-parity.md)）。暂保留已通过 applet 检查的配置；后续按 init 的真实命令闭包裁剪或评估源码 musl 工具链，重新验证救援命令，不提高打包安全阈值。
 
+`config-audit.py` 的逐项片段核对尚不识别 6.12 的 PCI_PWRCTL_PWRSEQ 与 6.18 的 PCI_PWRCTRL_PWRSEQ 是版本替代符号：同时保留两项的跨版本片段在 6.18 会因旧名缺失返回 1。实际新名为 m、模块已导出，build.sh 已有双名门禁；辅助审计不能写成全通过。后续补充版本别名验证并分别拒绝两名皆缺失、保留实际选项丢失检查，见 [充电审计](archive/reviews/2026-10-30-charging-audit.md)。
+
 ## TD-006：部分扩展驱动仅交付模块，尚未接通设备（P2）
 
 CS35L41 I²C、SPI 红外模块先由固定主线源码编译交付；本机音频图、共享 reset、保护/校准与红外电源/极性尚未核验，因此不新增可主动探测的节点。AW8697 厂商源码与 NXP NFC 仅列候选，未把旧 Android API 或错误型号直接接入。蓝牙在 Wi-Fi DTB 接入，但 BlueZ/控制器固件及 UHID 运行验收仍依赖 rootfs。恢复这些工作以前先关闭 RISK-006 相应前置项；详见 [硬件矩阵](HARDWARE_SUPPORT.md)。
 
 板级八路温度已接入测量接口；完整 thermal zone/冷却映射和充电闭环策略仍延后至本机读数与安全阈值核验，不能用未配策略的 hwmon 接口替代热保护。AW8697 v3 FF_RUMBLE 投稿作为后续移植候选记录，尚未引入其自动校准/功率配置路径。
+
+## TD-007：普通 USB 枚举预算与遗留充电路径尚未接通（P1）
+
+默认 TCPM 路径已区分 CC/PD 与 BC1.2，但 SDP 尚无 USB gadget 枚举/挂起预算通知，先限制为未取得枚举预算的 100mA；不能保证电脑 USB 下净充电。FLOAT/OCP/未知结果不提升负载。没有 TCPM phandle 的遗留分支仍无完整的普通充电安全策略，不用于默认 Wi-Fi DTB，也不作为已支持的充电模式。关闭要求：接通 USB 配置/挂起/复位事件与预算撤销，限制所有入口，并覆盖 SDP 枚举、挂起、拔插及错误注入；非 TCPM 路径须统一策略或显式退役。不得简单把 TCPM 的零预算替换为 500mA/1.5A。见 [充电审计](archive/reviews/2026-10-30-charging-audit.md)。
