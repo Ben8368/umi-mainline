@@ -139,6 +139,8 @@ static int input_limit,charging,enabled_calls,refuse,disable_calls,reg_calls,fv_
 static int apsd_status,apsd_result,apsd_options,reruns,notified,unsafe_transition;
 static int measured_current,poll_override,poll_override_value,poll_failure,poll_reads;
 static int scheduled;
+static int input_history[128],current_requests,voltage_requests;
+static unsigned input_writes;
 static int step(void) {return ++calls==fail_at ? -EIO : 0;}
 static int smb5_source_get(struct smb5_chip *c,enum power_supply_property p) {
  int ret=step(); if(ret)return ret;
@@ -155,14 +157,16 @@ static int smb5_source_set(struct smb5_chip *c,enum power_supply_property p,int 
  if(p==POWER_SUPPLY_PROP_VOLTAGE_NOW && voltage!=v && (charging||input_limit>100000))
   unsafe_transition++;
  if(p==POWER_SUPPLY_PROP_ONLINE) {if(!refuse)online=v;if(v==1){voltage=5000000;current=1500000;}}
- if(p==POWER_SUPPLY_PROP_CURRENT_NOW)current=v;
- if(p==POWER_SUPPLY_PROP_VOLTAGE_NOW)voltage=v;
+ if(p==POWER_SUPPLY_PROP_CURRENT_NOW){current_requests++;current=v;}
+ if(p==POWER_SUPPLY_PROP_VOLTAGE_NOW){voltage_requests++;voltage=v;}
  return 0;}
 static int smb5_set_prop_charging_enabled(struct smb5_chip *c,unsigned v) {
  if(!v) {disable_calls++;}
  int ret=step();if(ret)return ret;
  charging=v;if(v)enabled_calls++;return 0;}
 static int smb5_set_current_limit(struct smb5_chip *c,unsigned v) {
+ if(input_writes<ARRAY_SIZE(input_history))input_history[input_writes]=v;
+ input_writes++;
  int ret=step();if(ret)return ret;input_limit=v;return 0;}
 static int smb5_get_prop_health(struct smb5_chip *c,int *v) {
  int ret=step();if(ret)return ret;*v=health;return 0;}
@@ -203,6 +207,8 @@ static struct smb5_chip reset(void) {
  apsd_status=APSD_DTC_STATUS_DONE_BIT;apsd_result=DCP_CHARGER_BIT;
  apsd_options=0;reruns=0;notified=0;unsafe_transition=0;
  measured_current=1000000;poll_override=-1;poll_failure=-1;poll_reads=0;scheduled=0;
+ input_writes=0;current_requests=0;voltage_requests=0;
+ memset(input_history,0,sizeof(input_history));
  return (struct smb5_chip){.pps_enabled=true,.pps_voltage_uv=9000000,
  .pps_current_ua=1500000,.input_max_ua=1500000};}
 ''' + '\n'.join(reliability.function(SOURCE, name) for name in [
@@ -320,17 +326,57 @@ int main(void) {
 }
 ''')
 
+    def test_health_fault_stops_running_charge_and_fixed_contract_recovers(self):
+        self.run_c(self.harness() + r'''
+int main(void) {
+ for(int pps=0;pps<=1;pps++) {
+  struct smb5_chip c=reset();c.pps_enabled=pps;
+  usb_type=pps?POWER_SUPPLY_USB_TYPE_PD_PPS:POWER_SUPPLY_USB_TYPE_PD;
+  smb5_pd_work(&c);
+  /* Prove the fault transition starts with a running charger. */
+  if(!charging||c.pps_fault||input_limit!=1500000||c.pps_active!=pps)return 1;
+  int disables=disable_calls;
+  health=2;smb5_pd_work(&c);
+  if(charging||input_limit>100000||disable_calls<=disables||online!=1||
+     c.pps_active||c.pps_enabled||c.pps_fault!=pps)return 2;
+  /* Repeated unhealthy samples must not resume either mode. */
+  smb5_pd_work(&c);
+  if(charging||c.pps_fault!=pps)return 3;
+  health=POWER_SUPPLY_HEALTH_GOOD;smb5_pd_work(&c);
+  if(pps) {
+   if(charging||!c.pps_fault||c.pps_enabled||c.pps_active)return 4;
+  } else {
+   if(!charging||c.pps_fault||c.pps_enabled||c.pps_active||input_limit!=1500000)return 5;
+  }
+ }
+ return 0;
+}
+''')
+
     def test_heartbeat_sends_new_request_and_stop_attempts_all_operations(self):
         self.run_c(self.harness() + r'''
 int main(void) {
  struct smb5_chip c=reset();smb5_pd_work(&c);int first=calls;
+ int requests=current_requests,voltages=voltage_requests;
  smb5_pd_work(&c);
- if(calls<=first||!charging||c.pps_fault||online!=2)return 1;
+ if(calls<=first||!charging||c.pps_fault||online!=2||
+    current_requests!=requests+1||voltage_requests!=voltages+1)return 1;
  /* APDO CURRENT_MAX below the user target must keep the capped contract. */
  c=reset();source_max=1000000;smb5_pd_work(&c);first=calls;
- smb5_pd_work(&c);
- if(calls<=first||c.pps_fault||!charging||online!=2||
-    current!=1000000||input_limit!=1000000)return 2;
+ if(!charging||!c.pps_active||current!=1000000||input_limit!=1000000)return 5;
+ for(int heartbeat=0;heartbeat<3;heartbeat++) {
+  unsigned writes=input_writes;int disables=disable_calls;
+  requests=current_requests;voltages=voltage_requests;
+  if(writes>=ARRAY_SIZE(input_history))return 6;
+  smb5_pd_work(&c);
+  if(calls<=first||c.pps_fault||!charging||online!=2||
+     current!=1000000||input_limit!=1000000)return 2;
+  /* A correct final limit must not hide a temporary shed-and-restore. */
+  if(disable_calls!=disables||input_writes!=writes+1||
+     input_history[writes]!=1000000||current_requests!=requests+1||
+     voltage_requests!=voltages+1)return 7;
+  first=calls;
+ }
  for(int i=1;i<=6;i++) {
   c=reset();online=2;c.pps_active=true;charging=1;fail_at=i;
   int ret=smb5_pps_stop(&c);
