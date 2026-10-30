@@ -8,4 +8,6 @@
 
 开发自动化：[环境](environment.md)、[CI](ci.md)、[机器人](bot-automation.md)、[Jules](jules-environment.md)、[依赖](dependency-locks.md)。
 
-硬件与构建：[BUILD](BUILD.md)、[DISPLAY](DISPLAY.md)、[TOUCH](TOUCH.md)、[GPU](GPU.md)、[WIFI](WIFI.md)、[BATTERY](BATTERY.md)、[PPS](PPS.md)、[ARCH-ROOTFS](ARCH-ROOTFS.md)、[TESTLOG](TESTLOG.md)。这些保留历史调试轨迹，能力声明以具体验证日期与版本为准。
+硬件与构建：[BUILD](BUILD.md)、[DISPLAY](DISPLAY.md)、[TOUCH](TOUCH.md)、[GPU](GPU.md)、[源码与固件清单](OPEN_SOURCE.md)、[WIFI](WIFI.md)、[BATTERY](BATTERY.md)、[PPS](PPS.md)、[ARCH-ROOTFS](ARCH-ROOTFS.md)、[TESTLOG](TESTLOG.md)。这些保留历史调试轨迹，能力声明以具体验证日期与版本为准。
+
+硬件逐项接入、缺失驱动与板级依赖见 [硬件支持矩阵](HARDWARE_SUPPORT.md)。

@@ -5,19 +5,37 @@
 #   wsl -d umi -u root -- sh <repo>/scripts/dtb-only.sh sm8250-xiaomi-umi
 set -e
 
-TREE=${TREE:-/root/linux}
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
+# shellcheck source=../config/kernel.env
+. "$WS/config/kernel.env"
+if [ -n "${TREE:-}" ]; then
+	TREE_IS_DEFAULT=0
+else
+	TREE=/root/linux-$UMI_KERNEL_VERSION
+	TREE_IS_DEFAULT=1
+fi
+if [ "$TREE_IS_DEFAULT" = 1 ]; then
+	ACTUAL_REVISION=$(git -C "$TREE" rev-parse HEAD 2>/dev/null) || {
+		echo "!! 无法读取默认内核树提交: $TREE" >&2
+		exit 1
+	}
+	[ "$ACTUAL_REVISION" = "$UMI_KERNEL_REVISION" ] || {
+		echo "!! 默认内核树提交错误: $ACTUAL_REVISION; 期望 $UMI_KERNEL_REVISION ($UMI_KERNEL_VERSION)" >&2
+		exit 1
+	}
+fi
 OUT=${OUT:-$WS/out}
 D="$TREE/arch/arm64/boot/dts/qcom"
 INC=$(gcc -print-file-name=include)
 
 if [ $# -eq 0 ]; then
-	set -- sm8250-xiaomi-umi sm8250-xiaomi-umi-plus
+	set -- sm8250-xiaomi-umi sm8250-xiaomi-umi-plus sm8250-xiaomi-umi-wifi
 fi
 
 # 先把工作区的 dts/ 同步进树里，避免改的是 A 编的是 B
-for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi; do
-	[ -f "$WS/dts/$f" ] && cp -f "$WS/dts/$f" "$D/$f"
+for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi umi-spmi-overlay-guard.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi sm8250-xiaomi-umi-wifi.dts xiaomi-umi-battery.dtsi xiaomi-umi-thermistors.dtsi; do
+	[ -f "$WS/dts/$f" ] || { echo "!! 缺少 DTS 源码: $f" >&2; exit 1; }
+	cp -f "$WS/dts/$f" "$D/$f"
 done
 
 mkdir -p "$OUT"

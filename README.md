@@ -1,7 +1,8 @@
 # umi-mainline
 
 Development: [current state](CONTEXT.md), [contributing](CONTRIBUTING.md),
-[governance and documentation index](docs/README.md).
+[governance and documentation index](docs/README.md),
+[source / firmware inventory](docs/OPEN_SOURCE.md).
 
 Running a mainline Linux kernel on the **Xiaomi Mi 10** (SM8250 / "kona",
 device codename `umi`, model M2001J2C).
@@ -187,8 +188,9 @@ This repository mixes licenses on purpose; `LICENSE` has the table and
 ## Third-party material
 
 The port was written by reading a vendor kernel and a vendor device tree that
-were already present on the device. Vendor source and decompiled DT dumps
-are **not** redistributed here; the tracked GPU firmware
+were already present on the device. Full vendor kernel / decompiled DT dumps
+are **not** redistributed here; the selected GPL driver ports in `fts521/`,
+`stfts/` and `power/` retain their own attribution. The tracked GPU firmware
 in `firmware/` retains its own provenance and terms. The facts that matter
 (register values, timings, GPIO numbers, protocol layout) are recorded, in
 `docs/HARDWARE.md` and in the source comments.
@@ -217,10 +219,10 @@ wsl -d umi -u root -- sh /mnt/d/project/UMI-mainline/scripts/mkimage.sh
 fastboot boot out\boot-umi.img
 ```
 
-`scripts/mkimage.sh` = `build.sh`（编内核 + DTB）+ `mkinitramfs.sh`（重建）+ `pack-umi.py`（打包），
+`scripts/mkimage.sh` = `build.sh`（编内核 + DTB + 匹配模块）+ `mkinitramfs.sh`（重建）+ `pack-umi.py`（打包），
 默认进入保留 USB 调试通道的救援模式。已安装 Arch 的设备须显式设置
 `ROOTDEV=/dev/sda34`（先确认实际设备节点），才能切根进入桌面。
-镜像同时含面板 / 触摸 / GPU / WiFi / 电量计与主充电器，快充不作为已验收能力。`out/archive/` 里那些
+默认内核源码基线为 `config/kernel.env` 固定的 6.18.59，BusyBox 默认从校验后的源码构建。面板 / 触摸 / GPU / 电量计与主充电器在内核/DT 中；Wi-Fi 还需 `out/modules-<release>.tar.gz` 与 rootfs 固件，不因 boot.img 可启动就算通过。快充不作为已验收能力。`out/archive/` 里那些
 `boot-umi-*.img` 是历史实验对照，平时不用管。
 
 踩坑记录在 `docs/`：`BUILD.md`（构建与引导）、`DISPLAY.md`（面板/DSC/DSI）、

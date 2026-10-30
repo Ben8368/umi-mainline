@@ -8,8 +8,10 @@
 # 撤销：scripts/remove-beacon.sh
 set -e
 
-TREE=${TREE:-/root/linux}
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
+# shellcheck source=../config/kernel.env
+. "$WS/config/kernel.env"
+TREE=${TREE:-/root/linux-$UMI_KERNEL_VERSION}
 SRC=$WS/tools/beacon/umi-beacon.c
 DST=$TREE/drivers/video/umi-beacon.c
 MK=$TREE/drivers/video/Makefile

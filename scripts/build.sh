@@ -5,17 +5,34 @@
 #   wsl -d umi -u root -- sh <repo>/scripts/build.sh
 #
 # 环境变量：
-#   TREE=/root/linux          内核树
+#   TREE=/root/linux-6.18.59  内核树（默认版本见 config/kernel.env）
 #   OUT=$TREE/out             kbuild 输出目录
 #   WS=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)   工作区（放 dts/ config/ 产物）
 #   JOBS=$(nproc)
 #   TC=gcc | llvm             工具链，默认 gcc（aarch64-none-elf）
 #
-# 产物：$WS/out/Image.gz, sm8250-xiaomi-umi.dtb, .config, build.log
+# 产物：$WS/out/Image.gz、三个 DTB、config-effective、modules-<release>.tar.gz
 set -e
 
-TREE=${TREE:-/root/linux}
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
+# shellcheck source=../config/kernel.env
+. "$WS/config/kernel.env"
+if [ -n "${TREE:-}" ]; then
+	TREE_IS_DEFAULT=0
+else
+	TREE=/root/linux-$UMI_KERNEL_VERSION
+	TREE_IS_DEFAULT=1
+fi
+if [ "$TREE_IS_DEFAULT" = 1 ]; then
+	ACTUAL_REVISION=$(git -C "$TREE" rev-parse HEAD 2>/dev/null) || {
+		echo "!! 无法读取默认内核树提交: $TREE" >&2
+		exit 1
+	}
+	[ "$ACTUAL_REVISION" = "$UMI_KERNEL_REVISION" ] || {
+		echo "!! 默认内核树提交错误: $ACTUAL_REVISION; 期望 $UMI_KERNEL_REVISION ($UMI_KERNEL_VERSION)" >&2
+		exit 1
+	}
+fi
 OUT=${OUT:-$TREE/out}
 JOBS=${JOBS:-$(nproc)}
 TC=${TC:-gcc}
@@ -58,8 +75,8 @@ fi
 mkdir -p "$WS/out"
 
 echo "== [1/6] 同步 DTS 和面板驱动到内核树"
-for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi umi-spmi-overlay-guard.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi sm8250-xiaomi-umi-wifi.dts xiaomi-umi-battery.dtsi; do
-	[ -f "$WS/dts/$f" ] || continue
+for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi umi-spmi-overlay-guard.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi sm8250-xiaomi-umi-wifi.dts xiaomi-umi-battery.dtsi xiaomi-umi-thermistors.dtsi; do
+	[ -f "$WS/dts/$f" ] || { echo "!! 缺少 DTS 源码: $f" >&2; exit 1; }
 	cp -f "$WS/dts/$f" "$TREE/arch/arm64/boot/dts/qcom/$f"
 done
 
@@ -338,10 +355,36 @@ done
 # 面板驱动：只有它编进去了，&mdss_dsi0 下面那个 umi-panel 节点才有人接。
 # 编成模块（=m）等于没编：initramfs 里不会去加载它，DSI 就一直 EPROBE_DEFER。
 check_y DRM_PANEL_XIAOMI_UMI
+check_y MODULES
+# Radio drivers remain modular for the rootfs; ship their complete dependencies.
+for s in ATH11K ATH11K_PCI MHI_BUS QRTR QRTR_MHI QCOM_QMI_HELPERS \
+         CFG80211 MAC80211 RTC_DRV_PM8XXX BT BT_HCIUART BT_QCA \
+         BT_RFCOMM BT_BNEP BT_HIDP UHID HID_GENERIC \
+         SND_SOC_CS35L41_I2C SPI_QCOM_GENI RC_CORE IR_SPI; do
+	case "$(cfgval "$s")" in
+	y|m) echo "   OK   $s enabled" ;;
+	*) echo "   FAIL $s missing from the runtime closure"; fail=1 ;;
+	esac
+done
+for s in SERIAL_DEV_BUS SERIAL_DEV_CTRL_TTYPORT BT_BREDR BT_LE \
+         BT_HCIUART_SERDEV BT_HCIUART_QCA LIRC; do
+	check_y "$s"
+done
+# 6.12 uses the old spelling; 6.18 renamed PWRCTL to PWRCTRL.
+case "$(cfgval PCI_PWRCTRL_PWRSEQ):$(cfgval PCI_PWRCTL_PWRSEQ)" in
+y:*|m:*|*:y|*:m) ;;
+*) echo "   FAIL PCI power sequencing is unavailable"; fail=1 ;;
+esac
+check_y POWER_SEQUENCING
+check_y POWER_SEQUENCING_QCOM_WCN
 check_y TYPEC_TCPM
 check_y TYPEC_QCOM_PMIC
 check_y REGULATOR_QCOM_USB_VBUS
-# 触摸：同样是 =m 等于没编（initramfs 无模块加载器）。
+# Board temperatures must also be readable in the module-free rescue image.
+check_y QCOM_SPMI_ADC5
+check_y HWMON
+check_y SENSORS_IIO_HWMON
+# 触摸：同样是 =m 等于没编（initramfs 不附带模块集合）。
 #   TOUCH=fts521（默认）主线移植版，走标准 i2c_transfer
 #   TOUCH=stfts         厂商 5.2.4 驱动（取自 zhaoyuanwang123/armbian 的
 #                       sm8250-7.2 补丁 0043），带 FW_UPDATE_ON_PROBE/FOD
@@ -399,11 +442,11 @@ for dtb in $DTBS; do
 	rm -f "$OUT/arch/arm64/boot/dts/qcom/$dtb.dtb"
 done
 # POSIX sh has no portable pipefail. Keep make outside the logging pipeline.
-if make -C "$TREE" $MAKEFLAGS_TC O="$OUT" -j"$JOBS" Image.gz dtbs >"$OUT/build.log" 2>&1; then
+if make -C "$TREE" $MAKEFLAGS_TC O="$OUT" -j"$JOBS" Image.gz dtbs modules >"$OUT/build.log" 2>&1; then
 	tail -25 "$OUT/build.log"
 else
 	tail -25 "$OUT/build.log"
-	echo "!! Kernel/DTB build failed; see $OUT/build.log"
+	echo "!! Kernel/DTB/modules build failed; see $OUT/build.log"
 	exit 3
 fi
 artifact="$OUT/arch/arm64/boot/Image.gz"
@@ -413,11 +456,11 @@ for dtb in $DTBS; do
 	[ -s "$artifact" ] || { echo "!! Missing fresh artifact: $artifact"; exit 3; }
 done
 
+# Export the complete build delivery set as one rollback-capable publication.
+# The module manifest hashes these exact image/config inputs; no rootfs is mounted.
+python3 "$WS/scripts/export-modules.py" --tree "$TREE" --out "$OUT" \
+	--dest "$WS/out" --tc "$TC" --collect-build-artifacts
+
 echo "== [6/6] 收集产物到 $WS/out"
-cp -f "$OUT/arch/arm64/boot/Image.gz" "$WS/out/Image.gz"
-for dtb in $DTBS; do
-	cp -f "$OUT/arch/arm64/boot/dts/qcom/$dtb.dtb" "$WS/out/$dtb.dtb"
-done
-cp -f "$OUT/.config" "$WS/out/config-effective"
 ls -l "$WS/out" | sed -n '1,20p'
 echo "== 完成"

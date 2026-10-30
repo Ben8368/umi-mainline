@@ -8,6 +8,19 @@ CodeRabbit 自动审查 base 为 master 的非 draft PR，按 .coderabbit.yaml �
 
 CodeRabbit 服务端 Triage Rules 不能由 YAML 创建。若启用低风险 autofix，只限定本仓库、非 draft、Risk/Blast radius/Review effort=Low、Security risk=Minimal、已审查；最多两轮，单写入者且不可碰内核、供电、磁盘、固件、CI/治理权限。本轮默认仅审查，不授予持续自动写入权限。收费、App 新授权或范围扩大须维护者确认。
 
+## CodeRabbit 暂停与手动触发
+
+常规分层审查见 [QUALITY](QUALITY.md#分层审查与反例验证)。保留 chill，以缺陷证据和路径指令提高信噪比；assertive 按官方定义增加反馈量，不作为漏报率改善的证据。固件只排除二进制，清单、来源和许可文本应参与审查。
+
+连续提交可能使 CodeRabbit 自动暂停，检查显示 `skipped / Review paused`。先读取机器人说明，核对最后已审查提交和当前 HEAD；CI 成功、旧提交的最终反馈或旧线程自动解决都不能替代新 HEAD 的审查。
+
+- 已获得在该 PR 发送机器人命令评论的明确授权时，在完成本轮修改并推送后发送 `@coderabbitai review`，请求一次增量审查。只有需要恢复后续自动审查且获得相应授权时，才使用 `@coderabbitai resume`；不为绕过暂停而改 YAML、扩大权限或开启自动修复。
+- 评论发送成功只表示请求已发出。须核对 CodeRabbit 的 `Review triggered` 回执、检查状态与审查覆盖的 HEAD，再等待最终反馈；不要重复刷同一请求。GitHub 检查重跑接口可能不可用，返回 404 不代表审查通过，也不能代替机器人触发命令。
+- 同一 PR、同一跟进任务内已明确授权的必要机器人评论，无需逐条重复确认；授权不扩展到其他 PR、人工消息、额外计费或权限变更。尚无评论授权时只就该动作询问一次，说明评论内容、用途和阻塞原因，不重新索取已取得的提交、推送或条件合并授权。
+- 触发后若继续推送，旧 HEAD 的回执和反馈不能用于合并新 HEAD。核对是否已有针对新 HEAD 的审查，必要时在现有授权内重新请求；合并条件仍以 [AI_RULES](AI_RULES.md#pr-推送与远端验证) 为准，未完成时保持 PR 开放。
+
+跨文件重构、审查规则变更或多轮增量修复后，可在已有评论授权内集中发送一次 `@coderabbitai full review`，从头复核 PR 的全部变更文件；它不是整个仓库审计，也不替代专项复核。普通修复继续用增量 review；不重复刷请求或添加使用额外额度的参数。命令须独占一行，以回执和实际覆盖提交确认完成。官方语义见 [review commands](https://docs.coderabbit.ai/reference/review-commands)，profile 与路径过滤见 [configuration](https://docs.coderabbit.ai/reference/configuration)。
+
 ## Issue → Jules
 
 维护者于 2026-10-29 授权：开发 Agent 可在已授权任务内，将简单、低风险、可独立验收且符合下述路径准入的工作包派给 Jules，无需再逐单询问维护者。适用例子是普通文档修订、小型离线测试与已准入工具；复杂、风险不明或涉及受保护路径的工作由开发 Agent 本地处理。派单 Agent 负责拆分、排除文件冲突、检查回执、审阅 diff、复跑验证和 PR 交付；Jules 不递归派单。治理规则修改属于受保护范围，不能因改动简单而派给 Jules。

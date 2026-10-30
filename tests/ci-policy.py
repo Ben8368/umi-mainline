@@ -72,8 +72,12 @@ class PolicyTests(unittest.TestCase):
                     if step.get('with', {}).get('repository')]
         pins = {
             '6.12.94': '0b8f247169e487eff2d4c2dd531bc43f7efda2cb',
+            '6.18.59': '1253a6aa5d104312bf0992afacc15220ae35bdf9',
             '7.2.12': 'cc9de5d4b5ab6459f5774946aa3195ad51236fa8',
         }
+        default = dict(line.split('=', 1) for line in (ROOT / 'config/kernel.env').read_text().splitlines()
+                       if line.startswith('UMI_KERNEL_'))
+        self.assertEqual(pins[default['UMI_KERNEL_VERSION']], default['UMI_KERNEL_REVISION'])
         self.assertCountEqual(matrix['version'], pins)
         self.assertEqual(len(external), len(pins))
         build_index = next(i for i, step in enumerate(steps)

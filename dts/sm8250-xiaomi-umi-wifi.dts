@@ -27,7 +27,8 @@
  *   4. 子节点 regulators { ldo0..ldo9 } 保留着（新驱动不消费，但留着无害）。
  *
  * 所以这份 dts 是「作者的配置 + 我们的显示/触摸部分」。
- * 它需要 **7.2.x 内核**（7.2.7 是他验证过的版本，我们用 7.2.12）。
+ * 历史参考来自 7.2.7；6.18.59 也有上游 PCI pwrctrl + WCN pwrseq。
+ * 模块交付与实际时序必须分别验证，见 docs/OPEN_SOURCE.md。
  */
 /dts-v1/;
 
@@ -36,6 +37,10 @@
 / {
 	model = "Xiaomi Mi 10 (wifi)";
 	compatible = "xiaomi,umi", "qcom,sm8250";
+
+	aliases {
+		serial1 = &uart6;
+	};
 
 	qca6390_pmu: qca6390-pmu {
 		compatible = "qcom,qca6390-pmu";
@@ -78,6 +83,28 @@
 			vreg_pmu_pcie_0p9: ldo8 { regulator-name = "vreg_pmu_pcie_0p9"; };
 			vreg_pmu_pcie_1p8: ldo9 { regulator-name = "vreg_pmu_pcie_1p8"; };
 		};
+	};
+};
+
+/* QCA6390 Bluetooth: Xiaomi kernel_devicetree umi-q-oss
+ * 2aa073826fa357cc672c1e0f590d9dbe904203b0:
+ * qcom/xiaomi-sm8250-common.dtsi enables SE6 UART and BT_EN GPIO21.
+ * Upstream sm8250.dtsi maps SE6 to uart6, GPIO16..19. Only the Wi-Fi
+ * variant releases these pins and supplies the shared QCA6390 PMU.
+ * Use hci_qca + WCN pwrseq, as in upstream sm8250-xiaomi-elish-common.dtsi.
+ * The PMU child supplies identify the sequencer; do not claim GPIO21 again.
+ */
+&uart6 {
+	status = "okay";
+
+	bluetooth {
+		compatible = "qcom,qca6390-bt";
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddbtcmx-supply = <&vreg_pmu_btcmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
 	};
 };
 
@@ -159,9 +186,10 @@
 	 * hog 已经把这条线独占，别的 consumer 一律 -EBUSY。hog 存在，pwrseq
 	 * 设备就永远不存在，我们的 early power-on 也就永远拿不到 pwrseq。
 	 *
-	 * 现在改由 pcie-qcom 的 early power-on（devm_pwrseq_get + power_on，
-	 * 在 PERST# 释放之前）来拉高 WLAN_EN —— 正是 7.2 里
-	 * pci_pwrctrl_power_on_devices() 的位置。所有权归 pwrseq，谁也不抢。*/
+	 * 旧 6.12 实验曾依赖手工 early-poweron 补丁；6.18 优先使用
+	 * PCI core 创建 pwrctrl 设备、pwrseq 上电后重扫的上游路径。
+	 * 必须交付匹配模块并实测时序，不能声称旧补丁已自动迁移。
+	 * GPIO 所有权仍归 pwrseq，不额外添加 gpio-hog。*/
 };
 
 /* ---------------------------------------------------------------- GPU (Adreno 650)
