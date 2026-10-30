@@ -209,9 +209,14 @@ done
                     self.assertEqual((dest / 'Image.gz').read_text(), 'CONFIG_MODULES=y\n')
                     self.assertEqual(manifest['image_sha256'], MODULES.sha256(dest / 'Image.gz'))
                     self.assertEqual((dest / 'config-effective').read_text(), 'CONFIG_MODULES=y\n')
+                    expected_dtb_names = {name for name in MODULES.BUILD_ARTIFACTS
+                                           if name.endswith('.dtb')}
+                    self.assertEqual(set(manifest['dtb_sha256']), expected_dtb_names)
                     for name in MODULES.BUILD_ARTIFACTS:
                         if name.endswith('.dtb'):
                             self.assertEqual((dest / name).read_text(), 'FIXTURE-' + name)
+                            self.assertEqual(manifest['dtb_sha256'][name],
+                                             MODULES.sha256(dest / name))
                     with tarfile.open(archive) as tar:
                         self.assertIn('lib/modules/6.18.59-umi/kernel/drivers/wifi.ko', tar.getnames())
                         for member in tar.getmembers():

@@ -58,7 +58,7 @@ sh scripts/build.sh
 
 `build.sh` 会执行 `make Image.gz dtbs modules`，再调用 `export-modules.py`，在普通临时目录中执行 `modules_install` 并生成匹配版本的 depmod 索引（宿主须安装 kmod）。模块归档、清单、kernelrelease、Image.gz、三个 DTB 和 config-effective 作为一个交付组发布；可捕获替换错误时恢复整组旧文件，原本缺失的文件会移除。导出不挂载 rootfs、不删除旧版模块、不访问手机。包内为 `lib/modules/<kernelrelease>/`，适用于已由维护者确认目录布局的 rootfs；真实设备安装另需授权。
 
-`out/modules-manifest.json` 记录模块数、内核/配置/模块包 SHA256，`out/kernelrelease` 给出唯一对应版本。不能给 6.18 使用 6.12 的 `.ko`。即使包存在，也需在真实 rootfs 验证 modprobe、QCA6390 固件、PCIe 枚举、网络连接和休眠恢复。
+`out/modules-manifest.json` 记录模块数、内核/配置/模块包 SHA256，以及三个 DTB 各自的 SHA256；`out/kernelrelease` 给出唯一对应版本。不能给 6.18 使用 6.12 的 `.ko`。即使包存在，也需在真实 rootfs 验证 modprobe、QCA6390 固件、PCIe 枚举、网络连接和休眠恢复。
 
 替换前会备份整个交付组；若回滚也失败，命令报错并保留输出目录下 `.modules-backup-*` 中以原文件名保存的恢复副本；先停止消费混合产物，核对并恢复完整交付组后再使用。这是可捕获 I/O 错误的回滚，不保证进程被杀、断电或并发读写时整个交付组整体原子切换。
 

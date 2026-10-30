@@ -147,11 +147,21 @@ def export(tree, out, dest, tc, collect_build_artifacts=False):
         archive = tmp / f'modules-{release}.tar.gz'
         with tarfile.open(archive, 'w:gz') as tar:
             tar.add(moddir, arcname=f'lib/modules/{release}', filter=root_owner)
+        collected = []
+        if collect_build_artifacts:
+            for name, relative in BUILD_ARTIFACTS.items():
+                source = out / relative
+                if not source.is_file() or not source.stat().st_size:
+                    raise ValueError(f'missing build artifact: {source}')
+                shutil.copyfile(source, tmp / name)
+                collected.append(name)
         manifest = {
             'kernelrelease': release, 'module_count': count,
             'archive': archive.name, 'archive_sha256': sha256(archive),
             'image_sha256': sha256(out / 'arch/arm64/boot/Image.gz'),
             'config_sha256': sha256(out / '.config'),
+            'dtb_sha256': {name: sha256(tmp / name) for name in collected
+                           if name.endswith('.dtb')},
             'source_revision': subprocess.check_output(
                 ['git', '-C', str(tree), 'rev-parse', 'HEAD'], text=True).strip(),
             'note': 'Adaptation patches modify the kernel tree. Not a hardware acceptance record.',
@@ -162,13 +172,7 @@ def export(tree, out, dest, tc, collect_build_artifacts=False):
         # Image/DTB/config and module metadata form one delivery set. A failed
         # replacement must not leave files from different kernel builds mixed.
         names = [archive.name, 'modules-manifest.json', 'kernelrelease']
-        if collect_build_artifacts:
-            for name, relative in BUILD_ARTIFACTS.items():
-                source = out / relative
-                if not source.is_file() or not source.stat().st_size:
-                    raise ValueError(f'missing build artifact: {source}')
-                shutil.copyfile(source, tmp / name)
-                names.append(name)
+        names.extend(collected)
         publish_files(tmp, dest, names)
     print(f'Exported {count} modules for {release}: {dest / archive.name}')
     return manifest

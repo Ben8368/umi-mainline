@@ -45,3 +45,9 @@ CodeRabbit 于 `2879f4e1f88f3912779f6df0c0b550bb752edf39` 的最终评审又列�
 - `git diff --check`：exit 0。
 
 全套内核编译、真实 BusyBox 源码构建和手机验证未运行；旧 HEAD 的编译结果不能代替新 HEAD 验收。推送后需等待同一 SHA 的 CI result 与 CodeRabbit 最终审查，并核对有效意见后再按已有授权决定合并。
+
+## `f0518b9` 最终评审追加意见
+
+`f0518b95665036669f23a9723e8ada2b14cd2a2a` 的 CI result、其他检查及 CodeRabbit 最终评审均完成。CodeRabbit 提出一个有效意见：完整构建交付组的 manifest 没有 DTB 哈希，遇到无法完成回滚的混合输出时无法对照识别 DTB 内容。本轮在收集构建产物后、生成清单前记录三个 DTB 的 SHA256；不扩展其他文件的哈希项，并在导出成功回归中校验名称集合与每个文件的哈希。
+
+对应 72 项离线回归、仓库 ShellCheck、治理文档及 CI/派单测试均已在 WSL ext4 验证通过；详细命令与结果沿用上节，代码检查和治理检查在本次文档更新后再运行。该意见修复推送后，`f0518b9` 结果不能替代新 HEAD 的门禁；新 HEAD 检查 pending 时保持 PR 开放。L2/L3 继续 not-run。
