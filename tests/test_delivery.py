@@ -228,6 +228,87 @@ done
                 self.assertEqual(run.returncode, 2 if bb else 0, run.stderr)
                 self.assertEqual((ws / 'out/busybox/busybox.static').exists(), not bool(bb))
 
+    def test_publication_failure_restores_each_previous_delivery_set(self):
+        names = ('modules-test.tar.gz', 'modules-manifest.json', 'kernelrelease')
+        for existing in range(8):
+            for fail_at in range(1, 4):
+                with self.subTest(existing=existing, fail_at=fail_at), \
+                     tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    stage, dest = base / 'stage', base / 'dest'
+                    stage.mkdir()
+                    dest.mkdir()
+                    expected = {}
+                    for index, name in enumerate(names):
+                        (stage / name).write_bytes(b'NEW-' + name.encode())
+                        if existing & (1 << index):
+                            expected[name] = b'OLD-' + name.encode()
+                            (dest / name).write_bytes(expected[name])
+                    (dest / 'unrelated').write_bytes(b'KEEP')
+                    expected['unrelated'] = b'KEEP'
+                    replace = os.replace
+                    calls = 0
+
+                    def fail_once(src, dst):
+                        nonlocal calls
+                        calls += 1
+                        if calls == fail_at:
+                            raise OSError('injected publication failure')
+                        replace(src, dst)
+
+                    with patch.object(MODULES.os, 'replace', side_effect=fail_once):
+                        with self.assertRaisesRegex(OSError, 'injected publication failure'):
+                            MODULES.publish_files(stage, dest, names)
+                    self.assertEqual({p.name: p.read_bytes() for p in dest.iterdir()}, expected)
+
+    def test_publication_backup_failure_never_changes_delivery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            stage, dest = base / 'stage', base / 'dest'
+            stage.mkdir()
+            dest.mkdir()
+            for name in ('archive', 'manifest'):
+                (stage / name).write_bytes(b'NEW')
+                (dest / name).write_bytes(b'OLD')
+            copy = MODULES.shutil.copy2
+
+            def fail_second_backup(src, dst):
+                if src.name == 'manifest':
+                    raise OSError('backup failure')
+                return copy(src, dst)
+
+            with patch.object(MODULES.shutil, 'copy2', side_effect=fail_second_backup):
+                with self.assertRaisesRegex(OSError, 'backup failure'):
+                    MODULES.publish_files(stage, dest, ('archive', 'manifest'))
+            self.assertEqual({p.name: p.read_bytes() for p in dest.iterdir()},
+                             {'archive': b'OLD', 'manifest': b'OLD'})
+
+    def test_publication_retains_backups_and_attempts_remaining_rollback_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            stage, dest = base / 'stage', base / 'dest'
+            stage.mkdir()
+            dest.mkdir()
+            names = ('archive', 'manifest', 'release')
+            for name in names:
+                (stage / name).write_bytes(b'NEW')
+                (dest / name).write_bytes(b'OLD-' + name.encode())
+            replace = os.replace
+
+            def fail_publish_and_one_restore(src, dst):
+                if src == stage / 'release' or (src.parent != stage and dst.name == 'manifest'):
+                    raise OSError('injected persistent failure')
+                replace(src, dst)
+
+            with patch.object(MODULES.os, 'replace', side_effect=fail_publish_and_one_restore):
+                with self.assertRaisesRegex(OSError, 'recovery backups retained'):
+                    MODULES.publish_files(stage, dest, names)
+            self.assertEqual((dest / 'archive').read_bytes(), b'OLD-archive')
+            self.assertEqual((dest / 'release').read_bytes(), b'OLD-release')
+            backup_dirs = list(dest.glob('.modules-backup-*'))
+            self.assertEqual(len(backup_dirs), 1)
+            self.assertEqual((backup_dirs[0] / 'manifest').read_bytes(), b'OLD-manifest')
+
 
     def test_prepare_tree_refuses_existing_nonrepository_or_wrong_revision(self):
         for is_git in (False, True):

@@ -67,6 +67,47 @@ def validate_modules(base, release, source_order):
     return moddir, len(expected)
 
 
+def publish_files(stage, dest, names):
+    """Restore the previous delivery set if a file replacement fails."""
+    backup_dir = Path(tempfile.mkdtemp(prefix='.modules-backup-', dir=dest))
+    backups = {}
+    keep_backups = False
+    try:
+        # Finish every backup before replacing any public artifact.
+        for name in names:
+            previous = dest / name
+            if previous.is_symlink() or (previous.exists() and not previous.is_file()):
+                raise ValueError(f'not a regular delivery file: {previous}')
+            backups[name] = None
+            if previous.exists():
+                backup = backup_dir / name
+                shutil.copy2(previous, backup)
+                backups[name] = backup
+        published = []
+        try:
+            for name in names:
+                os.replace(stage / name, dest / name)
+                published.append(name)
+        except OSError as error:
+            failures = []
+            for name in reversed(published):
+                try:
+                    if backups[name] is None:
+                        (dest / name).unlink()
+                    else:
+                        os.replace(backups[name], dest / name)
+                except OSError as rollback_error:
+                    failures.append(f'{name}: {rollback_error}')
+            if failures:
+                keep_backups = True
+                raise OSError(f'{error}; rollback failed: {"; ".join(failures)}; '
+                              f'recovery backups retained at {backup_dir}') from error
+            raise
+    finally:
+        if not keep_backups:
+            shutil.rmtree(backup_dir)
+
+
 def export(tree, out, dest, tc):
     tree, out, dest = (Path(p).resolve() for p in (tree, out, dest))
     for name in ('.config', 'System.map', 'modules.order', 'modules.builtin',
@@ -111,8 +152,7 @@ def export(tree, out, dest, tc):
             json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
         (tmp / 'kernelrelease').write_text(release + '\n', encoding='utf-8')
         # Publish only after modules_install, index checks and archiving succeed.
-        for name in (archive.name, 'modules-manifest.json', 'kernelrelease'):
-            os.replace(tmp / name, dest / name)
+        publish_files(tmp, dest, (archive.name, 'modules-manifest.json', 'kernelrelease'))
     print(f'Exported {count} modules for {release}: {dest / archive.name}')
     return manifest
 

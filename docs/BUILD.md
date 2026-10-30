@@ -58,6 +58,8 @@ sh scripts/build.sh
 
 `out/modules-manifest.json` 记录模块数、内核/配置/模块包 SHA256，`out/kernelrelease` 给出唯一对应版本。不能给 6.18 使用 6.12 的 `.ko`。即使包存在，也需在真实 rootfs 验证 modprobe、QCA6390 固件、PCIe 枚举、网络连接和休眠恢复。
 
+导出器在三个交付文件替换前备份旧文件；替换失败会恢复已发布文件，原本不存在的文件则移除。若回滚也失败，命令报错并保留输出目录下 `.modules-backup-*` 中以原文件名保存的恢复副本；先停止消费混合产物，核对并恢复完整交付组后再使用。这是可捕获 I/O 错误的回滚，不保证进程被杀、断电或并发读写时三个文件整体原子切换。
+
 ## 2. 创建 initramfs
 
 BusyBox 默认从官方 GPL 源码构建，源码身份在 `config/source-lock.json`。需要 Python ≥3.12、make、宿主 C 编译器和带静态 libc 的 arm64 **Linux** 交叉工具链（Ubuntu: `gcc-aarch64-linux-gnu libc6-dev-arm64-cross`）；内核用的 `aarch64-none-elf-` 不带 Linux libc，不能用于 BusyBox。

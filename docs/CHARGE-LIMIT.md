@@ -71,6 +71,13 @@ systemctl disable --now umi-charge-limit.service
 
 ## 验收
 
-离线：`python3 -m unittest discover -s tests -p test_charge_limit.py -v`，以及 `test_pps.py` 中真实 C setter/控制循环回归。包括上下限、区间重启、错误读写、启用异步读回、停充重试、独占、退出不复充及 PPS 接口不被用户态改写。
+离线验收分别运行两组回归：
+
+```sh
+python3 -m unittest discover -s tests -p test_charge_limit.py -v
+python3 -m unittest discover -s tests -p test_pps.py -v
+```
+
+覆盖上下限、区间重启、错误读写、启用异步读回、停充重试、独占、退出不复充及 PPS 接口不被用户态改写。`test_pps.py` 从驱动源码抽取 C 函数，在模拟 TCPM/I/O 桩环境中验证 setter 和控制循环；属于 L1 合成回归，不等同于内核编译或真机验收。
 
 真机：按 [测试矩阵](test-matrix.md) 记录本轮镜像、设备、SOC、充电器与温度；验证上下限完整循环、反复拔插、服务重启/停止、读写故障、PPS 在上限前持续及到上限退出、下限普通复充且不自动 PPS。同时采集电池端净电流/SOC 趋势、PMIC 状态、保护读回和外部输入测量，不能用 `enabled=1`、`health=Good` 或输入电流为零单项验收。
