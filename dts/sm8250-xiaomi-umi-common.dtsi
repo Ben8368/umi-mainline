@@ -23,6 +23,7 @@
 #include "pm8150b.dtsi"
 #include "pm8150l.dtsi"
 #include "pm8009.dtsi"
+#include "xiaomi-umi-thermistors.dtsi"
 
 /*
  * 上游 sm8250.dtsi 里这几个 reserved-memory 是按 MTP 参考板写的，

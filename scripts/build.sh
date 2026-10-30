@@ -60,7 +60,7 @@ fi
 mkdir -p "$WS/out"
 
 echo "== [1/6] 同步 DTS 和面板驱动到内核树"
-for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi umi-spmi-overlay-guard.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi sm8250-xiaomi-umi-wifi.dts xiaomi-umi-battery.dtsi; do
+for f in sm8250-xiaomi-umi-common.dtsi sm8250-xiaomi-umi.dts sm8250-xiaomi-umi-plus.dts umi-dtbo-stubs.dtsi umi-spmi-overlay-guard.dtsi xiaomi-umi-panels.dtsi sm8250-xiaomi-umi-touch.dtsi sm8250-xiaomi-umi-wifi.dts xiaomi-umi-battery.dtsi xiaomi-umi-thermistors.dtsi; do
 	[ -f "$WS/dts/$f" ] || { echo "!! 缺少 DTS 源码: $f" >&2; exit 1; }
 	cp -f "$WS/dts/$f" "$TREE/arch/arm64/boot/dts/qcom/$f"
 done
@@ -341,13 +341,19 @@ done
 # 编成模块（=m）等于没编：initramfs 里不会去加载它，DSI 就一直 EPROBE_DEFER。
 check_y DRM_PANEL_XIAOMI_UMI
 check_y MODULES
-# Wi-Fi remains modular for the real rootfs; ship its complete dependency tree.
+# Radio drivers remain modular for the rootfs; ship their complete dependencies.
 for s in ATH11K ATH11K_PCI MHI_BUS QRTR QRTR_MHI QCOM_QMI_HELPERS \
-         CFG80211 MAC80211 RTC_DRV_PM8XXX; do
+         CFG80211 MAC80211 RTC_DRV_PM8XXX BT BT_HCIUART BT_QCA \
+         BT_RFCOMM BT_BNEP BT_HIDP UHID HID_GENERIC \
+         SND_SOC_CS35L41_I2C SPI_QCOM_GENI RC_CORE IR_SPI; do
 	case "$(cfgval "$s")" in
 	y|m) echo "   OK   $s enabled" ;;
 	*) echo "   FAIL $s missing from the runtime closure"; fail=1 ;;
 	esac
+done
+for s in SERIAL_DEV_BUS SERIAL_DEV_CTRL_TTYPORT BT_BREDR BT_LE \
+         BT_HCIUART_SERDEV BT_HCIUART_QCA LIRC; do
+	check_y "$s"
 done
 # 6.12 uses the old spelling; 6.18 renamed PWRCTL to PWRCTRL.
 case "$(cfgval PCI_PWRCTRL_PWRSEQ):$(cfgval PCI_PWRCTL_PWRSEQ)" in
@@ -359,6 +365,10 @@ check_y POWER_SEQUENCING_QCOM_WCN
 check_y TYPEC_TCPM
 check_y TYPEC_QCOM_PMIC
 check_y REGULATOR_QCOM_USB_VBUS
+# Board temperatures must also be readable in the module-free rescue image.
+check_y QCOM_SPMI_ADC5
+check_y HWMON
+check_y SENSORS_IIO_HWMON
 # 触摸：同样是 =m 等于没编（initramfs 不附带模块集合）。
 #   TOUCH=fts521（默认）主线移植版，走标准 i2c_transfer
 #   TOUCH=stfts         厂商 5.2.4 驱动（取自 zhaoyuanwang123/armbian 的

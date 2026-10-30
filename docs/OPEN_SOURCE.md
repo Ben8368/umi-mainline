@@ -51,3 +51,5 @@
 - [Mesa Freedreno/Turnip 官方文档](https://docs.mesa3d.org/drivers/freedreno.html)、[linux-firmware 项目](https://gitlab.com/kernel-firmware/linux-firmware)。仅作项目入口，不把现有二进制归属于未经核对的最新提交。
 - [BusyBox 官方源码](https://busybox.net/downloads/busybox-1.37.0.tar.bz2)及[官方 SHA256](https://busybox.net/downloads/busybox-1.37.0.tar.bz2.sha256)，固定于 [source-lock.json](../config/source-lock.json)。
 - 仓库固件精确字节数与 SHA256 见 [manifest.json](../firmware/manifest.json)，`python3 scripts/check-firmware.py` 核对，initramfs 打包前也强制运行；哈希只能证明身份，不能证明授权或硬件兼容。
+
+硬件逐项接入、缺失驱动与板级依赖见 [硬件支持矩阵](HARDWARE_SUPPORT.md)。

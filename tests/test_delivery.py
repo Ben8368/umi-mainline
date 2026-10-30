@@ -278,12 +278,44 @@ exit 8
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertEqual(len(list(out.glob('*.dtb'))), 3)
             for name in ('umi-spmi-overlay-guard.dtsi', 'xiaomi-umi-battery.dtsi',
-                         'sm8250-xiaomi-umi-wifi.dts'):
+                         'sm8250-xiaomi-umi-wifi.dts', 'xiaomi-umi-thermistors.dtsi'):
                 self.assertEqual((qcom / name).read_bytes(), (ROOT / 'dts' / name).read_bytes())
-            (ws / 'dts/umi-spmi-overlay-guard.dtsi').unlink()
-            run = subprocess.run(['sh', str(ROOT / 'scripts/dtb-only.sh')], env=env,
-                                 capture_output=True, text=True)
-            self.assertNotEqual(run.returncode, 0, 'must not reuse missing include from kernel tree')
+            for name in ('umi-spmi-overlay-guard.dtsi', 'xiaomi-umi-thermistors.dtsi'):
+                path = ws / 'dts' / name
+                saved = path.read_bytes()
+                path.unlink()
+                run = subprocess.run(['sh', str(ROOT / 'scripts/dtb-only.sh')], env=env,
+                                     capture_output=True, text=True)
+                self.assertNotEqual(run.returncode, 0, 'must not reuse missing include from kernel tree')
+                path.write_bytes(saved)
+
+
+    def test_radio_build_gate_rejects_missing_features(self):
+        # Execute the actual shell gate with synthetic olddefconfig output.
+        # A successful kernel build must not hide missing BLE, serdev or UHID.
+        source = (ROOT / 'scripts/build.sh').read_text()
+        functions = source[source.index('cfgval() {'):source.index('for s in SERIAL_QCOM_GENI')]
+        gate = source[source.index('# Radio drivers remain'):source.index('# 6.12 uses the old spelling')]
+        modules = ('ATH11K ATH11K_PCI MHI_BUS QRTR QRTR_MHI QCOM_QMI_HELPERS '
+                   'CFG80211 MAC80211 RTC_DRV_PM8XXX BT BT_HCIUART BT_QCA '
+                   'BT_RFCOMM BT_BNEP BT_HIDP UHID HID_GENERIC '
+                   'SND_SOC_CS35L41_I2C SPI_QCOM_GENI RC_CORE IR_SPI').split()
+        booleans = ('SERIAL_DEV_BUS SERIAL_DEV_CTRL_TTYPORT BT_BREDR BT_LE '
+                    'BT_HCIUART_SERDEV BT_HCIUART_QCA LIRC').split()
+        cases = [(None, 'm'), (None, 'y')]
+        cases += [(symbol, 'm') for symbol in modules + booleans]
+        for removed, module_value in cases:
+            with self.subTest(removed=removed, modules=module_value), tempfile.TemporaryDirectory() as tmp:
+                lines = [f'CONFIG_{name}={module_value}' for name in modules if name != removed]
+                lines += [f'CONFIG_{name}=y' for name in booleans if name != removed]
+                if removed:
+                    lines.append(f'# CONFIG_{removed} is not set')
+                (Path(tmp) / '.config').write_text('\n'.join(lines) + '\n')
+                result = subprocess.run(['sh', '-c', 'fail=0\n' + functions + gate + '\nexit "$fail"'],
+                                        env={**os.environ, 'OUT': tmp}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, int(removed is not None), result.stdout + result.stderr)
+                if removed:
+                    self.assertIn('FAIL ' + removed, result.stdout)
 
 if __name__ == '__main__':
     unittest.main()

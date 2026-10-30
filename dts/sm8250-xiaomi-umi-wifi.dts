@@ -38,6 +38,10 @@
 	model = "Xiaomi Mi 10 (wifi)";
 	compatible = "xiaomi,umi", "qcom,sm8250";
 
+	aliases {
+		serial1 = &uart6;
+	};
+
 	qca6390_pmu: qca6390-pmu {
 		compatible = "qcom,qca6390-pmu";
 
@@ -79,6 +83,28 @@
 			vreg_pmu_pcie_0p9: ldo8 { regulator-name = "vreg_pmu_pcie_0p9"; };
 			vreg_pmu_pcie_1p8: ldo9 { regulator-name = "vreg_pmu_pcie_1p8"; };
 		};
+	};
+};
+
+/* QCA6390 Bluetooth: Xiaomi kernel_devicetree umi-q-oss
+ * 2aa073826fa357cc672c1e0f590d9dbe904203b0:
+ * qcom/xiaomi-sm8250-common.dtsi enables SE6 UART and BT_EN GPIO21.
+ * Upstream sm8250.dtsi maps SE6 to uart6, GPIO16..19. Only the Wi-Fi
+ * variant releases these pins and supplies the shared QCA6390 PMU.
+ * Use hci_qca + WCN pwrseq, as in upstream sm8250-xiaomi-elish-common.dtsi.
+ * The PMU child supplies identify the sequencer; do not claim GPIO21 again.
+ */
+&uart6 {
+	status = "okay";
+
+	bluetooth {
+		compatible = "qcom,qca6390-bt";
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddbtcmx-supply = <&vreg_pmu_btcmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
 	};
 };
 

@@ -95,7 +95,9 @@
 
 /* ---------------------------------------------------------------- 蓝牙 (QCA6390 @ UART6) */
 &uart6 {
-	status = "okay";
+	/* GPIO16..19 remain reserved here and this PMU has no BT_EN.
+	 * The Wi-Fi variant owns the usable Bluetooth wiring. */
+	status = "disabled";
 
 	bluetooth {
 		compatible = "qcom,qca6390-bt";

@@ -1,10 +1,12 @@
 # 小米 10 (umi) 硬件清单 — 主线移植参考
 
+本页保留硬件识别参考；驱动接入与验证缺口见 [硬件支持矩阵](HARDWARE_SUPPORT.md)。
+
 ## 基本信息
 - SoC: Qualcomm SM8250 (Snapdragon 865, codename "kona")
 - 代号: umi
 - 型号: M2001J2C
-- 当前内核: 4.19 (Android 13, SDK 33)
+- 原始识别环境: Android 4.19 内核 (Android 13, SDK 33)，不是本项目当前内核
 
 ---
 
@@ -35,7 +37,7 @@
 | 功能 | GPIO | 说明 |
 |------|------|------|
 | Panel Reset | tlmm 12 | 复位 |
-| TE (撕裂效应) | tlmm 66 | BLE信号 |
+| TE (撕裂效应) | tlmm 66 | 面板撕裂同步信号 |
 | ESD IRQ | tlmm 51 | 上升沿触发, ONESHOT |
 | Display Rate | tlmm 50 | 刷新率选择 |
 
@@ -118,7 +120,7 @@
 
 | 组件 | 芯片 | 说明 |
 |------|------|------|
-| WiFi | WIL6210 (QCA6390) | 802.11ax |
+| WiFi | QCA6390 | 802.11ax |
 | 蓝牙 | QCA6390 | BT 5.x |
 | NFC | NQ-NCI @ I2C 0x28 | GPIO 111(irq), 83(ven) |
 
@@ -168,3 +170,5 @@
 | camera_flash_therm | pm8150l | ADC_AMUX_THM1_PU2 |
 | skin_msm_therm | pm8150l | ADC_AMUX_THM2_PU2 |
 | pa_therm2 | pm8150l | ADC_AMUX_THM3_PU2 |
+
+这八路温度的主线接入和验收边界见 [硬件支持矩阵](HARDWARE_SUPPORT.md#板级温度读取契约)。
