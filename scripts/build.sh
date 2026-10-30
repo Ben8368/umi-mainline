@@ -17,7 +17,22 @@ set -e
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
 # shellcheck source=../config/kernel.env
 . "$WS/config/kernel.env"
-TREE=${TREE:-/root/linux-$UMI_KERNEL_VERSION}
+if [ -n "${TREE:-}" ]; then
+	TREE_IS_DEFAULT=0
+else
+	TREE=/root/linux-$UMI_KERNEL_VERSION
+	TREE_IS_DEFAULT=1
+fi
+if [ "$TREE_IS_DEFAULT" = 1 ]; then
+	ACTUAL_REVISION=$(git -C "$TREE" rev-parse HEAD 2>/dev/null) || {
+		echo "!! 无法读取默认内核树提交: $TREE" >&2
+		exit 1
+	}
+	[ "$ACTUAL_REVISION" = "$UMI_KERNEL_REVISION" ] || {
+		echo "!! 默认内核树提交错误: $ACTUAL_REVISION; 期望 $UMI_KERNEL_REVISION ($UMI_KERNEL_VERSION)" >&2
+		exit 1
+	}
+fi
 OUT=${OUT:-$TREE/out}
 JOBS=${JOBS:-$(nproc)}
 TC=${TC:-gcc}
@@ -441,16 +456,11 @@ for dtb in $DTBS; do
 	[ -s "$artifact" ] || { echo "!! Missing fresh artifact: $artifact"; exit 3; }
 done
 
-# Export to an ordinary staging directory; never mount or modify a rootfs here.
-# Validate the same kernelrelease and module indexes before collecting the image.
+# Export the complete build delivery set as one rollback-capable publication.
+# The module manifest hashes these exact image/config inputs; no rootfs is mounted.
 python3 "$WS/scripts/export-modules.py" --tree "$TREE" --out "$OUT" \
-	--dest "$WS/out" --tc "$TC"
+	--dest "$WS/out" --tc "$TC" --collect-build-artifacts
 
 echo "== [6/6] 收集产物到 $WS/out"
-cp -f "$OUT/arch/arm64/boot/Image.gz" "$WS/out/Image.gz"
-for dtb in $DTBS; do
-	cp -f "$OUT/arch/arm64/boot/dts/qcom/$dtb.dtb" "$WS/out/$dtb.dtb"
-done
-cp -f "$OUT/.config" "$WS/out/config-effective"
 ls -l "$WS/out" | sed -n '1,20p'
 echo "== 完成"

@@ -42,6 +42,7 @@ if [ ! -x "$BB" ] && [ "$BB_EXPLICIT" != x ]; then
 	python3 "$WS/scripts/build-busybox.py" --output "$BB"
 fi
 [ -x "$BB" ] || { echo "!! BusyBox 不可执行: $BB (显式 BB 不自动下载替代品)"; exit 2; }
+python3 "$WS/scripts/build-busybox.py" --verify "$BB"
 
 # ---- 设备侧文本必须是纯 ASCII ----
 # 手机屏幕上的 console 和 panic 屏用的都是 VGA 8x16 字体，没有中文字形 ——

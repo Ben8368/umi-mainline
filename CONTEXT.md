@@ -1,13 +1,13 @@
 # 当前状态
 
 > **最后确认：** 2026-10-30
-> **阶段：** PR #7 追加模块交付回滚与验收命令修复；67 项离线回归通过，固定 6.18 编译证据保留，合入按当前 HEAD 的远端门禁核验；目标部署与 L3 not-run。
-> **代码基线：** 本地工作分支 `codex/charging-policy-and-pps`，续作起点 `7179d86`，交付现有 PR #7；用户已授权跟进，并在门禁满足且无有效问题时合并。
+> **阶段：** PR #7 追加 CodeRabbit 四项交付与校验修复；72 项离线回归及静态/治理检查通过，推送后须核验新 HEAD 远端门禁；目标部署与 L3 not-run。
+> **代码基线：** 本地工作分支 `codex/charging-policy-and-pps`，修复基于 `2879f4e`，交付现有 PR #7；用户已授权跟进，并在门禁满足且无有效问题时合并。
 
 ## 当前决策
 
 - 维护 Ben8368/umi-mainline，保留原贡献者与第三方归属，见 [来源](docs/PROVENANCE.md)。默认 Linux 6.18.59，驱动与固件分层见 [源码清单](docs/OPEN_SOURCE.md)；逐项缺口见 [硬件矩阵](docs/HARDWARE_SUPPORT.md)。
-- Agent 改动经工作分支和 PR；本轮提交/推送至 PR #7 的 `codex/umi-6.18-open-source-parity`。`7179d86` 的 CI 与 CodeRabbit 已完成，但有效意见须修复后核验新 HEAD，见 [续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。满足门禁后按用户授权合并，不启用自动合并。
+- Agent 改动经工作分支和 PR；本轮提交/推送至 PR #7 的 `codex/umi-6.18-open-source-parity`。`2879f4e` 的 CI 与 CodeRabbit 已完成；追加意见的本地修复见[续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)，新 HEAD 的 CI 与 CodeRabbit 最终反馈仍待核验。满足门禁后按用户授权合并，不启用自动合并。
 - 新增限充策略吸收 umi-linux 的 70/65 滞回，以开源实现保持 PPS；本轮用户明确授权将限充与审查修复一起交付现有 PR，不自动部署到设备或救援镜像，见 [限充](docs/CHARGE-LIMIT.md)。
 - 开发 root/SSH/USB 权限保留。历史 boot 写入与 PPS 实验授权不扩大为本轮；BQ25970 仍禁用，不猜保护参数，见 [PPS](docs/PPS.md)及 [ADR 0005](docs/ADR/0005-explicit-pps-bringup.md)。
 - 默认打包 Wi-Fi DTB、救援 `ROOTDEV=none`；plus 是未验收实验变体。模块只导出到普通目录，真实 rootfs 安装、刷写、分区或供电操作须本轮明确授权。
@@ -20,6 +20,7 @@
 
 ## 最近验证
 
+- 2026-10-30：PR #7 CodeRabbit 追加意见修复，72 项离线、ShellCheck、仓库/治理/CI策略/派单回归通过；新 HEAD 远端检查、L2/L3 not-run，见[续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。
 - 2026-10-30：模块交付回滚与两组验收命令修复，67 项离线及交付专项 15 项通过；见 [续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。未改 C/DTS，沿用已核验的 6.18 编译证据；设备 not-run。
 - 2026-10-30：PR #7 的脚本、通知去重、CI 依赖与证据数字修复；64 项离线、非 root 交付 12 项及 6.18/三个 DTB/1372 模块通过，见 [修复记录](docs/archive/reviews/2026-10-30-pr7-review-fixes.md)。新代码远端检查与设备 not-run。
 - 2026-10-30：取优限充服务，14 项策略/假 sysfs/进程回归及当时全套 62 项通过；真实 SMB5 setter 验证退出/保留 PPS 与故障锁存契约，见 [对比记录](docs/archive/reviews/2026-10-30-charging-comparison.md)。限充轮未改 C/DTS；设备 not-run。

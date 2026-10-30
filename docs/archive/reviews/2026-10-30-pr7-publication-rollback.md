@@ -24,3 +24,24 @@ Windows x64 / PowerShell 7.6.5；执行环境 WSL umi / Linux x86_64 / sh。
 新导出器执行 `python3 scripts/export-modules.py --tree /root/linux-6.18.59 --out /root/linux-6.18.59/out-hardware --dest /root/umi-pr7-followup-export`，exit 0，实际导出 1372 模块。独立核对归档哈希与清单一致、模块数及全部成员 root 所有权，成功后无遗留备份目录。
 
 本轮未改 C/DTS，沿用[上一轮](2026-10-30-pr7-review-fixes.md)固定 6.18 的编译证据，不重做内核编译；本轮不创建 boot 镜像。远端新 HEAD 的审查未完成时不合并。原始日志和导出核验只留忽略目录 `out/pr7-followup/`。
+
+## CodeRabbit 追加意见修复
+
+CodeRabbit 于 `2879f4e1f88f3912779f6df0c0b550bb752edf39` 的最终评审又列出四项尚未处理意见。本轮逐项核实并修改：
+
+- 默认 `TREE` 在修改内核树前用 `git -C "$TREE" rev-parse HEAD` 对比完整固定 SHA；非空显式 `TREE` 保留兼容行为，空值仍采用默认树，不检查 `.git` 类型。
+- `export-modules.py` 可将模块归档、清单、kernelrelease、Image.gz、三个 DTB 和 config-effective 一并备份和发布；任何替换失败会回滚整组，manifest 的 Image SHA 对应同组发布的 Image.gz。
+- BusyBox 的 ELF、配置和来源 JSON 采用相同回滚契约；回滚失败时继续尝试其他文件并保留 `.busybox-backup-*` 恢复副本。
+- initramfs 打包前复用 `build-busybox.py --verify` 检查所有 BusyBox 输入的 ELF64/AArch64/静态链接约束。
+
+🚦 Audit Report：本地代码审查无新增阻断，PR 合入仍因新 HEAD 的远端检查尚待运行而 🔴 阻断；不得沿用 `2879f4e` 的 CI/CodeRabbit 结果。保留 L2 与设备 L3 not-run，本轮没有编译内核或访问设备。
+
+验证在 WSL umi / Linux x86_64 / ext4 的临时仓库副本执行：
+
+- `python3 -m unittest discover -s tests -p 'test_*.py' -v`：exit 0，72 项通过、0 skipped；含 8 个文件组逐替换点回滚、BusyBox 三件套回滚、BusyBox ELF 拒绝和默认/显式 TREE 版本策略回归。
+- `python3 scripts/check-tree.py`：exit 0，299 paths、29 个 shell 文件、0 errors，含 ShellCheck error 级。
+- `python3 scripts/governance-docs-check.py`、`python3 tests/governance-docs.py`：均 exit 0。
+- `python3 tests/ci-policy.py`（6 项）、`python3 tests/bot-dispatch.py`（22 项）、`python3 scripts/git-hooks-test.py`（6 actor/场景）：均 exit 0。
+- `git diff --check`：exit 0。
+
+全套内核编译、真实 BusyBox 源码构建和手机验证未运行；旧 HEAD 的编译结果不能代替新 HEAD 验收。推送后需等待同一 SHA 的 CI result 与 CodeRabbit 最终审查，并核对有效意见后再按已有授权决定合并。

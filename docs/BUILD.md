@@ -48,17 +48,19 @@ sh scripts/build.sh
 # 产物：out/Image.gz、三个 DTB、config-effective、modules-<release>.tar.gz、kernelrelease
 ```
 
+默认 `TREE` 会在构建开始前用 `git -C "$TREE" rev-parse HEAD` 核对 `config/kernel.env` 中的完整提交；显式提供非空 `TREE` 时保留兼容构建路径，不做固定版本限制。
+
 ### 6.18.x 独立构建
 
 6.18.59 的固定源码身份、独立 `TREE` / `OUT` / `WS`、兼容修复、构建命令、产物哈希与运行边界见 [构建记录](archive/reviews/2026-10-29-linux-6.18.59-build.md)。切换版本时使用新的 ext4 源码树和产物目录，避免继承旧树手工补丁或覆盖原镜像；默认版本统一由 `config/kernel.env` 固定为 6.18.59，构建/配置/DTB/模块辅助脚本共用它；`TREE=` / `OUT=` 仍可显式指定旧版兼容构建。`prepare-tree.sh` 克隆固定标签并比对完整 SHA，拒绝覆盖已有错误版本的目录；6.18 也进入手动编译 CI。
 
 ### 模块交付
 
-`build.sh` 会执行 `make Image.gz dtbs modules`，再调用 `export-modules.py`，在普通临时目录中执行 `modules_install` 并生成匹配版本的 depmod 索引（宿主须安装 kmod）。导出不挂载 rootfs、不删除旧版模块、不访问手机。包内为 `lib/modules/<kernelrelease>/`，适用于已由维护者确认目录布局的 rootfs；真实设备安装另需授权。
+`build.sh` 会执行 `make Image.gz dtbs modules`，再调用 `export-modules.py`，在普通临时目录中执行 `modules_install` 并生成匹配版本的 depmod 索引（宿主须安装 kmod）。模块归档、清单、kernelrelease、Image.gz、三个 DTB 和 config-effective 作为一个交付组发布；可捕获替换错误时恢复整组旧文件，原本缺失的文件会移除。导出不挂载 rootfs、不删除旧版模块、不访问手机。包内为 `lib/modules/<kernelrelease>/`，适用于已由维护者确认目录布局的 rootfs；真实设备安装另需授权。
 
 `out/modules-manifest.json` 记录模块数、内核/配置/模块包 SHA256，`out/kernelrelease` 给出唯一对应版本。不能给 6.18 使用 6.12 的 `.ko`。即使包存在，也需在真实 rootfs 验证 modprobe、QCA6390 固件、PCIe 枚举、网络连接和休眠恢复。
 
-导出器在三个交付文件替换前备份旧文件；替换失败会恢复已发布文件，原本不存在的文件则移除。若回滚也失败，命令报错并保留输出目录下 `.modules-backup-*` 中以原文件名保存的恢复副本；先停止消费混合产物，核对并恢复完整交付组后再使用。这是可捕获 I/O 错误的回滚，不保证进程被杀、断电或并发读写时三个文件整体原子切换。
+替换前会备份整个交付组；若回滚也失败，命令报错并保留输出目录下 `.modules-backup-*` 中以原文件名保存的恢复副本；先停止消费混合产物，核对并恢复完整交付组后再使用。这是可捕获 I/O 错误的回滚，不保证进程被杀、断电或并发读写时整个交付组整体原子切换。
 
 ## 2. 创建 initramfs
 
@@ -71,6 +73,8 @@ python3 scripts/build-busybox.py --jobs 4
 ```
 
 输出包含 ELF、实际配置和来源 JSON。构建使用通用软件哈希，禁用 1.37.0 与新头文件不兼容且救援不用的 `tc` applet；完整 rootfs 可使用 iproute2。既有预编译 Alpine BusyBox 仍是开放项目的二进制分发，但不再作为自动回退：只有显式 `BB=/path/to/busybox.static` 才选用，路径无效直接失败。
+
+initramfs 打包前还会检查 BusyBox 是小端 ELF64、目标为 AArch64 且不含动态解释器；显式预编译文件也执行相同校验。源码构建发布 ELF、配置和来源 JSON 时使用回滚，失败时恢复旧文件；回滚失败会保留 `.busybox-backup-*` 恢复副本。
 
 默认救援模式，已安装根分区用 `--root /dev/sda34` 显式选择。所有打包阶段失败都会停止，不发布半成品覆盖旧 initramfs。
 

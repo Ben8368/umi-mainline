@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -48,13 +49,14 @@ class DeliveryTests(unittest.TestCase):
             shutil.copyfile(ROOT / 'stfts/fts_fw.h', ws / 'stfts/fts_fw.h')
             (ws / 'scripts').mkdir()
             shutil.copyfile(ROOT / 'scripts/check-firmware.py', ws / 'scripts/check-firmware.py')
+            shutil.copyfile(ROOT / 'scripts/build-busybox.py', ws / 'scripts/build-busybox.py')
             (ws / 'initramfs').mkdir()
             (ws / 'initramfs/init').write_text('#!/bin/sh\nexit 0\n')
             (ws / 'out').mkdir()
             previous = ws / 'out/initramfs.cpio.gz'
             previous.write_text('LAST_GOOD')
             bb = ws / 'busybox'
-            bb.write_text('#!/bin/sh\nexit 0\n')
+            bb.write_bytes(elf())
             bb.chmod(0o755)
             (ws / 'firmware/qcom/a650_sqe.fw').write_bytes(b'UNREVIEWED')
             env = {**os.environ, 'WS': str(ws), 'BB': str(bb), 'BUILD': str(ws / 'assembly')}
@@ -155,9 +157,14 @@ class DeliveryTests(unittest.TestCase):
                 out, dest, tree = base / 'out', base / 'deliver', base / 'tree'
                 tree.mkdir()
                 dest.mkdir()
-                (out / 'arch/arm64/boot').mkdir(parents=True)
+                qcom = out / 'arch/arm64/boot/dts/qcom'
+                qcom.mkdir(parents=True)
                 for name in ('.config', 'System.map', 'modules.builtin', 'arch/arm64/boot/Image.gz'):
+                    (out / name).parent.mkdir(parents=True, exist_ok=True)
                     (out / name).write_text('CONFIG_MODULES=y\n')
+                for name in MODULES.BUILD_ARTIFACTS:
+                    if name.endswith('.dtb'):
+                        (qcom / name).write_text('FIXTURE-' + name)
                 (out / 'modules.order').write_text('drivers/wifi.o\n')
                 archive = dest / 'modules-6.18.59-umi.tar.gz'
                 archive.write_text('PREVIOUS')
@@ -191,13 +198,20 @@ done
                 depmod.chmod(0o755)
                 env = {**os.environ, 'MODE': mode, 'PATH': str(bindir) + os.pathsep + os.environ['PATH']}
                 run = subprocess.run(['python3', str(ROOT / 'scripts/export-modules.py'),
-                                      '--tree', str(tree), '--out', str(out), '--dest', str(dest)],
+                                      '--tree', str(tree), '--out', str(out), '--dest', str(dest),
+                                      '--collect-build-artifacts'],
                                      env=env, capture_output=True, text=True)
                 if mode == 'success':
                     self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                     manifest = json.loads((dest / 'modules-manifest.json').read_text())
                     self.assertEqual(manifest['module_count'], 1)
                     self.assertEqual(manifest['archive_sha256'], MODULES.sha256(archive))
+                    self.assertEqual((dest / 'Image.gz').read_text(), 'CONFIG_MODULES=y\n')
+                    self.assertEqual(manifest['image_sha256'], MODULES.sha256(dest / 'Image.gz'))
+                    self.assertEqual((dest / 'config-effective').read_text(), 'CONFIG_MODULES=y\n')
+                    for name in MODULES.BUILD_ARTIFACTS:
+                        if name.endswith('.dtb'):
+                            self.assertEqual((dest / name).read_text(), 'FIXTURE-' + name)
                     with tarfile.open(archive) as tar:
                         self.assertIn('lib/modules/6.18.59-umi/kernel/drivers/wifi.ko', tar.getnames())
                         for member in tar.getmembers():
@@ -217,7 +231,7 @@ done
                 ws = Path(tmp)
                 (ws / 'scripts').mkdir()
                 (ws / 'scripts/build-busybox.py').write_text(
-                    'import pathlib,sys\np=pathlib.Path(sys.argv[-1]); p.parent.mkdir(parents=True); '
+                    'import pathlib,sys\np=pathlib.Path(sys.argv[-1]); p.parent.mkdir(parents=True, exist_ok=True); '
                     'p.write_text("SOURCE"); p.chmod(0o755)\n')
                 env = {key: val for key, val in os.environ.items() if key != 'BB'}
                 env['WS'] = str(ws)
@@ -308,6 +322,106 @@ done
             backup_dirs = list(dest.glob('.modules-backup-*'))
             self.assertEqual(len(backup_dirs), 1)
             self.assertEqual((backup_dirs[0] / 'manifest').read_bytes(), b'OLD-manifest')
+
+    def test_build_delivery_publication_restores_all_eight_files(self):
+        names = ('modules-test.tar.gz', 'modules-manifest.json', 'kernelrelease',
+                 *MODULES.BUILD_ARTIFACTS.keys())
+        for existing in (False, True):
+            for fail_at in range(1, len(names) + 1):
+                with self.subTest(existing=existing, fail_at=fail_at), \
+                     tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    stage, dest = base / 'stage', base / 'dest'
+                    stage.mkdir()
+                    dest.mkdir()
+                    expected = {'unrelated': b'KEEP'}
+                    (dest / 'unrelated').write_bytes(expected['unrelated'])
+                    for name in names:
+                        (stage / name).write_bytes(b'NEW-' + name.encode())
+                        if existing:
+                            expected[name] = b'OLD-' + name.encode()
+                            (dest / name).write_bytes(expected[name])
+                    replace = os.replace
+                    calls = 0
+
+                    def fail_once(src, dst):
+                        nonlocal calls
+                        calls += 1
+                        if calls == fail_at:
+                            raise OSError('injected publication failure')
+                        replace(src, dst)
+
+                    with patch.object(MODULES.os, 'replace', side_effect=fail_once):
+                        with self.assertRaisesRegex(OSError, 'injected publication failure'):
+                            MODULES.publish_files(stage, dest, names)
+                    self.assertEqual({p.name: p.read_bytes() for p in dest.iterdir()}, expected)
+
+    def test_busybox_publication_restores_the_three_output_files(self):
+        names = ('busybox.static.config', 'busybox.static.json', 'busybox.static')
+        for existing in range(8):
+            for fail_at in range(1, 4):
+                with self.subTest(existing=existing, fail_at=fail_at), \
+                     tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    stage, dest = base / 'stage', base / 'dest'
+                    stage.mkdir()
+                    dest.mkdir()
+                    expected = {'unrelated': b'KEEP'}
+                    (dest / 'unrelated').write_bytes(expected['unrelated'])
+                    for index, name in enumerate(names):
+                        (stage / name).write_bytes(b'NEW-' + name.encode())
+                        if existing & (1 << index):
+                            expected[name] = b'OLD-' + name.encode()
+                            (dest / name).write_bytes(expected[name])
+                    replace = os.replace
+                    calls = 0
+
+                    def fail_once(src, dst):
+                        nonlocal calls
+                        calls += 1
+                        if calls == fail_at:
+                            raise OSError('injected BusyBox publication failure')
+                        replace(src, dst)
+
+                    with patch.object(BUSYBOX.os, 'replace', side_effect=fail_once):
+                        with self.assertRaisesRegex(OSError, 'injected BusyBox publication failure'):
+                            BUSYBOX.publish_files(stage, dest, names)
+                    self.assertEqual({p.name: p.read_bytes() for p in dest.iterdir()}, expected)
+
+    def test_busybox_publication_keeps_recovery_copy_if_rollback_fails(self):
+        names = ('busybox.static.config', 'busybox.static.json', 'busybox.static')
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            stage, dest = base / 'stage', base / 'dest'
+            stage.mkdir()
+            dest.mkdir()
+            for name in names:
+                (stage / name).write_bytes(b'NEW-' + name.encode())
+                (dest / name).write_bytes(b'OLD-' + name.encode())
+            replace = os.replace
+
+            def fail_publish_and_one_restore(src, dst):
+                if src == stage / names[-1] or (src.parent != stage and dst.name == names[1]):
+                    raise OSError('injected persistent BusyBox failure')
+                replace(src, dst)
+
+            with patch.object(BUSYBOX.os, 'replace', side_effect=fail_publish_and_one_restore):
+                with self.assertRaisesRegex(OSError, 'recovery backups retained'):
+                    BUSYBOX.publish_files(stage, dest, names)
+            self.assertEqual((dest / names[0]).read_bytes(), b'OLD-' + names[0].encode())
+            self.assertEqual((dest / names[-1]).read_bytes(), b'OLD-' + names[-1].encode())
+            backup_dirs = list(dest.glob('.busybox-backup-*'))
+            self.assertEqual(len(backup_dirs), 1)
+            self.assertEqual((backup_dirs[0] / names[1]).read_bytes(), b'OLD-' + names[1].encode())
+
+    def test_busybox_cli_verifies_prebuilt_architecture_and_static_linking(self):
+        for data, expected in ((elf(), 0), (elf(62), 1), (elf(interpreter=True), 1)):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
+                binary = Path(tmp) / 'busybox'
+                binary.write_bytes(data)
+                run = subprocess.run([sys.executable, str(ROOT / 'scripts/build-busybox.py'),
+                                      '--verify', str(binary)], capture_output=True, text=True)
+                self.assertEqual(run.returncode, expected, run.stdout + run.stderr)
 
 
     def test_prepare_tree_refuses_existing_nonrepository_or_wrong_revision(self):

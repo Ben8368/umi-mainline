@@ -42,6 +42,46 @@ def verify_binary(path):
         raise ValueError('BusyBox must be static (no PT_INTERP)')
 
 
+def publish_files(stage, dest, names):
+    """Publish a related file set, restoring old outputs if replacement fails."""
+    backup_dir = Path(tempfile.mkdtemp(prefix='.busybox-backup-', dir=dest))
+    backups = {}
+    keep_backups = False
+    try:
+        for name in names:
+            previous = dest / name
+            if previous.is_symlink() or (previous.exists() and not previous.is_file()):
+                raise ValueError(f'not a regular BusyBox output: {previous}')
+            backups[name] = None
+            if previous.exists():
+                backup = backup_dir / name
+                shutil.copy2(previous, backup)
+                backups[name] = backup
+        published = []
+        try:
+            for name in names:
+                os.replace(stage / name, dest / name)
+                published.append(name)
+        except OSError as error:
+            failures = []
+            for name in reversed(published):
+                try:
+                    if backups[name] is None:
+                        (dest / name).unlink()
+                    else:
+                        os.replace(backups[name], dest / name)
+                except OSError as rollback_error:
+                    failures.append(f'{name}: {rollback_error}')
+            if failures:
+                keep_backups = True
+                raise OSError(f'{error}; rollback failed: {"; ".join(failures)}; '
+                              f'recovery backups retained at {backup_dir}') from error
+            raise
+    finally:
+        if not keep_backups:
+            shutil.rmtree(backup_dir)
+
+
 def extract_source(archive, destination, version):
     expected = f'busybox-{version}'
     with tarfile.open(archive, 'r:bz2') as tar:
@@ -122,8 +162,8 @@ def build(args):
             shutil.copyfile(config, staged / (output.name + '.config'))
             (staged / (output.name + '.json')).write_text(
                 json.dumps(provenance, indent=2) + '\n', encoding='utf-8')
-            for suffix in ('.config', '.json', ''):
-                os.replace(staged / (output.name + suffix), output.with_name(output.name + suffix))
+            publish_files(staged, output.parent,
+                          (output.name + '.config', output.name + '.json', output.name))
     print(f'Source-built static arm64 BusyBox: {output}')
 
 
@@ -134,9 +174,17 @@ def main():
     parser.add_argument('--work-dir', type=Path, help='Linux/WSL ext4 build parent (default system temp)')
     parser.add_argument('--output', type=Path, default=ROOT / 'out/busybox/busybox.static')
     parser.add_argument('--jobs', type=int, default=min(12, os.cpu_count() or 1))
+    parser.add_argument('--verify', type=Path,
+                        help='verify an existing ELF64 AArch64 static BusyBox without building')
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error('--jobs must be positive')
+    if args.verify:
+        try:
+            verify_binary(args.verify)
+        except (OSError, ValueError, struct.error) as exc:
+            parser.exit(1, f'BusyBox verification failed: {exc}\n')
+        return
     try:
         build(args)
     except (OSError, ValueError, subprocess.CalledProcessError, tarfile.TarError) as exc:

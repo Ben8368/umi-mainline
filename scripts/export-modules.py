@@ -12,6 +12,14 @@ import subprocess
 import tarfile
 import tempfile
 
+BUILD_ARTIFACTS = {
+    'Image.gz': 'arch/arm64/boot/Image.gz',
+    'sm8250-xiaomi-umi.dtb': 'arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi.dtb',
+    'sm8250-xiaomi-umi-plus.dtb': 'arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-plus.dtb',
+    'sm8250-xiaomi-umi-wifi.dtb': 'arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-wifi.dtb',
+    'config-effective': '.config',
+}
+
 
 def sha256(path):
     with path.open('rb') as stream:
@@ -108,7 +116,7 @@ def publish_files(stage, dest, names):
             shutil.rmtree(backup_dir)
 
 
-def export(tree, out, dest, tc):
+def export(tree, out, dest, tc, collect_build_artifacts=False):
     tree, out, dest = (Path(p).resolve() for p in (tree, out, dest))
     for name in ('.config', 'System.map', 'modules.order', 'modules.builtin',
                  'arch/arm64/boot/Image.gz'):
@@ -151,8 +159,17 @@ def export(tree, out, dest, tc):
         (tmp / 'modules-manifest.json').write_text(
             json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
         (tmp / 'kernelrelease').write_text(release + '\n', encoding='utf-8')
-        # Publish only after modules_install, index checks and archiving succeed.
-        publish_files(tmp, dest, (archive.name, 'modules-manifest.json', 'kernelrelease'))
+        # Image/DTB/config and module metadata form one delivery set. A failed
+        # replacement must not leave files from different kernel builds mixed.
+        names = [archive.name, 'modules-manifest.json', 'kernelrelease']
+        if collect_build_artifacts:
+            for name, relative in BUILD_ARTIFACTS.items():
+                source = out / relative
+                if not source.is_file() or not source.stat().st_size:
+                    raise ValueError(f'missing build artifact: {source}')
+                shutil.copyfile(source, tmp / name)
+                names.append(name)
+        publish_files(tmp, dest, names)
     print(f'Exported {count} modules for {release}: {dest / archive.name}')
     return manifest
 
@@ -163,9 +180,11 @@ def main():
     parser.add_argument('--out', required=True)
     parser.add_argument('--dest', required=True)
     parser.add_argument('--tc', choices=('gcc', 'llvm'), default='gcc')
+    parser.add_argument('--collect-build-artifacts', action='store_true',
+                        help='publish Image.gz, three DTBs and config-effective with modules')
     args = parser.parse_args()
     try:
-        export(args.tree, args.out, args.dest, args.tc)
+        export(args.tree, args.out, args.dest, args.tc, args.collect_build_artifacts)
     except (OSError, ValueError, subprocess.CalledProcessError, tarfile.TarError) as exc:
         parser.exit(1, f'module export failed: {exc}\n')
 
