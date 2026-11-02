@@ -1,7 +1,7 @@
 # 当前状态
 
 > **最后确认：** 2026-11-02
-> **阶段：** PR #8 独立审查发现 IRQ/probe P1 并修复；保持 Draft，修复复核、同 HEAD 远端门禁及 L3 未全齐，未获设备操作授权。
+> **阶段：** PR #8 原 P1 修复复核后发现 IRQ 所有权/GPIO 回滚 P2；本轮最小修复与离线验证完成，待提交交付，保持 Draft，新修复独立签核、同 HEAD 远端门禁及 L3 未全齐。
 > **代码基线：** origin/master e1e0c8c775f5fcc53104e43157ddf56b2173ab02；工作分支 sync/upstream-5fa2e00。
 
 ## 当前决策
@@ -13,13 +13,13 @@
 
 ## 近期优先级
 
-1. 完成新增 IRQ/probe 修复的外部专项复核及当前 HEAD CI/CodeRabbit 最终反馈；旧 HEAD 结果不覆盖新修复。
+1. 完成 [P2 修复](docs/archive/reviews/2026-11-02-pr8-p2-fixes.md) 的外部专项复核及新 HEAD CI/CodeRabbit 最终反馈；旧结果不覆盖新修改。
 2. 取得新授权后按 [触摸](docs/TOUCH.md) 与 [测试矩阵](docs/test-matrix.md) 验收 idle 首触、睡眠/恢复及 reset/rebind。
 3. 普通充电/PPS 的剩余风险仍依 [风险台账](docs/RISK_REGISTER.md) 和 [充电审计](docs/archive/reviews/2026-10-30-charging-audit.md) 单独推进；不自动启用电荷泵。
 
 ## 最近验证
 
-- 2026-11-02：独立复核修复后 94 项离线、治理检查及 6.18.59 Image/三个 DTB/modules 增量编译通过；strict checkpatch 退出 1（6 条既有命名 CHECK，0 errors / 0 warnings），原移植为 3 CHECK；证据与未覆盖项见 [专项记录](docs/archive/reviews/2026-11-02-pr8-independent-kernel-review.md)，不等于真机验收。
+- 2026-11-02：P2 修复后 99 项离线（包含原 P1/P2 运行时反例）、治理及 6.18.59 Image.gz/dtbs/modules 增量编译通过；普通 checkpatch 通过，strict 退出 1（6 条既有命名 CHECK，0 errors / 0 warnings）；版本和未覆盖项见 [P2 记录](docs/archive/reviews/2026-11-02-pr8-p2-fixes.md)，非 clean-room / 真机验收。
 - 2026-10-30：PR #7 的既有审查证据见 [合并前复核](docs/archive/reviews/2026-10-30-pr7-merge-audit.md)，不作为本轮新增 C 代码的验收。
 
 ## 按需入口

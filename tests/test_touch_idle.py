@@ -172,7 +172,6 @@ static int fts_interrupt_install(struct fts_ts_info *i) {
 }
 static int fts_mode_handler(struct fts_ts_info *i,int force) { return step(); }
 static int setScanMode(int mode,int flags) { return step(); }
-static int fts_resetDisableIrqCount(void) { return step(); }
 static int fts_enableInterrupt(void) { return step(); }
 #define SCAN_MODE_ACTIVE 0
 #define WAIT_AFTER_SENSEOFF 1
@@ -182,7 +181,7 @@ static int fts_enableInterrupt(void) { return step(); }
 INIT_MAIN = r'''
 int main(void) {
     struct fts_ts_info i; struct device d;
-    for (int failure=0; failure<=7; failure++) {
+    for (int failure=0; failure<=6; failure++) {
         setup(&i,&d); i.irq_registered=false;
         stage=0; fail_stage=failure; schedules=0;
         int ret=fts_init_sensing(&i);

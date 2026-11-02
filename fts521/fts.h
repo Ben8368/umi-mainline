@@ -230,6 +230,9 @@ struct fts_ts_info {
 	bool idle_stopping;
 	bool idle_pm_ready;
 	bool irq_registered;
+	/* fts_int protects two idempotent owners, each with one IRQ depth. */
+	bool irq_external_disabled;
+	bool irq_recovery_disabled;
 	/* Only compared with current; never dereferenced outside the IRQ thread. */
 	struct task_struct *irq_thread;
 	bool notifier_registered;

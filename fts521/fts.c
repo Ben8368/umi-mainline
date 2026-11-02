@@ -2760,12 +2760,15 @@ static int fts_interrupt_install(struct fts_ts_info *info)
 	install_handler(info, STATUS_UPDATE, status);
 	install_handler(info, USER_REPORT, user_report);
 
-	/* disable interrupts in any case */
-	error = fts_disableInterrupt();
+	/* NO_AUTOEN supplies the external owner's initial disable depth.
+	 * Do not mask an IRQ descriptor before it belongs to this device.
+	 */
+	info->irq_external_disabled = true;
 
 	logError(0, "%s Interrupt Mode\n", tag);
 	if (request_threaded_irq(info->client->irq, NULL, fts_event_handler,
-				 info->board->irq_flags | IRQF_ONESHOT,
+				 info->board->irq_flags | IRQF_ONESHOT |
+				 IRQF_NO_AUTOEN,
 				 FTS_TS_DRV_NAME, info)) {
 		logError(1, "%s Request irq failed\n", tag);
 		kfree(info->event_dispatch_table);
@@ -3022,7 +3025,6 @@ static int fts_init_sensing(struct fts_ts_info *info)
 
 	/* The idle command is queued only after the whole init succeeds. */
 
-	error |= fts_resetDisableIrqCount();
 	error |= fts_enableInterrupt();
 
 out:
@@ -3544,12 +3546,14 @@ static int fts_gpio_setup(int gpio, bool config, int dir, int state)
 		if (retval) {
 			logError(1, "%s %s: Failed to set gpio %d direction",
 				 tag, __func__, gpio);
-			return retval;
+			goto free_gpio;
 		}
+		return retval;
 	}
+
+free_gpio:
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
-	else
-		gpio_free(gpio);
+	gpio_free(gpio);
 #endif
 
 	return retval;

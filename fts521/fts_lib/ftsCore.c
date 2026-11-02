@@ -66,11 +66,7 @@ static int system_reseted_up; /* /< flag checked during resume to
 static int system_reseted_down; /* /< flag checked during suspend to
 					 * understand if there was a system
 					 * reset and restore the proper state */
-static int disable_irq_count = 1; /* /< count the number of call to
-					 * disable_irq, start with 1 because at
-					 * the boot IRQ are already disabled */
-spinlock_t fts_int; /* /< spinlock to controll the access to the
-			 * disable_irq_counter */
+spinlock_t fts_int; /* Protect the per-device IRQ mask owners. */
 
 /**
   * Initialize core variables of the library.
@@ -913,68 +909,61 @@ int fts_disableInterrupt(void)
   */
 int fts_disableInterruptNoSync(void)
 {
+	struct fts_ts_info *info;
 	unsigned long flag;
+	bool *disabled;
 
-	if (getClient() != NULL) {
-		spin_lock_irqsave(&fts_int, flag);
-		logError(0, "%s Number of disable = %d\n", tag,
-			 disable_irq_count);
-		if (disable_irq_count == 0) {
-			logError(0, "%s Executing Disable...\n", tag);
-			disable_irq_nosync(getClient()->irq);
-			disable_irq_count++;
-		}
-		/* disable_irq is re-entrant so it is required to keep track
-		  * of the number of calls of this when reenabling */
-
-		spin_unlock_irqrestore(&fts_int, flag);
-		logError(0, "%s Interrupt No Sync Disabled!\n", tag);
-		return OK;
-	} else {
-		logError(1, "%s %s: Impossible get client irq... ERROR %08X\n",
-			 tag, __func__, ERROR_OP_NOT_ALLOW);
+	if (!getClient())
 		return ERROR_OP_NOT_ALLOW;
-	}
-}
+	info = dev_get_drvdata(&getClient()->dev);
+	if (!info)
+		return ERROR_OP_NOT_ALLOW;
 
-/**
-  * Reset the disable_irq count
-  * @return OK
-  */
-int fts_resetDisableIrqCount(void)
-{
-	disable_irq_count = 0;
+	spin_lock_irqsave(&fts_int, flag);
+	/* Each context owns at most one nested kernel disable. Reset retries
+	 * are idempotent; recovery cannot consume the external caller's mask.
+	 */
+	if (READ_ONCE(info->irq_thread) == current)
+		disabled = &info->irq_recovery_disabled;
+	else
+		disabled = &info->irq_external_disabled;
+	if (!*disabled) {
+		if (info->irq_registered)
+			disable_irq_nosync(getClient()->irq);
+		*disabled = true;
+	}
+	spin_unlock_irqrestore(&fts_int, flag);
 	return OK;
 }
 
 /**
-  * Enable the interrupt so the ISR of the driver can be called
+  * Release only this context's IRQ mask, never another owner's disable.
   * @return OK if success or an error code which specify the type of error
   */
 int fts_enableInterrupt(void)
 {
+	struct fts_ts_info *info;
 	unsigned long flag;
+	bool *disabled;
 
-	if (getClient() != NULL) {
-		spin_lock_irqsave(&fts_int, flag);
-		logError(0, "%s Number of re-enable = %d\n", tag,
-			 disable_irq_count);
-		while (disable_irq_count > 0) {
-			/* loop N times according on the pending number of
-			 * disable_irq to truly re-enable the int */
-			logError(0, "%s Executing Enable...\n", tag);
-			enable_irq(getClient()->irq);
-			disable_irq_count--;
-		}
-
-		spin_unlock_irqrestore(&fts_int, flag);
-		logError(0, "%s Interrupt Enabled!\n", tag);
-		return OK;
-	} else {
-		logError(1, "%s %s: Impossible get client irq... ERROR %08X\n",
-			 tag, __func__, ERROR_OP_NOT_ALLOW);
+	if (!getClient())
 		return ERROR_OP_NOT_ALLOW;
+	info = dev_get_drvdata(&getClient()->dev);
+	if (!info)
+		return ERROR_OP_NOT_ALLOW;
+
+	spin_lock_irqsave(&fts_int, flag);
+	if (READ_ONCE(info->irq_thread) == current)
+		disabled = &info->irq_recovery_disabled;
+	else
+		disabled = &info->irq_external_disabled;
+	if (*disabled) {
+		*disabled = false;
+		if (info->irq_registered)
+			enable_irq(getClient()->irq);
 	}
+	spin_unlock_irqrestore(&fts_int, flag);
+	return OK;
 }
 
 /**

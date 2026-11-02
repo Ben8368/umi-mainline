@@ -6,8 +6,18 @@
 - PR：https://github.com/Ben8368/umi-mainline/pull/8，base `e1e0c8c775f5fcc53104e43157ddf56b2173ab02`，开局远端/本地 HEAD 均为 `8761242997e24bb7f262e70544400a52089092f1`。开局工作区干净。
 - 审查原完整 diff、fts.c/fts.h/ftsCore.c、全部 reset/scan/IRQ 调用者、ftsIO/ftsError/ftsGesture/ftsTool/ftsTest、probe/unwind/remove/shutdown、fb notifier、PM 及 tests/test_touch_idle.py。
 - 原 HEAD：REQUEST CHANGES，两个 P1 缺陷，不因旧 CI 或 CodeRabbit success 放行。
-- 本记录所在修复提交：已按授权在原分支最小修复，L0/L1/L2 结果见下；结论 CONDITIONAL，不是合并许可。新提交仍须同 HEAD CI/CodeRabbit、修复部分的外部专项复核和 L3。
+- 上轮 P1 修复提交为 `06f47f656db64bcbe833f63ed8e060c3d8185568`，parent 为原始 HEAD `8761242997e24bb7f262e70544400a52089092f1`；下列 L0/L1/L2 针对该 parent 至上轮修复工作树的变化，不包含之后的 P2 修改；结论 CONDITIONAL，不是合并许可。新提交仍须同 HEAD CI/CodeRabbit、修复部分的外部专项复核和 L3。
 - 独立性边界：本会话对原 HEAD 的复核独立；本会话实施的 IRQ/probe 修复不能冒充由另一个开发者以外的会话复核。须由维护者或另一个只读会话复核新增修复，CodeRabbit 不替代该门禁。
+
+## 验证版本澄清（P3 后补，不改写历史结果）
+
+| 轮次 | 代码版本及覆盖 | 是否包含本轮 P2 修改 |
+| --- | --- | --- |
+| 原始移植 | `8761242997e24bb7f262e70544400a52089092f1`；89 项及 L2 见[移植记录](2026-11-02-upstream-5fa2e00.md) | 否 |
+| 上轮 P1 修复 | `06f47f656db64bcbe833f63ed8e060c3d8185568`；下文 94 项 L1、L0 和 L2 增量编译 | 否 |
+| 本轮 P2 修复 | parent 为上轮修复 HEAD；实际修复 SHA、L0/L1/L2 命令和结果见[P2 交付记录](2026-11-02-pr8-p2-fixes.md) | 是，不能引用上轮 94 项或旧镜像替代 |
+
+前轮只读复核确认原 P1 具体缺陷已修复，但发现外部 IRQ 屏蔽可被恢复线程解除及 GPIO 方向失败泄漏两个 P2，结论 REQUEST CHANGES。该结论与本轮开发验收不同；P2 修复仍须另一独立会话签核。
 
 ## 发现及处置（缺陷行号指原 HEAD）
 
