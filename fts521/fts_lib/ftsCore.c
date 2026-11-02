@@ -113,12 +113,14 @@ void setResetGpio(int gpio)
   */
 int fts_system_reset(void)
 {
+	struct fts_ts_info *info = dev_get_drvdata(&getClient()->dev);
 	u8 readData[FIFO_EVENT_SIZE];
 	int event_to_search;
 	int res = -1;
 	int i;
 	u8 data[1] = { SYSTEM_RESET_VALUE };
 
+	fts_idle_hold(info);
 	event_to_search = (int)EVT_ID_CONTROLLER_READY;
 
 	logError(0, "%s System resetting...\n", tag);
@@ -148,6 +150,7 @@ int fts_system_reset(void)
 					 tag, res);
 		}
 	}
+	fts_idle_release(info, false);
 	if (res < OK) {
 		logError(
 			1,
@@ -392,9 +395,11 @@ int checkEcho(u8 *cmd, int size)
   */
 int setScanMode(u8 mode, u8 settings)
 {
+	struct fts_ts_info *info = dev_get_drvdata(&getClient()->dev);
 	u8 cmd[3] = { FTS_CMD_SCAN_MODE, mode, settings };
 	int ret, size = 3;
 
+	fts_idle_hold(info);
 	logError(0, "%s %s: Setting scan mode: mode = %02X settings = %02X !\n",
 		 tag, __func__, mode, settings);
 	if (mode == SCAN_MODE_LOW_POWER)
@@ -402,6 +407,8 @@ int setScanMode(u8 mode, u8 settings)
 	ret = fts_write(cmd, size); /* use write instead of writeFw because
 					 * can be called while the interrupt are
 					 * enabled */
+	fts_idle_release(info, ret >= OK && mode == SCAN_MODE_ACTIVE &&
+			 settings == ACTIVE_MULTI_TOUCH);
 	if (ret < OK) {
 		logError(1, "%s %s: write failed...ERROR %08X !\n", tag,
 			 __func__, ret);

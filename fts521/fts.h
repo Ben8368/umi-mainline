@@ -176,6 +176,8 @@ struct fts_hw_platform_data {
   * Forward declaration
   */
 struct fts_ts_info;
+void fts_idle_hold(struct fts_ts_info *info);
+void fts_idle_release(struct fts_ts_info *info, bool ready);
 extern char tag[8]; /* /< forward the definition of the label used
 			  * to print the log in the kernel log */
 
@@ -217,6 +219,18 @@ struct fts_ts_info {
 	struct spi_device *client; /* /< SPI client structure */
 #endif
 	struct input_dev *input_dev; /* /< Input device structure */
+
+	struct delayed_work idle_work;
+	/* Protect idle state and the optional controller write. */
+	struct mutex idle_lock;
+	unsigned int idle_holds;
+	struct task_struct *idle_owner;
+	bool idle_conflict;
+	bool idle_ready;
+	bool idle_stopping;
+	bool idle_pm_ready;
+	bool irq_registered;
+	bool notifier_registered;
 
 	struct work_struct suspend_work; /* /< Suspend work thread */
 	struct work_struct resume_work; /* /< Resume work thread */

@@ -1208,3 +1208,18 @@ python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb --name stfts
 （比任何 .ftb 文件都新），理论上不会烧；但如果不幸触发，`fts_fw_download`
 失败可能把芯片留在 bootloader —— 真出问题就 `echo 256 > fwupdate`（blind
 flash）救，命令见 §11。
+
+## 15. 延迟设置 FW idle 时间：选择性移植
+
+来源：colorgarden/umi-mainline 的 [5fa2e0048f89b82355d2a9de89c1d74ab9910959](https://github.com/colorgarden/umi-mainline/commit/5fa2e0048f89b82355d2a9de89c1d74ab9910959)，原作者 umi-mainline <umi@local>。采用 C0 00 00 FF（255 × 50ms = 12.75 秒）及成功初始化后等待 3 秒的方案。厂商文档中的 12450ms 不等于 12750ms；本移植明确采用上游命令的 255 档。上游所述空闲后短按改善是原作者观察，不能作为维护版 6.18.59 的本轮真机证据。前述 §13–14 的历史结论保留其原适用范围。
+
+维护版保留 sense off/on 重启、面板就绪等待、fb blank 忽略策略及失败后保留 sysfs 恢复入口。延迟命令采用以下额外约束：
+
+- 任务在分配设备对象后即初始化；整个初始化成功后才排队，重置或校准失败不会被后续 sensing 成功覆盖。
+- 可嵌套屏障在 reset、扫描模式切换、供电开关和 fwupdate 诊断前同步取消任务。互斥锁保护状态和单次 I²C 写入；等待 work 时不持有该锁，取消完成后才允许操作硬件。
+- 已知成功的正常扫描/恢复重新等待 3 秒；不同控制线程交叠时不推断最终状态，保守停止重排队，等待下一次明确成功的正常扫描/初始化。失败、sense off、未知诊断状态不排队。fwupdate 的任意位组合可能停留在 bootloader，故结束时保守停用 idle 调整；下次正常初始化/已知成功的扫描恢复才重新启用。
+- 系统 PM prepare/complete 只暂停及恢复可选命令，不新增 sensing 或电源切换策略；睡眠期间发生其他状态转换会使保存的就绪状态失效。remove、shutdown 及 probe 失败永久停止任务，清理前等待正在执行的写入完成。
+- 重复初始化不重复注册 IRQ/notifier，失败清理按实际拥有的资源执行。I²C 错误单独记录失败，不宣称成功、不额外重排队重试；底层既有传输重试保持不变。
+- 不发送 C0 0A xx 动态扫描频率命令，也不变更固件、触摸供电值或充电策略。
+
+实现与验证记录见 [同步审查](archive/reviews/2026-11-02-upstream-5fa2e00.md)；L1 只证明模拟状态/取消契约，L2 不证明真实 I²C 时序。真机须核验冷启动、初始化 3 秒内的休眠/卸载、恢复、空闲 20 秒后的首触/短按、多点、反复 rebind 与错误恢复，记录镜像哈希、面板/FW 版本及 IRQ/输入事件。开放假设见 [RISK-002](RISK_REGISTER.md#risk-002目标内核与真机回归缺失p1)。

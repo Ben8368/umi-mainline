@@ -26,6 +26,14 @@ BQ25970 节点默认 disabled，驱动拒绝主动 enable（-EOPNOTSUPP），Typ
 
 上述是软件契约，不是实际充电或温控验收。输入功率不能只由 TCPM 合同相乘得到；需要同步记录电池电压/电流/SOC、温度、SMB5 状态及外部输入测量。Gen4 电池温度解码与 USB 电压 ADC 的本机对照仍须按 [RISK-001](RISK_REGISTER.md#risk-001充电参数与硬件保护尚未验收p1) 核验。
 
+## PM8150B USB ADC 与 6.18.59 配置
+
+上游 [5fa2e00](https://github.com/colorgarden/umi-mainline/commit/5fa2e0048f89b82355d2a9de89c1d74ab9910959) 的两个通道已在维护版 f320ec0 中等效实例化：channel@7 / ADC5_USB_IN_I 和 channel@8 / ADC5_USB_IN_V_16，SMB5 以 usb_in_i_uv、usb_in_v_div_16 获取对应 IIO 通道。本次不重复添加节点。
+
+固定 6.18.59 的 adc5_chans_pmic 默认 prescale 索引分别为 0（1:1）和 8（1:16），与上游显式值一致；保留现有默认 settle/平均设置，不照搬新增 200µs settle 参数。ADC 的存在和缩放不证明真实读数准确，尤其不能消除 [RISK-001](RISK_REGISTER.md#risk-001充电参数与硬件保护尚未验收p1) 中的高压 USBIN 测量问题。
+
+该内核由 QCOM_VADC_COMMON 单独编译并导出公共函数，ADC5/VADC/ADC_TM5 通过依赖共享，不采用上游基于“重复导出”的两个禁用项；最终配置与符号/模块证据见 [同步审查](archive/reviews/2026-11-02-upstream-5fa2e00.md)。保留 ADC5 内建、既有 VADC/ADC_TM5 配置以及 BQ25970 disabled/拒绝主动 enable；PPS、限充、供电阈值和固件完全不变。
+
 ## 历史移植来源与操作记录
 
 来源：<https://github.com/zhaoyuanwang123/armbian> 的 `sm8250-7.2` 补丁序列
