@@ -2,7 +2,6 @@
 """Run extracted IRQ code with a blocking IRQ model, not a kernel test."""
 from pathlib import Path
 import unittest
-import subprocess
 
 import test_touch_idle as idle
 from test_touch_idle import COMMON, actual, helpers
@@ -10,6 +9,7 @@ from test_touch_idle import COMMON, actual, helpers
 ROOT = Path(__file__).resolve().parents[1]
 CORE = (ROOT / 'fts521/fts_lib/ftsCore.c').read_text()
 SOURCE = (ROOT / 'fts521/fts.c').read_text()
+FIXTURES = ROOT / 'tests/fixtures/touch_irq'
 
 IRQ_MODEL = r"""
 #include <stdatomic.h>
@@ -421,7 +421,7 @@ int main(void) {
     return 0;
 }
 """
-    return (common + helpers(source) + stubs + source[start:end] +
+    return (common + helpers() + stubs + source[start:end] +
             '\n(void)gpio_ready; error=-5; goto ProbeErrorExit_4;\n' + cleanup + main)
 
 
@@ -519,25 +519,18 @@ int main(void) {
         self.run_c(gpio_code())
 
     def test_original_p2_versions_fail_target_assertions(self):
-        old_core = subprocess.check_output(
-            ['git', 'show', '06f47f656db64bcbe833f63ed8e060c3d8185568:fts521/fts_lib/ftsCore.c'],
-            cwd=ROOT, text=True)
-        old_source = subprocess.check_output(
-            ['git', 'show', '06f47f656db64bcbe833f63ed8e060c3d8185568:fts521/fts.c'],
-            cwd=ROOT, text=True)
-        self.run_c(irq_code(old_core, old_source), success=False)
+        # Exact historical functions, not git history: CI uses shallow checkout.
+        old_core = (FIXTURES / 'p2_core.c').read_text()
+        old_gpio = (FIXTURES / 'p2_gpio.c').read_text()
+        self.run_c(irq_code(old_core), success=False)
         for first_mode in (1, 2):
-            self.run_c(gpio_code(old_source, first_mode), success=False)
+            self.run_c(gpio_code(old_gpio, first_mode), success=False)
 
     def test_original_p1_versions_still_fail_target_assertions(self):
-        old_core = subprocess.check_output(
-            ['git', 'show', '8761242997e24bb7f262e70544400a52089092f1:fts521/fts_lib/ftsCore.c'],
-            cwd=ROOT, text=True)
-        old_source = subprocess.check_output(
-            ['git', 'show', '8761242997e24bb7f262e70544400a52089092f1:fts521/fts.c'],
-            cwd=ROOT, text=True)
+        old_core = (FIXTURES / 'p1_core.c').read_text()
+        old_probe = (FIXTURES / 'p1_probe.c').read_text()
         self.run_c(irq_code(old_core), success=False)
-        self.run_c(probe_code(old_source), success=False)
+        self.run_c(probe_code(old_probe), success=False)
 
     def test_probe_early_failures(self):
         self.run_c(probe_code())
