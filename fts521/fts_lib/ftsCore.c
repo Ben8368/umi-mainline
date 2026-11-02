@@ -29,6 +29,7 @@
   */
 
 #include <linux/spinlock.h>
+#include <linux/sched.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
@@ -65,11 +66,7 @@ static int system_reseted_up; /* /< flag checked during resume to
 static int system_reseted_down; /* /< flag checked during suspend to
 					 * understand if there was a system
 					 * reset and restore the proper state */
-static int disable_irq_count = 1; /* /< count the number of call to
-					 * disable_irq, start with 1 because at
-					 * the boot IRQ are already disabled */
-spinlock_t fts_int; /* /< spinlock to controll the access to the
-			 * disable_irq_counter */
+spinlock_t fts_int; /* Protect the per-device IRQ mask owners. */
 
 /**
   * Initialize core variables of the library.
@@ -113,12 +110,14 @@ void setResetGpio(int gpio)
   */
 int fts_system_reset(void)
 {
+	struct fts_ts_info *info = dev_get_drvdata(&getClient()->dev);
 	u8 readData[FIFO_EVENT_SIZE];
 	int event_to_search;
 	int res = -1;
 	int i;
 	u8 data[1] = { SYSTEM_RESET_VALUE };
 
+	fts_idle_hold(info);
 	event_to_search = (int)EVT_ID_CONTROLLER_READY;
 
 	logError(0, "%s System resetting...\n", tag);
@@ -148,6 +147,7 @@ int fts_system_reset(void)
 					 tag, res);
 		}
 	}
+	fts_idle_release(info, false);
 	if (res < OK) {
 		logError(
 			1,
@@ -392,9 +392,11 @@ int checkEcho(u8 *cmd, int size)
   */
 int setScanMode(u8 mode, u8 settings)
 {
+	struct fts_ts_info *info = dev_get_drvdata(&getClient()->dev);
 	u8 cmd[3] = { FTS_CMD_SCAN_MODE, mode, settings };
 	int ret, size = 3;
 
+	fts_idle_hold(info);
 	logError(0, "%s %s: Setting scan mode: mode = %02X settings = %02X !\n",
 		 tag, __func__, mode, settings);
 	if (mode == SCAN_MODE_LOW_POWER)
@@ -402,6 +404,8 @@ int setScanMode(u8 mode, u8 settings)
 	ret = fts_write(cmd, size); /* use write instead of writeFw because
 					 * can be called while the interrupt are
 					 * enabled */
+	fts_idle_release(info, ret >= OK && mode == SCAN_MODE_ACTIVE &&
+			 settings == ACTIVE_MULTI_TOUCH);
 	if (ret < OK) {
 		logError(1, "%s %s: write failed...ERROR %08X !\n", tag,
 			 __func__, ret);
@@ -876,33 +880,59 @@ int writeConfig(u16 offset, u8 *data, int len)
 	return OK;
 }
 
+/* A sysfs transaction owns one depth independently of both idempotent domains.
+ * Its task borrows that depth throughout nested reset/flash/recovery helpers.
+ */
+void fts_fwupdate_begin(struct fts_ts_info *info)
+{
+	unsigned long flag;
+
+	/* Sysfs removal drains the writer before IRQ/info teardown. Never take
+	 * this mutex in IRQ recovery, or hold fts_int while draining that IRQ.
+	 */
+	mutex_lock(&info->fwupdate_lock);
+	spin_lock_irqsave(&fts_int, flag);
+	info->irq_fwupdate_owner = current;
+	if (info->irq_registered)
+		disable_irq_nosync(info->client->irq);
+	spin_unlock_irqrestore(&fts_int, flag);
+	if (info->irq_registered)
+		synchronize_irq(info->client->irq);
+}
+
+void fts_fwupdate_end(struct fts_ts_info *info)
+{
+	unsigned long flag;
+
+	spin_lock_irqsave(&fts_int, flag);
+	info->irq_fwupdate_owner = NULL;
+	spin_unlock_irqrestore(&fts_int, flag);
+	if (info->irq_registered)
+		enable_irq(info->client->irq);
+	mutex_unlock(&info->fwupdate_lock);
+}
+
 /**
   * Disable the interrupt so the ISR of the driver can not be called
   * @return OK if success or an error code which specify the type of error
   */
 int fts_disableInterrupt(void)
 {
-	unsigned long flag;
+	struct fts_ts_info *info;
+	int ret;
 
-	if (getClient() != NULL) {
-		spin_lock_irqsave(&fts_int, flag);
-		logError(0, "%s Number of disable = %d\n", tag,
-			 disable_irq_count);
-		if (disable_irq_count == 0) {
-			logError(0, "%s Executing Disable...\n", tag);
-			disable_irq(getClient()->irq);
-			disable_irq_count++;
-		}
-		/* disable_irq is re-entrant so it is required to keep track
-		  * of the number of calls of this when reenabling */
-		spin_unlock_irqrestore(&fts_int, flag);
-		logError(0, "%s Interrupt Disabled!\n", tag);
-		return OK;
-	} else {
-		logError(1, "%s %s: Impossible get client irq... ERROR %08X\n",
-			 tag, __func__, ERROR_OP_NOT_ALLOW);
-		return ERROR_OP_NOT_ALLOW;
-	}
+	/* Mask under fts_int, but never wait for an IRQ while holding it.
+	 * Recovery runs inside our threaded handler and must not wait for itself.
+	 * Other callers still drain the handler, even if it was already masked.
+	 */
+	ret = fts_disableInterruptNoSync();
+	if (ret < OK)
+		return ret;
+
+	info = dev_get_drvdata(&getClient()->dev);
+	if (info->irq_registered && READ_ONCE(info->irq_thread) != current)
+		synchronize_irq(getClient()->irq);
+	return OK;
 }
 
 /**
@@ -911,66 +941,69 @@ int fts_disableInterrupt(void)
   */
 int fts_disableInterruptNoSync(void)
 {
-	if (getClient() != NULL) {
-		spin_lock_irq(&fts_int);
-		logError(0, "%s Number of disable = %d\n", tag,
-			 disable_irq_count);
-		if (disable_irq_count == 0) {
-			logError(0, "%s Executing Disable...\n", tag);
-			disable_irq_nosync(getClient()->irq);
-			disable_irq_count++;
-		}
-		/* disable_irq is re-entrant so it is required to keep track
-		  * of the number of calls of this when reenabling */
+	struct fts_ts_info *info;
+	unsigned long flag;
+	bool *disabled;
 
-		spin_unlock(&fts_int);
-		logError(0, "%s Interrupt No Sync Disabled!\n", tag);
-		return OK;
-	} else {
-		logError(1, "%s %s: Impossible get client irq... ERROR %08X\n",
-			 tag, __func__, ERROR_OP_NOT_ALLOW);
+	if (!getClient())
 		return ERROR_OP_NOT_ALLOW;
-	}
-}
+	info = dev_get_drvdata(&getClient()->dev);
+	if (!info)
+		return ERROR_OP_NOT_ALLOW;
 
-/**
-  * Reset the disable_irq count
-  * @return OK
-  */
-int fts_resetDisableIrqCount(void)
-{
-	disable_irq_count = 0;
+	spin_lock_irqsave(&fts_int, flag);
+	/* Nested reset/flash helpers borrow the transaction mask. */
+	if (info->irq_fwupdate_owner == current)
+		goto out;
+	/* Each context owns at most one nested kernel disable. Reset retries
+	 * are idempotent; recovery cannot consume the external caller's mask.
+	 */
+	if (READ_ONCE(info->irq_thread) == current)
+		disabled = &info->irq_recovery_disabled;
+	else
+		disabled = &info->irq_external_disabled;
+	if (!*disabled) {
+		if (info->irq_registered)
+			disable_irq_nosync(getClient()->irq);
+		*disabled = true;
+	}
+out:
+	spin_unlock_irqrestore(&fts_int, flag);
 	return OK;
 }
 
 /**
-  * Enable the interrupt so the ISR of the driver can be called
+  * Release only this context's IRQ mask, never another owner's disable.
   * @return OK if success or an error code which specify the type of error
   */
 int fts_enableInterrupt(void)
 {
+	struct fts_ts_info *info;
 	unsigned long flag;
+	bool *disabled;
 
-	if (getClient() != NULL) {
-		spin_lock_irqsave(&fts_int, flag);
-		logError(0, "%s Number of re-enable = %d\n", tag,
-			 disable_irq_count);
-		while (disable_irq_count > 0) {
-			/* loop N times according on the pending number of
-			 * disable_irq to truly re-enable the int */
-			logError(0, "%s Executing Enable...\n", tag);
-			enable_irq(getClient()->irq);
-			disable_irq_count--;
-		}
-
-		spin_unlock_irqrestore(&fts_int, flag);
-		logError(0, "%s Interrupt Enabled!\n", tag);
-		return OK;
-	} else {
-		logError(1, "%s %s: Impossible get client irq... ERROR %08X\n",
-			 tag, __func__, ERROR_OP_NOT_ALLOW);
+	if (!getClient())
 		return ERROR_OP_NOT_ALLOW;
+	info = dev_get_drvdata(&getClient()->dev);
+	if (!info)
+		return ERROR_OP_NOT_ALLOW;
+
+	spin_lock_irqsave(&fts_int, flag);
+	/* Only transaction end may release its mask, not nested cleanUp(). */
+	if (info->irq_fwupdate_owner == current)
+		goto out;
+	if (READ_ONCE(info->irq_thread) == current)
+		disabled = &info->irq_recovery_disabled;
+	else
+		disabled = &info->irq_external_disabled;
+	if (*disabled) {
+		*disabled = false;
+		if (info->irq_registered)
+			enable_irq(getClient()->irq);
 	}
+out:
+	spin_unlock_irqrestore(&fts_int, flag);
+	return OK;
 }
 
 /**
