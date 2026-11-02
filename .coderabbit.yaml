@@ -9,7 +9,12 @@ reviews:
     auto_incremental_review: true
     base_branches: [master]
   path_filters:
-    - '!firmware/**'
+    - '!firmware/**/*.bin'
+    - '!firmware/**/*.mbn'
+    - '!firmware/**/*.elf'
+    - '!firmware/**/*.fw'
+    - '!firmware/**/*.mdt'
+    - '!firmware/**/*.b[0-9][0-9]'
     - '!out/**'
     - '!**/*.img'
     - '!**/*.dtb'
@@ -20,11 +25,19 @@ reviews:
         Preserve licensing and evidence levels. A simulated check or compile does not prove
         device operation. Do not propose changing development root/SSH/USB permissions;
         TD-001 explicitly defers that policy. No automatic merge or release.
+        Prioritize reproducible behavioral defects over style. For each finding give
+        the triggering state/input, affected call chain, impact and a focused negative
+        test. Inspect callers and cleanup outside the diff; distinguish proven defects
+        from assumptions and optional hardening. Do not infer safety from no findings.
     - path: 'power/**'
       instructions: >-
         Check protection configuration, checked I2C results, failure-closed charging,
         real board parameter provenance, notifier lifetime and devm cleanup.
         Never guess voltages, limits, sensor wiring or sense resistor values.
+        Trace normal charging to injected health/I/O failure, fallback, retry and detach.
+        Compare effective APDO-capped requests with accepted contracts. Review the full
+        sequence of limit/enable writes, not only final state; preserve heartbeat renewal
+        without repeated load shedding. A test starting disabled cannot prove shutdown.
     - path: 'dts/**'
       instructions: >-
         Check supply mappings and device variant evidence. Do not enable unvalidated
@@ -34,6 +47,8 @@ reviews:
         Check make exit status, fresh artifacts, initramfs generation, POSIX shell behavior,
         root mode selection and safe temporary paths. Inspect raw source bytes before
         flagging TAB/backslash-t differences. Never execute target init on the host.
+        Trace partial multi-file publication failures and rollback; verify that kernel,
+        DTBs, config, modules and manifests describe the same build, including old files.
     - path: '.github/**'
       instructions: >-
         Require least privilege, full action SHAs, no untrusted target-context checkout,
@@ -42,6 +57,19 @@ reviews:
       instructions: >-
         Preserve negative cases. Synthetic and stub tests must not be called kernel builds
         or hardware acceptance. Do not lower assertions or broaden bot allowlists.
+        Require normal-state preconditions before fault injection and observable
+        intermediate writes/counts/order for temporal bugs. Keep independent expected
+        values; a test must reject the reported old behavior, not just mirror the fix.
+    - path: 'firmware/**'
+      instructions: >-
+        Review text manifests, hashes, provenance and redistribution terms. Binary
+        identity is not licensing evidence or proof that the firmware works on umi.
+    - path: 'docs/**'
+      instructions: >-
+        Check claims against linked evidence and exact revisions; keep source review,
+        synthetic tests, kernel compilation and device acceptance distinct. A recorded
+        risk does not waive charging safety, review or merge gates. Avoid duplicate
+        current-state copies; CONTEXT.md is the sole current-stage source.
   finishing_touches:
     docstrings: {enabled: false}
     unit_tests: {enabled: false}

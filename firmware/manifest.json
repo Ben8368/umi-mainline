@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "review_date": "2026-10-29",
+  "files": [
+    {
+      "path": "firmware/qcom/a650_gmu.bin",
+      "bytes": 41548,
+      "sha256": "df79fa8482fcc7587bb239b9c9e2b24bce4729893b990fe3f82b30da8175b01c",
+      "format": "binary",
+      "source_status": "binary-only-in-repository",
+      "source": "Original umi vendor firmware (historical extraction; exact factory build not recorded)",
+      "license_status": "Separate vendor terms; exact payload redistribution grant not verified here"
+    },
+    {
+      "path": "firmware/qcom/a650_sqe.fw",
+      "bytes": 31964,
+      "sha256": "c863ceac3a823af215205d7803776bfdc68098c2c2a5d2fd05b4aa77cd336b4b",
+      "format": "binary",
+      "source_status": "binary-only-in-repository",
+      "source": "linux-firmware (historical source; exact revision not recorded)",
+      "license_status": "Separate vendor terms; exact payload redistribution grant not verified here"
+    },
+    {
+      "path": "firmware/qcom/a650_zap.b00",
+      "bytes": 148,
+      "sha256": "ec9b9d5a67456384809624b14a00d15d36297e5f2e75728504cd872bc95e0947",
+      "format": "binary",
+      "source_status": "binary-only-in-repository",
+      "source": "Original umi vendor firmware (historical extraction; exact factory build not recorded)",
+      "license_status": "Separate vendor terms; exact payload redistribution grant not verified here"
+    },
+    {
+      "path": "firmware/qcom/a650_zap.b01",
+      "bytes": 6712,
+      "sha256": "683231348adedca3a0d34e8d3633d703a5e6b8ee1e7bf304b8afca8484434864",
+      "format": "binary",
+      "source_status": "binary-only-in-repository",
+      "source": "Original umi vendor firmware (historical extraction; exact factory build not recorded)",
+      "license_status": "Separate vendor terms; exact payload redistribution grant not verified here"
+    },
+    {
+      "path": "firmware/qcom/a650_zap.b02",
+      "bytes": 1676,
+      "sha256": "a415e5452fa8f597670a6e51010e97bfabca7d20fbce8044caed64d9d5873113",
+      "format": "binary",
+      "source_status": "binary-only-in-repository",
+      "source": "Original umi vendor firmware (historical extraction; exact factory build not recorded)",
+      "license_status": "Separate vendor terms; exact payload redistribution grant not verified here"
+    },
+    {
+      "path": "firmware/qcom/a650_zap.mbn",
+      "bytes": 2679,
+      "sha256": "db3f838437381b9879e49d1f6963c7b11578754c7fc6ee1eb4dbb9f1d8f97612",
+      "format": "binary",
+      "source_status": "binary-only-in-repository",
+      "source": "linux-firmware (historical source; exact revision not recorded)",
+      "license_status": "Separate vendor terms; exact payload redistribution grant not verified here"
+    },
+    {
+      "path": "firmware/qcom/a650_zap.mdt",
+      "bytes": 6860,
+      "sha256": "7be02b9a2b933cea4623c4392b219ac0be1cf089c46abe79dc72bca3db9091ce",
+      "format": "binary",
+      "source_status": "binary-only-in-repository",
+      "source": "Original umi vendor firmware (historical extraction; exact factory build not recorded)",
+      "license_status": "Separate vendor terms; exact payload redistribution grant not verified here"
+    },
+    {
+      "path": "stfts/fts_fw.h",
+      "bytes": 615736,
+      "sha256": "2df704ba22b8c66113e4d0083765fbf950de9cc10c50d506db463a075dfa4cc5",
+      "format": "C byte array (opaque firmware, not preferred source)",
+      "source_status": "binary-only-in-repository",
+      "source": "zhaoyuanwang123/armbian sm8250-7.2 patch 0043; see docs/TOUCH.md section 14",
+      "license_status": "Firmware-specific grant not established by the surrounding driver GPL header",
+      "usage": "Not enabled by FW_H_FILE; not the umi panel image; never enable as fallback"
+    }
+  ]
+}

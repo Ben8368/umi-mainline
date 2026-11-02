@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -39,7 +40,7 @@ class ReliabilityTests(unittest.TestCase):
     def test_build_failure_and_missing_wifi_never_collect_stale_artifacts(self):
         source = (ROOT / 'scripts/build.sh').read_text()
         section = 'set -e\n' + source[source.index('echo "== [5/6]'):]
-        for mode, expected in [('fail', 3), ('missing-wifi', 3), ('success', 0)]:
+        for mode, expected in [('fail', 3), ('missing-wifi', 3), ('module-export-fail', 4), ('success', 0)]:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix='umi-build-test-') as tmp:
                 base = Path(tmp)
                 out = base / 'kernel/out'
@@ -47,16 +48,28 @@ class ReliabilityTests(unittest.TestCase):
                 dtbs = out / 'arch/arm64/boot/dts/qcom'
                 dtbs.mkdir(parents=True)
                 (ws / 'out').mkdir(parents=True)
+                (ws / 'scripts').mkdir()
+                (ws / 'scripts/export-modules.py').write_text(
+                    'import os,shutil,sys\nfrom pathlib import Path\n'
+                    'if os.environ["MODE"] == "module-export-fail": sys.exit(4)\n'
+                    'out=Path(os.environ["OUT"]); dest=Path(os.environ["WS"])/"out"\n'
+                    'shutil.copyfile(out/"arch/arm64/boot/Image.gz",dest/"Image.gz")\n'
+                    'for name in ("sm8250-xiaomi-umi.dtb","sm8250-xiaomi-umi-plus.dtb",'
+                    '"sm8250-xiaomi-umi-wifi.dtb"):\n'
+                    ' shutil.copyfile(out/"arch/arm64/boot/dts/qcom"/name,dest/name)\n'
+                    'shutil.copyfile(out/".config",dest/"config-effective")\n'
+                    'sys.exit(0)\n')
                 (base / 'bin').mkdir()
                 (out / '.config').write_text('fixture\n')
                 (dtbs / 'sm8250-xiaomi-umi-wifi.dtb').write_text('OLD_WIFI')
                 make = base / 'bin/make'
                 make.write_text('''#!/bin/sh
+case " $* " in *" modules "*) ;; *) exit 19 ;; esac
 printf NEW_KERNEL > "$OUT/arch/arm64/boot/Image.gz"
 printf NEW_BASE > "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi.dtb"
 printf NEW_PLUS > "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-plus.dtb"
 [ "$MODE" != fail ] || exit 2
-[ "$MODE" != success ] || printf NEW_WIFI > "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-wifi.dtb"
+case "$MODE" in success|module-export-fail) printf NEW_WIFI > "$OUT/arch/arm64/boot/dts/qcom/sm8250-xiaomi-umi-wifi.dtb" ;; esac
 exit 0
 ''')
                 make.chmod(0o755)
@@ -69,6 +82,78 @@ exit 0
                     self.assertEqual(list((ws / 'out').iterdir()), [])
                 else:
                     self.assertEqual((ws / 'out/sm8250-xiaomi-umi-wifi.dtb').read_text(), 'NEW_WIFI')
+
+    def test_default_build_tree_must_match_pinned_revision_but_explicit_tree_is_compatible(self):
+        source = (ROOT / 'scripts/build.sh').read_text()
+        start = source.index('WS=${WS:-')
+        end = source.index('OUT=${OUT:-', start)
+        selection = source[start:end]
+        revision = '1253a6aa5d104312bf0992afacc15220ae35bdf9'
+        cases = [('pinned', None, revision, 0), ('wrong', None, 'wrong-revision', 1),
+                 ('unreadable', None, None, 1), ('explicit', '/custom/tree', None, 0),
+                 ('empty-default', '', revision, 0)]
+        for name, tree, git_result, expected in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                ws = base / 'workspace'
+                (ws / 'config').mkdir(parents=True)
+                shutil.copyfile(ROOT / 'config/kernel.env', ws / 'config/kernel.env')
+                bindir = base / 'bin'
+                bindir.mkdir()
+                git = bindir / 'git'
+                if git_result is None:
+                    git.write_text('#!/bin/sh\nexit 1\n')
+                else:
+                    git.write_text('#!/bin/sh\nprintf "%s\\n" "$PINNED_REVISION"\n')
+                git.chmod(0o755)
+                env = {**os.environ, 'WS': str(ws),
+                       'PATH': str(bindir) + os.pathsep + os.environ['PATH']}
+                env.pop('TREE', None)
+                if tree is not None:
+                    env['TREE'] = tree
+                env['PINNED_REVISION'] = git_result or ''
+                result = subprocess.run(['sh', '-c', selection + 'printf "TREE=%s\\n" "$TREE"'],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                if expected == 0:
+                    self.assertIn('TREE=', result.stdout)
+                    self.assertNotIn('无法读取默认内核树提交', result.stderr)
+
+    def test_default_dtb_tree_must_match_pinned_revision_but_explicit_tree_is_compatible(self):
+        source = (ROOT / 'scripts/dtb-only.sh').read_text()
+        start = source.index('WS=${WS:-')
+        end = source.index('OUT=${OUT:-', start)
+        selection = source[start:end]
+        revision = '1253a6aa5d104312bf0992afacc15220ae35bdf9'
+        cases = [('pinned', None, revision, 0), ('wrong', None, 'wrong-revision', 1),
+                 ('unreadable', None, None, 1), ('explicit', '/custom/tree', None, 0),
+                 ('empty-default', '', revision, 0)]
+        for name, tree, git_result, expected in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                ws = base / 'workspace'
+                (ws / 'config').mkdir(parents=True)
+                shutil.copyfile(ROOT / 'config/kernel.env', ws / 'config/kernel.env')
+                bindir = base / 'bin'
+                bindir.mkdir()
+                git = bindir / 'git'
+                if git_result is None:
+                    git.write_text('#!/bin/sh\nexit 1\n')
+                else:
+                    git.write_text('#!/bin/sh\nprintf "%s\\n" "$PINNED_REVISION"\n')
+                git.chmod(0o755)
+                env = {**os.environ, 'WS': str(ws),
+                       'PATH': str(bindir) + os.pathsep + os.environ['PATH']}
+                env.pop('TREE', None)
+                if tree is not None:
+                    env['TREE'] = tree
+                env['PINNED_REVISION'] = git_result or ''
+                result = subprocess.run(['sh', '-c', selection + 'printf "TREE=%s\\n" "$TREE"'],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                if expected == 0:
+                    self.assertIn('TREE=', result.stdout)
+                    self.assertNotIn('无法读取默认内核树提交', result.stderr)
 
     def test_mkimage_generates_fresh_initramfs_and_stops_if_it_fails(self):
         for failed in [False, True]:
@@ -105,9 +190,18 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_text('fixture')
             (ws / 'out').mkdir()
             (ws / 'initramfs').mkdir()
             (ws / 'initramfs/init').write_text('#!/bin/sh\n\techo fixture\n')
+            (ws / 'scripts').mkdir()
+            (ws / 'scripts/check-firmware.py').write_text('pass\n')
+            shutil.copyfile(ROOT / 'scripts/build-busybox.py', ws / 'scripts/build-busybox.py')
             (ws / 'bin').mkdir()
             bb = ws / 'busybox'
-            bb.write_text('#!/bin/sh\nexit 0\n')
+            data = bytearray(124)
+            struct.pack_into('<16sHHIQQQIHHHHHH', data, 0,
+                             b'\x7fELF\x02\x01\x01', 2, 183, 1, 0x400078, 64, 0, 0,
+                             64, 56, 1, 0, 0, 0)
+            struct.pack_into('<IIQQQQQQ', data, 64, 1, 5, 0, 0x400000, 0, 124, 124, 0x1000)
+            data[120:] = b'\xc0\x03\x5f\xd6'
+            bb.write_bytes(data)
             bb.chmod(0o755)
             cpio = ws / 'bin/cpio'
             cpio.write_text('#!/bin/sh\nexit 7\n')

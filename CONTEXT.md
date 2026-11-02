@@ -1,33 +1,33 @@
 # 当前状态
 
-> **最后确认：** 2026-10-29
-> **阶段：** 6.18 已临时亮屏，触摸事件、SPMI 去重与 GPU 初始化已有实机证据；24 项回归通过，未持久刷写 6.18。设备经 bootloader 命令并拔线确认关机，Wi-Fi、恢复与充电待测。
-> **代码基线：** 6.18 交付分支 `codex/umi-linux-6.18.59` 继承 PR #5 的 `ab33fd8`；新 PR 直接面向 master `8900f31`，包含尚未合并的 PPS 基线，当前 HEAD 的 CI / CodeRabbit 待核验。
+> **最后确认：** 2026-10-30
+> **阶段：** PR #7 `32b122d` 的审查已完成，新发现的 ELF 页偏移缺陷及计数歧义已修复，81 项离线、治理/静态检查及增量独立复核通过；新 HEAD 远端待核验，L2/L3 本轮 not-run。
+> **代码基线：** 本地 `codex/review-workflow` 基于 `32b122d` 修复；交付现有 PR #7 的 `codex/umi-6.18-open-source-parity`，用户已授权检查、修复及门禁满足后合并。
 
 ## 当前决策
 
-- 维护 Ben8368/umi-mainline，保留原贡献者与第三方归属，见 [来源](docs/PROVENANCE.md)。
-- 采用 DockDSM 治理、署名和机器人约束，按 umi 内核/驱动证据分层；见 [ADR 0001](docs/ADR/0001-governance-port.md)。Agent 改动必须经工作分支与 PR；允许将简单低风险工作派给 Jules，授权与账户额度见[机器人约定](docs/bot-automation.md)及 [ADR 0004](docs/ADR/0004-agent-pr-and-jules-delegation.md)。
-- 开发调试 root/SSH/USB 权限保留；此前已授权 TCPM + SMB5 PPS 主充电实验，BQ25970 仍禁用，真实参数与硬件保护尚未验收。见 [PPS](docs/PPS.md) 与 [ADR 0005](docs/ADR/0005-explicit-pps-bringup.md)。
-- PR #2 的 10 条既有 CodeRabbit 可执行意见已修复；但新 HEAD `7383b6525b6ba2f43c8a85707c52da0be4421777` 的审查在合并关闭 PR 后被取消，未生成最终反馈。以后必须等准备合并的当前 HEAD 获得 CodeRabbit 最终反馈并处理有效意见；检查未完成时 PR 保持开放，会话可先结束。详见 [AI_RULES](docs/AI_RULES.md#pr-推送与远端验证) 与[事件记录](docs/archive/reviews/2026-10-29-coderabbit-cancel.md)。
-- 救援镜像默认 `ROOTDEV=none`；此前已授权并完成 PPS boot 写入/读回验证，原 boot 已保存匹配回退文件；范围与证据见 [设备记录](docs/archive/reviews/2026-10-29-pps-device-flash.md)。
+- 维护 Ben8368/umi-mainline，保留原贡献者与第三方归属，见 [来源](docs/PROVENANCE.md)。默认 Linux 6.18.59，驱动与固件分层见 [源码清单](docs/OPEN_SOURCE.md)；逐项缺口见 [硬件矩阵](docs/HARDWARE_SUPPORT.md)。
+- Agent 改动经工作分支和 PR；分层复核见 [QUALITY](docs/QUALITY.md)，PR #7 前轮三项意见修复见[续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。本轮按授权修复并交付原 PR，独立复核完成，新 HEAD 远端门禁待核验后按用户授权合并；不启用自动合并。
+- 新增限充策略吸收 umi-linux 的 70/65 滞回，以开源实现保持 PPS；本轮用户明确授权将限充与审查修复一起交付现有 PR，不自动部署到设备或救援镜像，见 [限充](docs/CHARGE-LIMIT.md)。
+- 开发 root/SSH/USB 权限保留。历史 boot 写入与 PPS 实验授权不扩大为本轮；BQ25970 仍禁用，不猜保护参数，见 [PPS](docs/PPS.md)及 [ADR 0005](docs/ADR/0005-explicit-pps-bringup.md)。
+- 默认打包 Wi-Fi DTB、救援 `ROOTDEV=none`；plus 是未验收实验变体。模块只导出到普通目录，真实 rootfs 安装、刷写、分区或供电操作须本轮明确授权。
 
 ## 近期优先级
 
-1. 人工验证已刷入的 PPS 修复版；当前 PPS/主充电均关闭，尚未建立 PPS 合同。步骤见 [PPS](docs/PPS.md)，实机与回退见 [设备记录](docs/archive/reviews/2026-10-29-pps-device-flash.md)。
-2. 按[测试矩阵](docs/test-matrix.md)补齐 6.18 屏幕恢复、长稳、Wi-Fi 和供电证据；PR 合并前核验当前 HEAD 的 CI 与 CodeRabbit 最终反馈。
-3. 核实默认分支上的机器人工作流触发和权限边界，按[风险台账](docs/RISK_REGISTER.md)记录结果。
+1. 按 [充电审计](docs/archive/reviews/2026-10-30-charging-audit.md) 优先验收 [普通充电](docs/BATTERY.md) 的 USB/固定 PD 充入电流、保护和温升；源码修复与编译已完成，无本轮真机供电/刷写授权。
+2. 基础充电验收后再推进快充和 [PPS](docs/PPS.md)，先处理 RISK-001/005 与 TD-004/007；BQ25970 保持禁用，不猜电芯/热保护参数。
+3. 其余 [硬件验收](docs/test-matrix.md) 后置；修复已验证，推送后核验新 HEAD CI 与 CodeRabbit 最终反馈；门禁未完成时保持 PR 开放。
 
 ## 最近验证
 
-- 2026-10-29：6.18 fix1 已临时启动，用户确认亮屏；128 个触摸事件、GPU 初始化与八个 SPMI 别名禁用已取证，见[启动修复记录](docs/archive/reviews/2026-10-29-linux-6.18.59-boot-fixes.md)。
-- 2026-10-29：`codex/umi-linux-6.18.59` 本地改动完成内核/三个 DTB 编译、打包与 21 项回归，见[构建记录](docs/archive/reviews/2026-10-29-linux-6.18.59-build.md)；随后临时启动读回 `6.18.59-umi-dirty`，黑屏已定位 UBWC，见[实机记录](docs/archive/reviews/2026-10-29-linux-6.18.59-device-boot.md)。
-- 2026-10-29：PR #5 CodeRabbit 意见修复 `c12a773`（有效电流比较、BATTERY 证据范围、测试宏提取）已推送；本地 WSL PPS 7/7、reliability 11/11、governance/check-tree 通过；远端 CI/CodeRabbit 待对当前 tip 核验，未重编/未真机。见 [PR #5](https://github.com/Ben8368/umi-mainline/pull/5)。
-- 2026-10-29：PPS 修复版 18 项回归与 boot 写入读回已核验，充电未测；见 [设备记录](docs/archive/reviews/2026-10-29-pps-device-flash.md)。
-- 2026-10-29：源码基线 `fd469d9` 内核/DTS 编译与打包通过，见[构建记录](docs/archive/reviews/2026-10-29-image-build.md)。
-- 2026-10-29：PR #2 CodeRabbit 在关闭后取消，见[事件记录](docs/archive/reviews/2026-10-29-coderabbit-cancel.md)。
-- 2026-10-29：治理可靠性回归见[修复记录](docs/archive/reviews/2026-10-29-reliability-fixes.md)；master CI 见 [CI result](https://github.com/Ben8368/umi-mainline/actions/runs/40807337474)。
-- 2026-10-29：治理移植范围见[移植记录](docs/archive/reviews/2026-10-28-governance-port.md)。
+- 2026-10-30：ELF 页偏移与计数歧义续审修复后，81 项离线、治理/静态检查及增量独立复核通过；既有 L2 输入/产物已抽核，新 HEAD 门禁待核验，见[合并前复核](docs/archive/reviews/2026-10-30-pr7-merge-audit.md)。
+- 2026-10-30：分层审查、PR 证据字段和路径指令已更新；76 项离线与治理/静态检查通过，三个旧行为反例均被运行断言捕获；独立复核与远端 not-run，见[流程记录](docs/archive/reviews/2026-10-30-review-workflow.md)。
+- 2026-10-30：修复 PR #7 `fd7dc74` 的三项 CodeRabbit 意见，75 项离线回归及 ShellCheck、治理文档、CI/派单/钩子检查通过；新 HEAD 远端检查待完成，L2/L3 not-run，见[续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。
+- 2026-10-30：模块交付回滚与两组验收命令修复，67 项离线及交付专项 15 项通过；见 [续审记录](docs/archive/reviews/2026-10-30-pr7-publication-rollback.md)。未改 C/DTS，沿用已核验的 6.18 编译证据；设备 not-run。
+- 2026-10-30：PR #7 的脚本、通知去重、CI 依赖与证据数字修复；64 项离线、非 root 交付 12 项及 6.18/三个 DTB/1372 模块通过，见 [修复记录](docs/archive/reviews/2026-10-30-pr7-review-fixes.md)。新代码远端检查与设备 not-run。
+- 2026-10-30：取优限充服务，14 项策略/假 sysfs/进程回归及当时全套 62 项通过；真实 SMB5 setter 验证退出/保留 PPS 与故障锁存契约，见 [对比记录](docs/archive/reviews/2026-10-30-charging-comparison.md)。限充轮未改 C/DTS；设备 not-run。
+- 2026-10-30：充电专项 13 项、全套 47 项离线回归及 6.18/三 DTB/1372 模块核验通过；问题、保护缺口及辅助配置审计的旧名误报见 [充电审计](docs/archive/reviews/2026-10-30-charging-audit.md)。
+- 2026-10-29：旧 6.18 fix1 临时启动的亮屏、128 触摸事件和 GPU 初始化证据见 [记录](docs/archive/reviews/2026-10-29-linux-6.18.59-boot-fixes.md)；未迁移为本轮实机结果。
 
 ## 按需入口
 

@@ -7,8 +7,10 @@
 #
 #   wsl -d umi -u root -e sh <repo>/scripts/config-only.sh
 set -e
-TREE=${TREE:-/root/linux}
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
+# shellcheck source=../config/kernel.env
+. "$WS/config/kernel.env"
+TREE=${TREE:-/root/linux-$UMI_KERNEL_VERSION}
 OUT=${OUT:-$TREE/out-cfg}
 FRAGMENT=${FRAGMENT:-$WS/config/umi.config}
 

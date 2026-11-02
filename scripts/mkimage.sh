@@ -7,10 +7,11 @@
 #   - 面板驱动（CSOT j2_mp_42_02_0b，DSC cmd mode）
 #   - 触摸（fts521 主线移植版；换厂商版用 TOUCH=stfts 并另存名）
 #   - GPU（Adreno 650，DT 打开 gmu/gpu + initramfs 里的 a650 固件）
-#   - WiFi/BT（QCA6390 PCIe，MAC 固定）
+#   - Wi-Fi 的 DTS；ath11k 等模块另交付到 out/modules-<release>.tar.gz
 #   - 电量计 / 主充电器（BQ25970 主动快充默认隔离，见 docs/BATTERY.md）
 #
-# 也就是说：**平时只需要刷这一张**。其它 boot-umi-*.img 都是实验对照，
+# boot.img 不包含 rootfs 模块和 Wi-Fi 固件；救援模式不保证 Wi-Fi/桌面。
+# 其它 boot-umi-*.img 都是实验对照，
 # 要么是某个驱动还没合进来的验证版（TOUCH=stfts），要么是历史遗留。
 set -e
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}

@@ -69,6 +69,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Install and verify offline test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc device-tree-compiler libfdt1
+          for tool in gcc dtc fdtget; do command -v "$tool"; done
+          python3 -c 'import ctypes; import ctypes.util; name = ctypes.util.find_library("fdt"); assert name, "libfdt required"; ctypes.CDLL(name)'
       - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
   result:
     name: CI result

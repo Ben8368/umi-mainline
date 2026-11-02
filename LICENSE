@@ -26,6 +26,10 @@ referenced here is in LICENSES/.
 DockDSM-derived governance, hooks, workflow and regression files retain their
 MIT terms in LICENSES/MIT-DockDSM.txt; see docs/PROVENANCE.md for scope.
 
+scripts/umi-charge-limit.py, config/umi-charge-limit.* and
+tests/test_charge_limit.py use GPL-2.0-only, as identified in their headers.
+Their SOC policy reference and attribution are in docs/PROVENANCE.md.
+
 Unless a file says otherwise, the license above applies to it; a
 SPDX-License-Identifier: tag always wins over this table.
 

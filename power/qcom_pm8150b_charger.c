@@ -267,6 +267,8 @@
 #define AICL_RERUN_TIME_MASK			GENMASK(1, 0)
 
 #define SDP_CURRENT_UA			500000
+#define USB_DEFAULT_CURRENT_UA		100000
+#define BC12_CURRENT_UA			1500000
 #define CDP_CURRENT_UA			3000000
 #define DCP_CURRENT_UA			3300000
 #define CURRENT_MAX_UA			DCP_CURRENT_UA
@@ -296,6 +298,18 @@ struct smb5_register {
 	u16 addr;
 	u8 mask;
 	u8 val;
+};
+
+/* Every mutable property exported by smb5_properties, sampled under pd_lock. */
+static const enum power_supply_property smb5_poll_properties[] = {
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_HEALTH,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_USB_TYPE,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
+	POWER_SUPPLY_PROP_CHARGING_ENABLED,
 };
 
 /**
@@ -329,6 +343,7 @@ struct smb5_chip {
 	struct power_supply *chg_psy;
 	struct power_supply *tcpm_psy;
 	struct mutex pd_lock;
+	bool apsd_enabled;
 	bool pps_enabled;
 	bool pps_active;
 	bool pps_fault;
@@ -338,6 +353,8 @@ struct smb5_chip {
 	int pps_voltage_uv;
 	int pps_current_ua;
 	int input_max_ua;
+	bool poll_snapshot_valid;
+	int poll_values[ARRAY_SIZE(smb5_poll_properties)];
 };
 
 static enum power_supply_property smb5_properties[] = {
@@ -513,6 +530,7 @@ static int smb5_set_prop_charging_enabled(struct smb5_chip *chip, unsigned int v
 }
 
 static void smb5_pd_work(struct smb5_chip *chip);
+static bool smb5_poll_changed(struct smb5_chip *chip);
 
 static void smb5_status_change_work(struct work_struct *work)
 {
@@ -573,12 +591,12 @@ static void smb5_status_change_work(struct work_struct *work)
 static int smb5_get_iio_chan(struct smb5_chip *chip, struct iio_channel *chan,
 			     int *val)
 {
-	int rc;
-	union power_supply_propval status;
+	int rc, online;
 
-	rc = power_supply_get_property(chip->chg_psy, POWER_SUPPLY_PROP_STATUS,
-				       &status);
-	if (rc < 0 || status.intval != POWER_SUPPLY_STATUS_CHARGING) {
+	rc = smb5_get_prop_usb_online(chip, &online);
+	if (rc)
+		return rc;
+	if (!online) {
 		*val = 0;
 		return 0;
 	}
@@ -588,7 +606,19 @@ static int smb5_get_iio_chan(struct smb5_chip *chip, struct iio_channel *chan,
 		return PTR_ERR(chan);
 	}
 
-	return iio_read_channel_processed(chan, val);
+	rc = iio_read_channel_processed(chan, val);
+	if (rc < 0)
+		return rc;
+	/* USB_IN_I is a voltage ADC: PM8150B buck transfer is 0.2 V/A.
+	 * MiCode umi-q-oss smb5-lib.c: smblib_get_prop_usb_current_now().
+	 * This connector is sink-only; no boost/OTG conversion is implied.
+	 */
+	if (chan == chip->usb_in_i_chan) {
+		if (*val < 0 || *val > INT_MAX / 5)
+			return -ERANGE;
+		*val *= 5;
+	}
+	return 0;
 }
 
 static int smb5_get_prop_health(struct smb5_chip *chip, int *val)
@@ -621,9 +651,9 @@ static int smb5_get_prop_health(struct smb5_chip *chip, int *val)
 		return rc;
 	}
 
-	if (stat & BAT_TEMP_STATUS_TOO_COLD_BIT)
+	if (stat & (BAT_TEMP_STATUS_TOO_COLD_BIT | BAT_TEMP_STATUS_TOO_COLD_AFP_BIT))
 		*val = POWER_SUPPLY_HEALTH_COLD;
-	else if (stat & BAT_TEMP_STATUS_TOO_HOT_BIT)
+	else if (stat & (BAT_TEMP_STATUS_TOO_HOT_BIT | BAT_TEMP_STATUS_TOO_HOT_AFP_BIT))
 		*val = POWER_SUPPLY_HEALTH_OVERHEAT;
 	else if (stat & BAT_TEMP_STATUS_COLD_SOFT_BIT)
 		*val = POWER_SUPPLY_HEALTH_COOL;
@@ -666,6 +696,56 @@ static int smb5_pps_valid_target(int voltage_uv, int current_ua, int max_ua)
 	return 0;
 }
 
+/* TCPM cannot resolve Rp-default without a TCPC get_current_limit callback.
+ * PM8150B has none: use BC1.2 only for non-PD sources with no CC budget.
+ * MiCode smb5-lib.c: smblib_apsd_enable(), smblib_set_prop_pd_active().
+ * Never enable autonomous HVDCP or treat FLOAT/OCP as a DCP contract.
+ */
+static int smb5_set_apsd(struct smb5_chip *chip, bool enable)
+{
+	int ret;
+
+	if (chip->apsd_enabled == enable)
+		return 0;
+	ret = regmap_update_bits(chip->regmap, chip->base + USBIN_OPTIONS_1_CFG,
+		BC1P2_SRC_DETECT_BIT | HVDCP_EN_BIT | HVDCP_AUTH_ALG_EN_CFG_BIT |
+		HVDCP_AUTONOMOUS_MODE_EN_CFG_BIT | HVDCP_NO_AUTH_QC3_CFG_BIT,
+		enable ? BC1P2_SRC_DETECT_BIT : 0);
+	if (ret)
+		return ret;
+	/* Keep the cache true even if rerun fails, so a later PD retry clears it. */
+	chip->apsd_enabled = enable;
+	if (enable) {
+		ret = regmap_update_bits(chip->regmap, chip->base + CMD_APSD,
+					 APSD_RERUN_BIT, APSD_RERUN_BIT);
+		if (ret)
+			return ret;
+	}
+	return enable ? -EAGAIN : 0; /* Wait for fresh detection after rerun. */
+}
+
+static int smb5_bc12_current(struct smb5_chip *chip)
+{
+	unsigned int stat;
+	int ret;
+
+	ret = regmap_read(chip->regmap, chip->base + APSD_STATUS, &stat);
+	if (ret)
+		return ret;
+	if (!(stat & APSD_DTC_STATUS_DONE_BIT))
+		return 0;
+	ret = regmap_read(chip->regmap, chip->base + APSD_RESULT_STATUS, &stat);
+	if (ret)
+		return ret;
+	stat &= APSD_RESULT_STATUS_MASK;
+	if (stat == DCP_CHARGER_BIT || stat == CDP_CHARGER_BIT)
+		return min(chip->input_max_ua, BC12_CURRENT_UA);
+	/* No USB enumeration budget is wired yet: only one USB 2.0 unit load. */
+	if (stat == SDP_CHARGER_BIT)
+		return USB_DEFAULT_CURRENT_UA;
+	return 0;
+}
+
 /* Caller holds pd_lock. Always shed the load before a protocol fallback.
  * Even when one operation fails, still try the other shutdown operations.
  */
@@ -674,7 +754,7 @@ static int smb5_pps_stop(struct smb5_chip *chip)
 	int ret, first, online;
 
 	first = smb5_set_prop_charging_enabled(chip, false);
-	ret = smb5_set_current_limit(chip, SDP_CURRENT_UA);
+	ret = smb5_set_current_limit(chip, USB_DEFAULT_CURRENT_UA);
 	if (!first)
 		first = ret;
 	online = smb5_source_get(chip, POWER_SUPPLY_PROP_ONLINE);
@@ -718,6 +798,9 @@ static int smb5_pps_update(struct smb5_chip *chip)
 		return online;
 	if (!online) {
 		chip->pps_enabled = false;
+		ret = smb5_set_apsd(chip, false);
+		if (ret)
+			return ret;
 		return smb5_pps_stop(chip);
 	}
 	ret = smb5_get_prop_health(chip, &health);
@@ -736,11 +819,28 @@ static int smb5_pps_update(struct smb5_chip *chip)
 		}
 		/* No fixed high-voltage PDO is advertised by our connector. */
 		voltage_uv = smb5_source_get(chip, POWER_SUPPLY_PROP_VOLTAGE_NOW);
-		if (voltage_uv <= 0 || voltage_uv > SMB5_PPS_MIN_UV)
+		if (voltage_uv < 0 || voltage_uv > SMB5_PPS_MIN_UV)
 			return voltage_uv < 0 ? voltage_uv : -ERANGE;
+		/* Attach/reset can be online before TCPM publishes its 5 V budget. */
+		if (!voltage_uv)
+			return smb5_pps_stop(chip);
 		current_ua = smb5_source_get(chip, POWER_SUPPLY_PROP_CURRENT_NOW);
 		if (current_ua < 0)
 			return current_ua;
+		ret = smb5_source_get(chip, POWER_SUPPLY_PROP_USB_TYPE);
+		if (ret < 0)
+			return ret;
+		ret = smb5_set_apsd(chip, !current_ua &&
+				    ret == POWER_SUPPLY_USB_TYPE_C);
+		if (ret && ret != -EAGAIN)
+			return ret;
+		if (ret == -EAGAIN)
+			return smb5_pps_stop(chip);
+		if (chip->apsd_enabled) {
+			current_ua = smb5_bc12_current(chip);
+			if (current_ua < 0)
+				return current_ua;
+		}
 		current_ua = min(current_ua, chip->input_max_ua);
 		current_ua = rounddown(current_ua, CURRENT_SCALE_FACTOR);
 		ret = smb5_set_current_limit(chip, current_ua);
@@ -749,6 +849,9 @@ static int smb5_pps_update(struct smb5_chip *chip)
 		return smb5_set_prop_charging_enabled(chip, current_ua > 0);
 	}
 
+	ret = smb5_set_apsd(chip, false);
+	if (ret)
+		return ret;
 	ret = smb5_pps_valid_target(chip->pps_voltage_uv, chip->pps_current_ua,
 				    chip->input_max_ua);
 	if (ret)
@@ -784,7 +887,10 @@ static int smb5_pps_update(struct smb5_chip *chip)
 	}
 	if (online != 2 || voltage_uv != chip->pps_voltage_uv ||
 	    current_ua != expected_ua) {
-		ret = smb5_set_current_limit(chip, SDP_CURRENT_UA);
+		ret = smb5_set_prop_charging_enabled(chip, false);
+		if (ret)
+			return ret;
+		ret = smb5_set_current_limit(chip, USB_DEFAULT_CURRENT_UA);
 		if (ret)
 			return ret;
 	}
@@ -841,6 +947,7 @@ static int smb5_pps_update(struct smb5_chip *chip)
 static void smb5_pd_work(struct smb5_chip *chip)
 {
 	int ret, stop_ret;
+	bool changed;
 
 	mutex_lock(&chip->pd_lock);
 	if (chip->pd_stopping) {
@@ -856,7 +963,11 @@ static void smb5_pd_work(struct smb5_chip *chip)
 		dev_err_ratelimited(chip->dev, "PD/PPS stopped: error=%d fallback=%d\n",
 				    ret, stop_ret);
 	}
+	changed = smb5_poll_changed(chip);
 	mutex_unlock(&chip->pd_lock);
+	/* Keep policy errors visible even if the sampled properties are unchanged. */
+	if (ret || changed)
+		power_supply_changed(chip->chg_psy);
 	if (!READ_ONCE(chip->pd_stopping))
 		schedule_delayed_work(&chip->status_change_work,
 				      msecs_to_jiffies(SMB5_PPS_POLL_MS));
@@ -1105,6 +1216,28 @@ static int smb5_get_property(struct power_supply *psy,
 	}
 }
 
+static bool smb5_poll_changed(struct smb5_chip *chip)
+{
+	int values[ARRAY_SIZE(smb5_poll_properties)];
+	union power_supply_propval val;
+	bool changed;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(smb5_poll_properties); i++) {
+		if (smb5_get_property(chip->chg_psy, smb5_poll_properties[i], &val)) {
+			/* Do not compare against a partial or stale snapshot after an error. */
+			chip->poll_snapshot_valid = false;
+			return true;
+		}
+		values[i] = val.intval;
+	}
+	changed = !chip->poll_snapshot_valid ||
+		  memcmp(values, chip->poll_values, sizeof(values));
+	memcpy(chip->poll_values, values, sizeof(values));
+	chip->poll_snapshot_valid = true;
+	return changed;
+}
+
 static int smb5_set_property(struct power_supply *psy,
 			     enum power_supply_property psp,
 			     const union power_supply_propval *val)
@@ -1183,7 +1316,10 @@ static irqreturn_t smb5_handle_usb_plugin(int irq, void *data)
 		/* Bound a new attachment before waiting for TCPM's new contract. */
 		mutex_lock(&chip->pd_lock);
 		ret = smb5_set_prop_charging_enabled(chip, false);
-		limit_ret = smb5_set_current_limit(chip, SDP_CURRENT_UA);
+		limit_ret = smb5_set_current_limit(chip, USB_DEFAULT_CURRENT_UA);
+		/* Detection results from a previous cable must never grant a budget. */
+		if (!limit_ret)
+			limit_ret = smb5_set_apsd(chip, false);
 		chip->pps_enabled = false;
 		if (ret || limit_ret) {
 			chip->pps_fault = true;
@@ -1465,7 +1601,7 @@ static int smb5_probe(struct platform_device *pdev)
 	rc = smb5_battery_config(chip);
 	if (rc)
 		return dev_err_probe(chip->dev, rc, "Invalid/failed battery limits\n");
-	rc = smb5_set_current_limit(chip, SDP_CURRENT_UA);
+	rc = smb5_set_current_limit(chip, USB_DEFAULT_CURRENT_UA);
 	if (rc)
 		return rc;
 	rc = smb5_init_hw(chip);

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Umi battery charge window (TCPM/SMB5)
+After=local-fs.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/umi-charge-limit
+ExecStart=/usr/bin/python3 /usr/local/libexec/umi-charge-limit.py --run
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

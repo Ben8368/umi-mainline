@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ['6.12.94', '7.2.12']
+        version: ['6.12.94', '6.18.59', '7.2.12']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -27,6 +27,14 @@ jobs:
           ref: 0b8f247169e487eff2d4c2dd531bc43f7efda2cb
           path: .kernel-ci
           persist-credentials: false
+      - name: Checkout Linux 6.18.59
+        if: matrix.version == '6.18.59'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: gregkh/linux
+          ref: 1253a6aa5d104312bf0992afacc15220ae35bdf9
+          path: .kernel-ci
+          persist-credentials: false
       - name: Checkout Linux 7.2.12
         if: matrix.version == '7.2.12'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -38,7 +46,7 @@ jobs:
       - name: Install cross-build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang llvm lld bc bison flex libssl-dev libelf-dev make gcc g++ python3
+          sudo apt-get install -y --no-install-recommends clang llvm lld bc bison flex libssl-dev libelf-dev make gcc g++ python3 kmod
       - name: Build actual arm64 kernel and device trees
         env:
           TREE: ${{ github.workspace }}/.kernel-ci
