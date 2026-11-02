@@ -880,6 +880,38 @@ int writeConfig(u16 offset, u8 *data, int len)
 	return OK;
 }
 
+/* A sysfs transaction owns one depth independently of both idempotent domains.
+ * Its task borrows that depth throughout nested reset/flash/recovery helpers.
+ */
+void fts_fwupdate_begin(struct fts_ts_info *info)
+{
+	unsigned long flag;
+
+	/* Sysfs removal drains the writer before IRQ/info teardown. Never take
+	 * this mutex in IRQ recovery, or hold fts_int while draining that IRQ.
+	 */
+	mutex_lock(&info->fwupdate_lock);
+	spin_lock_irqsave(&fts_int, flag);
+	info->irq_fwupdate_owner = current;
+	if (info->irq_registered)
+		disable_irq_nosync(info->client->irq);
+	spin_unlock_irqrestore(&fts_int, flag);
+	if (info->irq_registered)
+		synchronize_irq(info->client->irq);
+}
+
+void fts_fwupdate_end(struct fts_ts_info *info)
+{
+	unsigned long flag;
+
+	spin_lock_irqsave(&fts_int, flag);
+	info->irq_fwupdate_owner = NULL;
+	spin_unlock_irqrestore(&fts_int, flag);
+	if (info->irq_registered)
+		enable_irq(info->client->irq);
+	mutex_unlock(&info->fwupdate_lock);
+}
+
 /**
   * Disable the interrupt so the ISR of the driver can not be called
   * @return OK if success or an error code which specify the type of error
@@ -920,6 +952,9 @@ int fts_disableInterruptNoSync(void)
 		return ERROR_OP_NOT_ALLOW;
 
 	spin_lock_irqsave(&fts_int, flag);
+	/* Nested reset/flash helpers borrow the transaction mask. */
+	if (info->irq_fwupdate_owner == current)
+		goto out;
 	/* Each context owns at most one nested kernel disable. Reset retries
 	 * are idempotent; recovery cannot consume the external caller's mask.
 	 */
@@ -932,6 +967,7 @@ int fts_disableInterruptNoSync(void)
 			disable_irq_nosync(getClient()->irq);
 		*disabled = true;
 	}
+out:
 	spin_unlock_irqrestore(&fts_int, flag);
 	return OK;
 }
@@ -953,6 +989,9 @@ int fts_enableInterrupt(void)
 		return ERROR_OP_NOT_ALLOW;
 
 	spin_lock_irqsave(&fts_int, flag);
+	/* Only transaction end may release its mask, not nested cleanUp(). */
+	if (info->irq_fwupdate_owner == current)
+		goto out;
 	if (READ_ONCE(info->irq_thread) == current)
 		disabled = &info->irq_recovery_disabled;
 	else
@@ -962,6 +1001,7 @@ int fts_enableInterrupt(void)
 		if (info->irq_registered)
 			enable_irq(getClient()->irq);
 	}
+out:
 	spin_unlock_irqrestore(&fts_int, flag);
 	return OK;
 }

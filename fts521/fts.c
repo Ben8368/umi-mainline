@@ -1437,8 +1437,7 @@ static ssize_t fwupdate_store(struct device *dev,
 	 * event FIFO from under the flash procedure (that is what wedged the
 	 * kernel on the first attempt).
 	 */
-	if (info->client->irq)
-		disable_irq(info->client->irq);
+	fts_fwupdate_begin(info);
 
 	if (mode & 128) {
 		/*
@@ -1744,8 +1743,7 @@ static ssize_t fwupdate_store(struct device *dev,
 		fts_lenient_echo = 0;
 	}
 
-	if (info->client->irq)
-		enable_irq(info->client->irq);
+	fts_fwupdate_end(info);
 
 	/* Raw diagnostics may leave the IC in ROM or a non-sensing mode. */
 	fts_idle_release(info, false);
@@ -3665,6 +3663,8 @@ static int parse_dt(struct device *dev, struct fts_hw_platform_data *bdata)
 	bdata->irq_gpio = GPIO_NOT_DEFINED;
 #else
 	bdata->irq_gpio = of_get_named_gpio(np, "fts,irq-gpio", 0);
+	if (bdata->irq_gpio < 0)
+		return bdata->irq_gpio;
 #endif
 
 	logError(0, "%s irq_gpio = %d\n", tag, bdata->irq_gpio);
@@ -3712,13 +3712,15 @@ static int parse_dt(struct device *dev, struct fts_hw_platform_data *bdata)
 							      GPIOD_ASIS);
 
 		if (IS_ERR(gd))
-			gd = NULL;
+			return PTR_ERR(gd);
 		bdata->reset_gpio = gd ? desc_to_gpio(gd) : GPIO_NOT_DEFINED;
 		logError(0, "%s reset_gpio =%d\n", tag, bdata->reset_gpio);
 	}
 #else
 	if (of_property_read_bool(np, "fts,reset-gpio")) {
 		bdata->reset_gpio = of_get_named_gpio(np, "fts,reset-gpio", 0);
+		if (bdata->reset_gpio < 0)
+			return bdata->reset_gpio;
 		logError(0, "%s reset_gpio =%d\n", tag, bdata->reset_gpio);
 	} else
 		bdata->reset_gpio = GPIO_NOT_DEFINED;
@@ -3829,6 +3831,7 @@ static int fts_probe(struct spi_device *client)
 	}
 
 	mutex_init(&info->idle_lock);
+	mutex_init(&info->fwupdate_lock);
 	INIT_DELAYED_WORK(&info->idle_work, fts_idle_time_work);
 	info->client = client;
 	info->dev = &info->client->dev;
@@ -3846,7 +3849,9 @@ static int fts_probe(struct spi_device *client)
 			error = -ENOMEM;
 			goto ProbeErrorExit_1;
 		}
-		parse_dt(&client->dev, info->board);
+		error = parse_dt(&client->dev, info->board);
+		if (error < 0)
+			goto ProbeErrorExit_1;
 	}
 
 	logError(0, "%s SET Regulators:\n", tag);
