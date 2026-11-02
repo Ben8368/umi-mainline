@@ -230,6 +230,8 @@ struct fts_ts_info {
 	bool idle_stopping;
 	bool idle_pm_ready;
 	bool irq_registered;
+	/* Only compared with current; never dereferenced outside the IRQ thread. */
+	struct task_struct *irq_thread;
 	bool notifier_registered;
 
 	struct work_struct suspend_work; /* /< Suspend work thread */

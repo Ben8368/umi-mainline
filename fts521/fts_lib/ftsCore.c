@@ -29,6 +29,7 @@
   */
 
 #include <linux/spinlock.h>
+#include <linux/sched.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
@@ -889,27 +890,21 @@ int writeConfig(u16 offset, u8 *data, int len)
   */
 int fts_disableInterrupt(void)
 {
-	unsigned long flag;
+	struct fts_ts_info *info;
+	int ret;
 
-	if (getClient() != NULL) {
-		spin_lock_irqsave(&fts_int, flag);
-		logError(0, "%s Number of disable = %d\n", tag,
-			 disable_irq_count);
-		if (disable_irq_count == 0) {
-			logError(0, "%s Executing Disable...\n", tag);
-			disable_irq(getClient()->irq);
-			disable_irq_count++;
-		}
-		/* disable_irq is re-entrant so it is required to keep track
-		  * of the number of calls of this when reenabling */
-		spin_unlock_irqrestore(&fts_int, flag);
-		logError(0, "%s Interrupt Disabled!\n", tag);
-		return OK;
-	} else {
-		logError(1, "%s %s: Impossible get client irq... ERROR %08X\n",
-			 tag, __func__, ERROR_OP_NOT_ALLOW);
-		return ERROR_OP_NOT_ALLOW;
-	}
+	/* Mask under fts_int, but never wait for an IRQ while holding it.
+	 * Recovery runs inside our threaded handler and must not wait for itself.
+	 * Other callers still drain the handler, even if it was already masked.
+	 */
+	ret = fts_disableInterruptNoSync();
+	if (ret < OK)
+		return ret;
+
+	info = dev_get_drvdata(&getClient()->dev);
+	if (info->irq_registered && READ_ONCE(info->irq_thread) != current)
+		synchronize_irq(getClient()->irq);
+	return OK;
 }
 
 /**
@@ -918,8 +913,10 @@ int fts_disableInterrupt(void)
   */
 int fts_disableInterruptNoSync(void)
 {
+	unsigned long flag;
+
 	if (getClient() != NULL) {
-		spin_lock_irq(&fts_int);
+		spin_lock_irqsave(&fts_int, flag);
 		logError(0, "%s Number of disable = %d\n", tag,
 			 disable_irq_count);
 		if (disable_irq_count == 0) {
@@ -930,7 +927,7 @@ int fts_disableInterruptNoSync(void)
 		/* disable_irq is re-entrant so it is required to keep track
 		  * of the number of calls of this when reenabling */
 
-		spin_unlock(&fts_int);
+		spin_unlock_irqrestore(&fts_int, flag);
 		logError(0, "%s Interrupt No Sync Disabled!\n", tag);
 		return OK;
 	} else {

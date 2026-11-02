@@ -2503,6 +2503,7 @@ static irqreturn_t fts_event_handler(int irq, void *ts_info)
 
 	event_dispatch_handler_t event_handler;
 
+	WRITE_ONCE(info->irq_thread, current);
 	pm_wakeup_event(info->dev, jiffies_to_msecs(HZ));
 
 	/* read the FIFO and parsing events */
@@ -2543,6 +2544,7 @@ static irqreturn_t fts_event_handler(int irq, void *ts_info)
 		}
 	}
 	input_sync(info->input_dev);
+	WRITE_ONCE(info->irq_thread, NULL);
 	return IRQ_HANDLED;
 }
 /** @}*/
@@ -3761,6 +3763,7 @@ static int fts_probe(struct spi_device *client)
 	struct device_node *dp = client->dev.of_node;
 	int retval;
 	int skip_5_1 = 0;
+	bool gpio_ready = false;
 	u16 bus_type;
 
 	logError(1, "%s %s: driver probe begin!\n", tag, __func__);
@@ -3836,6 +3839,7 @@ static int fts_probe(struct spi_device *client)
 		if (!info->board) {
 			logError(1, "%s ERROR:info.board kzalloc failed\n",
 				 tag);
+			error = -ENOMEM;
 			goto ProbeErrorExit_1;
 		}
 		parse_dt(&client->dev, info->board);
@@ -3846,13 +3850,15 @@ static int fts_probe(struct spi_device *client)
 	if (retval < 0) {
 		logError(1, "%s ERROR: %s: Failed to get regulators\n", tag,
 			 __func__);
-		goto ProbeErrorExit_1;
+		error = retval;
+		goto ProbeErrorExit_2;
 	}
 
 	retval = fts_enable_reg(info, true);
 	if (retval < 0) {
 		logError(1, "%s %s: ERROR Failed to enable regulators\n", tag,
 			 __func__);
+		error = retval;
 		goto ProbeErrorExit_2;
 	}
 
@@ -3861,8 +3867,10 @@ static int fts_probe(struct spi_device *client)
 	if (retval < 0) {
 		logError(1, "%s %s: ERROR Failed to set up GPIO's\n", tag,
 			 __func__);
-		goto ProbeErrorExit_2;
+		error = retval;
+		goto ProbeErrorExit_4;
 	}
+	gpio_ready = true;
 
 #ifdef CONFIG_PINCTRL
 	logError(0, "%s %s: Pinctrl Init!\n", tag, __func__);
@@ -4084,6 +4092,12 @@ ProbeErrorExit_5:
 	destroy_workqueue(info->event_wq);
 
 ProbeErrorExit_4:
+	if (gpio_ready) {
+		if (info->board->irq_gpio != GPIO_NOT_DEFINED)
+			fts_gpio_setup(info->board->irq_gpio, false, 0, 0);
+		if (info->board->reset_gpio != GPIO_NOT_DEFINED)
+			fts_gpio_setup(info->board->reset_gpio, false, 0, 0);
+	}
 	fts_enable_reg(info, false);
 
 ProbeErrorExit_2:
@@ -4091,6 +4105,8 @@ ProbeErrorExit_2:
 
 ProbeErrorExit_1:
 	fts_idle_stop(info);
+	dev_set_drvdata(&client->dev, NULL);
+	fts_info = NULL;
 	kfree(info);
 
 ProbeErrorExit_0:
