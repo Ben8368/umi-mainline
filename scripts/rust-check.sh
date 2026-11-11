@@ -8,10 +8,7 @@ set -u
 export PATH="$HOME/.cargo/bin:$PATH"
 export RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}
 export CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}
-WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
-# shellcheck source=../config/kernel.env
-. "$WS/config/kernel.env"
-TREE=${TREE:-/root/linux-$UMI_KERNEL_VERSION}
+TREE=${TREE:-/root/linux}
 
 echo "== 工具链"
 echo "   rustc   : $(command -v rustc || echo 没有)  $(rustc --version 2>/dev/null)"

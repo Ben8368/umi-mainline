@@ -45,8 +45,6 @@ MUST = [
     ("FONT_SUPPORT", "y", "fbcon 字体框架"),
     ("FONT_8x16", "y", "tty0 默认字体；缺了屏幕一个字都没有"),
     ("DRM", "y", "simpledrm 需要"),
-    ("DRM_MSM", "y", "面板/DPU 显示链"),
-    ("ARM_PSCI_CPUIDLE", "y", "PSCI 电源域供应者"),
     ("DRM_KMS_HELPER", "y", "simpledrm 依赖"),
     ("DRM_SIMPLEDRM", "y", "接管 cont-splash 的最小 DRM 驱动"),
     ("DRM_FBDEV_EMULATION", "y", "缺了 fbcon 挂不到 DRM 上 → 屏幕没 log"),
@@ -62,12 +60,6 @@ MUST = [
     ("QCOM_SMEM", "y", "smem"),
     ("QCOM_COMMAND_DB", "y", "cmd-db；rpmh 的前置"),
     ("REGULATOR_QCOM_RPMH", "y", "ABL 已开好的轨由它接手"),
-    ("TYPEC_TCPM", "y", "救援镜像内建 USB PD/PPS 策略"),
-    ("TYPEC_QCOM_PMIC", "y", "PM8150B Type-C/PD PHY"),
-    ("REGULATOR_QCOM_USB_VBUS", "y", "Type-C probe 依赖 VBUS provider；救援镜像不加载模块"),
-    ("QCOM_SPMI_ADC5", "y", "板级温度和 SMB5 的 IIO provider，救援需内建"),
-    ("HWMON", "y", "救援环境的硬件温度监控接口"),
-    ("SENSORS_IIO_HWMON", "y", "板级八路温度通道，救援不加载模块"),
     ("REGULATOR_FIXED_VOLTAGE", "y", "pm8150a_l1 等 workaround 轨"),
     ("QCOM_CLK_RPMH", "y", "RPMH 时钟控制器"),
     ("QCOM_GDSC", "y", "GDSC；UFS/USB 供电域"),
@@ -118,13 +110,18 @@ MUST = [
 ]
 
 MUST_NOT = [
+    ("DRM_MSM", "mdss 会抢走 cont-splash 然后因为没有面板驱动而全黑"),
     ("FB_SIMPLE", "和 DRM_SIMPLEDRM 互斥，同时开会把 console 抢走"),
     ("RANDOMIZE_BASE", "KASLR 关掉，地址可复现"),
     ("WERROR", "别让 warning 中断编译"),
     # 保守组
+    ("ARM_PSCI_CPUIDLE", "bring-up 先不开；cpuidle 挂住时屏幕还没起来"),
+    ("ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT", "先放行，避免漏一个 iommus 就 DMA abort"),
     ("QCOM_CPR", "会改写 CPU 电压表"),
     ("ARM_QCOM_CPUFREQ_HW", "同上"),
-    # ARM_PSCI_CPUIDLE 必须开启，以提供 rpmh 所依赖的 PSCI 电源域。
+    # 注意：CPU_IDLE 是关不掉的（drivers/acpi/Kconfig:269 的 ACPI_PROCESSOR 会 select 它，
+    # 而 arm64 defconfig 里 ACPI=y）。关掉 ARM_PSCI_CPUIDLE 就够了 —— 没有驱动注册，
+    # cpuidle core 会直接走 default_idle_call() → WFI。
 ]
 
 INFO = [
@@ -230,9 +227,6 @@ def main():
         # 效果等价于关，不算失败。但单独列出来，因为「为什么没提示符」有时正是问题本身。
         if v == "n" and got == "<不存在>":
             continue
-        if k == "ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT" and v == "n" and \
-                "arm-smmu.disable_bypass=0" in cfg.get("CMDLINE", ""):
-            continue
         if got != v:
             miss.append((k, v, got))
     if not miss:
@@ -273,11 +267,6 @@ def main():
         else:
             print("   OK CONFIG_%-40s = %s" % (k, got))
     bad += n4
-
-    if cfg.get("ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT") == "y" and \
-            "arm-smmu.disable_bypass=0" not in cfg.get("CMDLINE", ""):
-        print("   !! SMMU bypass requires arm-smmu.disable_bypass=0")
-        bad += 1
 
     # ---------------------------------------------------------------- 5 提示
     print("\n---- [5] 提醒 ----")

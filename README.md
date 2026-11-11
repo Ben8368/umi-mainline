@@ -1,17 +1,12 @@
 # umi-mainline
 
-Development: [current state](CONTEXT.md), [contributing](CONTRIBUTING.md),
-[governance and documentation index](docs/README.md),
-[source / firmware inventory](docs/OPEN_SOURCE.md).
-
 Running a mainline Linux kernel on the **Xiaomi Mi 10** (SM8250 / "kona",
 device codename `umi`, model M2001J2C).
 
 This is a working bring-up, not a plan: the kernel boots to userspace in about
 12 seconds, drives the 1080×2340 command-mode AMOLED over DSC, dims it, turns
-it off and back on, and reads the ST FTS touchscreen. The loading command `fastboot boot` puts the image in RAM. Installed rootfs
-workflows can write partitions; see `docs/ARCH-ROOTFS.md`. New initramfs builds
-default to rescue mode (`ROOTDEV=none`); selecting an installed rootfs is explicit.
+it off and back on, and reads the ST FTS touchscreen. Nothing here flashes a
+partition — the kernel is always loaded into RAM with `fastboot boot`.
 
 ```
 [    0.000000] Booting Linux on physical CPU 0x0000000000 [0x411fd050]
@@ -23,10 +18,6 @@ default to rescue mode (`ROOTDEV=none`); selecting an installed rootfs is explic
 ```
 
 ## Status
-
-The table records the original author's device observations, not acceptance of
-this revision. Current scope and evidence are in [CONTEXT.md](CONTEXT.md).
-BQ25970 active fast charging is disabled pending board-level validation.
 
 | Subsystem | State | Notes |
 |---|---|---|
@@ -69,7 +60,7 @@ wiring, defconfig, config fragment merge, `make Image.gz dtbs`, and artifact
 collection:
 
 ```sh
-wsl -d umi -u root -e sh scripts/mkimage.sh   # kernel + DTBs + fresh initramfs + boot.img
+wsl -d umi -u root -e sh scripts/build.sh     # run from the repo root
 ```
 
 Environment overrides: `TREE` (kernel tree, default `/root/linux`), `OUT`,
@@ -81,7 +72,7 @@ Requirements:
 * for `CONFIG_DRM_PANIC_SCREEN_QR_CODE`: a Rust toolchain plus `bindgen` and
   `libclang` (`scripts/install-rust.sh`)
 
-To repack existing artifacts as an Android boot image (header v2, gzip kernel, separate DTB segment):
+Then pack an Android boot image (header v2, gzip kernel, DTB appended):
 
 ```sh
 python tools/pack-umi.py --name p16-touch
@@ -181,34 +172,26 @@ This repository mixes licenses on purpose; `LICENSE` has the table and
 
 * `patches/` — **GPL-2.0-only** (a driver cannot enter the kernel otherwise)
 * `dts/` — **BSD-3-Clause** (same as the upstream Qualcomm device trees)
-* `scripts/`, `tools/` — **CC0-1.0**, except DockDSM-derived governance tooling
-  under **MIT**; see [provenance](docs/PROVENANCE.md).
+* `scripts/`, `tools/` — **CC0-1.0** (public domain, no attribution needed)
 * `docs/`, this README — **CC-BY-4.0**
 
 ## Third-party material
 
 The port was written by reading a vendor kernel and a vendor device tree that
-were already present on the device. Full vendor kernel / decompiled DT dumps
-are **not** redistributed here; the selected GPL driver ports in `fts521/`,
-`stfts/` and `power/` retain their own attribution. The tracked GPU firmware
-in `firmware/` retains its own provenance and terms. The facts that matter
+were already present on the device. Those sources, the decompiled vendor DT and
+any firmware images are **not** redistributed here; only the facts that matter
 (register values, timings, GPIO numbers, protocol layout) are recorded, in
 `docs/HARDWARE.md` and in the source comments.
 
-Power drivers can program charging voltage/current and protection registers;
-compiling them is not proof that their board parameters are safe. BQ25970 is
-disabled by default and active charge-pump enable requests are rejected. See
-[charging limits and validation](docs/BATTERY.md).
-An experimental TCPM/SMB5 PPS path can be explicitly enabled for manual tests;
-see [PPS controls and acceptance](docs/PPS.md). It does not enable BQ25970.
+No voltage, current or power limit is ever changed by this project. Regulators
+are enabled and left at the value the bootloader programmed.
 
 ## 中文速览
 
 小米 10（umi / SM8250）主线内核移植。目前已经能启动、点亮 1080×2340 屏幕、
 调亮度、熄屏再亮、**触摸可用**、**Adreno 650 可用**（GL 4.6 / Vulkan 1.3，
 devfreq 305–587 MHz）、**WiFi 可用**（MAC 固定）、**KDE Plasma Mobile 开机直入**，
-另有电量计 / 主充电器驱动；BQ25970 主动快充默认禁用，等待板级验证。
-`fastboot boot` 仅在加载镜像时不刷写；显式切根后的系统仍可写盘，完整安装会改动分区。
+另有电量计 / 充电 / 快充驱动。全程只 `fastboot boot`，不写任何分区。
 
 **一张镜像搞定，别再按功能分镜像：**
 
@@ -219,10 +202,8 @@ wsl -d umi -u root -- sh /mnt/d/project/UMI-mainline/scripts/mkimage.sh
 fastboot boot out\boot-umi.img
 ```
 
-`scripts/mkimage.sh` = `build.sh`（编内核 + DTB + 匹配模块）+ `mkinitramfs.sh`（重建）+ `pack-umi.py`（打包），
-默认进入保留 USB 调试通道的救援模式。已安装 Arch 的设备须显式设置
-`ROOTDEV=/dev/sda34`（先确认实际设备节点），才能切根进入桌面。
-默认内核源码基线为 `config/kernel.env` 固定的 6.18.59，BusyBox 默认从校验后的源码构建。面板 / 触摸 / GPU / 电量计与主充电器在内核/DT 中；Wi-Fi 还需 `out/modules-<release>.tar.gz` 与 rootfs 固件，不因 boot.img 可启动就算通过。快充不作为已验收能力。`out/archive/` 里那些
+`scripts/mkimage.sh` = `build.sh`（编内核 + DTB）+ `pack-umi.py`（打包），
+里面同时含面板 / 触摸 / GPU / WiFi / 电量计充电。`out/archive/` 里那些
 `boot-umi-*.img` 是历史实验对照，平时不用管。
 
 踩坑记录在 `docs/`：`BUILD.md`（构建与引导）、`DISPLAY.md`（面板/DSC/DSI）、

@@ -1209,17 +1209,55 @@ python tools/pack-umi.py --dtb out/sm8250-xiaomi-umi-wifi.dtb --name stfts
 失败可能把芯片留在 bootloader —— 真出问题就 `echo 256 > fwupdate`（blind
 flash）救，命令见 §11。
 
-## 15. 延迟设置 FW idle 时间：选择性移植
+## 15. "按一会才跟手"：FW idle 时间 + 发送时机（已修）
 
-来源：colorgarden/umi-mainline 的 [5fa2e0048f89b82355d2a9de89c1d74ab9910959](https://github.com/colorgarden/umi-mainline/commit/5fa2e0048f89b82355d2a9de89c1d74ab9910959)，原作者 umi-mainline <umi@local>。采用 C0 00 00 FF（255 × 50ms = 12.75 秒）及成功初始化后等待 3 秒的方案。厂商文档中的 12450ms 不等于 12750ms；本移植明确采用上游命令的 255 档。上游所述空闲后短按改善是原作者观察，不能作为维护版 6.18.59 的本轮真机证据。前述 §13–14 的历史结论保留其原适用范围。
+前情：屏幕静止一阵之后，第一下/极短的点击接不住，要"按一会"才跟手。原因是芯片
+空闲时会降扫描率，而主线的 fts521 从来没给芯片设过"进入 idle 的时间"。
 
-维护版保留 sense off/on 重启、面板就绪等待、fb blank 忽略策略及失败后保留 sysfs 恢复入口。延迟命令采用以下额外约束：
+厂商驱动用的是原始 FW 命令（`fts_update_enter_idle_time()`）：
 
-- 任务在分配设备对象后即初始化；整个初始化成功后才排队，重置或校准失败不会被后续 sensing 成功覆盖。
-- 可嵌套屏障在 reset、扫描模式切换、供电开关和 fwupdate 诊断前同步取消任务。互斥锁保护状态和单次 I²C 写入；等待 work 时不持有该锁，取消完成后才允许操作硬件。
-- 已知成功的正常扫描/恢复重新等待 3 秒；不同控制线程交叠时不推断最终状态，保守停止重排队，等待下一次明确成功的正常扫描/初始化。失败、sense off、未知诊断状态不排队。fwupdate 的任意位组合可能停留在 bootloader，故结束时保守停用 idle 调整；下次正常初始化/已知成功的扫描恢复才重新启用。
-- 系统 PM prepare/complete 只暂停及恢复可选命令，不新增 sensing 或电源切换策略；睡眠期间发生其他状态转换会使保存的就绪状态失效。remove、shutdown 及 probe 失败永久停止任务，清理前等待正在执行的写入完成。
-- 重复初始化不重复注册 IRQ/notifier，失败清理按实际拥有的资源执行。I²C 错误单独记录失败，不宣称成功、不额外重排队重试；底层既有传输重试保持不变。
-- 不发送 C0 0A xx 动态扫描频率命令，也不变更固件、触摸供电值或充电策略。
+```
+C0 00 00 xx     进入 idle 的时间 = xx * 50 ms
+C0 0A 00/01     关 / 开"动态扫描频率切换"
+```
 
-实现与验证记录见 [同步审查](archive/reviews/2026-11-02-upstream-5fa2e00.md)；L1 只证明模拟状态/取消契约，L2 不证明真实 I²C 时序。真机须核验冷启动、初始化 3 秒内的休眠/卸载、恢复、空闲 20 秒后的首触/短按、多点、反复 rebind 与错误恢复，记录镜像哈希、面板/FW 版本及 IRQ/输入事件。开放假设见 [RISK-002](RISK_REGISTER.md#risk-002目标内核与真机回归缺失p1)。
+我们要的是 **0xFF = 12.75 s**（厂商 DT 的 `fts,touch-idletime-def` 就是 12450 ms，
+除以 50）。
+
+### 15.1 关键是发送时机（踩了两次）
+
+| 做法 | 结果 |
+|---|---|
+| 不发 | 静置 20 s 后极短按 10 下 → **0** 次中断（这就是"按一会才跟手"） |
+| **在 `fts_init_sensing` 里、sense-on 之后紧接着发**（还带 `C0 0A 01`） | **触摸直接不响应**，IRQ 冻结，只有 `system_reset` 能救 |
+| 只发 `C0 00 00 FF`，仍在 init 里紧接着发 | 同样把触摸打死 |
+| **延迟 3 秒**（`delayed_work`）再发 | **27** 次中断，触摸正常且空闲后第一下就能接住 |
+
+所以 `fts521/fts.c` 里的最终写法是：
+
+```c
+static void fts_idle_time_work(struct work_struct *work)
+{
+	struct fts_ts_info *info = container_of(work, struct fts_ts_info,
+						idle_work.work);
+	u8 idle_time[4] = { 0xC0, 0x00, 0x00, 0xFF };
+	int ret = fts_write(idle_time, sizeof(idle_time));
+
+	logError(1, "%s %s: idle-time set to 12.75s (%d)\n", tag, __func__, ret);
+}
+...
+	/* fts_init_sensing(): 先让芯片正常扫起来，3 秒后再改 idle 参数 */
+	schedule_delayed_work(&info->idle_work, msecs_to_jiffies(3000));
+```
+
+`C0 0A xx`（动态扫描频率切换）**没有加**：它风险最大，配合起来会让芯片停止上报。
+
+### 15.2 验证
+
+`tmp/test-idle3.sh`：静置 20 s → 背光灭一下当信号 → 10 s 内极短按 10 下 → 看
+`/proc/interrupts` 的 `fts` 增量。
+
+```
+不发命令            ->  0
+延迟 3 秒发 0xFF     -> 27
+```

@@ -225,6 +225,7 @@ int readConfig(u16 offset, u8 *outBuf, int len);
 int writeConfig(u16 offset, u8 *data, int len);
 int fts_disableInterrupt(void);
 int fts_disableInterruptNoSync(void);
+int fts_resetDisableIrqCount(void);
 int fts_enableInterrupt(void);
 int requestSyncFrame(u8 type);
 /* Set while a recovery command has to go through even though the IC queues

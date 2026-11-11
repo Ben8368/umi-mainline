@@ -630,21 +630,12 @@ static ssize_t umi_panel_dsi_store(struct device *dev,
 	u8 seq[512];
 	int n = 0, ret;
 
-	/* sysfs buffers are NUL-terminated; advance past every consumed token. */
-	while (*p) {
-		int consumed = 0;
-
-		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+	while (n < (int)sizeof(seq) && sscanf(p, "%x", &v) == 1) {
+		seq[n++] = v & 0xff;
+		while (*p && *p != ' ' && *p != '\t' && *p != '\n')
 			p++;
-		if (!*p)
-			break;
-		if (n == (int)sizeof(seq) || sscanf(p, "%2x%n", &v, &consumed) != 1 ||
-		    !consumed || v > 0xff)
-			return -EINVAL;
-		p += consumed;
-		if (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
-			return -EINVAL;
-		seq[n++] = v;
+		while (*p == ' ' || *p == '\t')
+			p++;
 	}
 
 	if (!n)
@@ -801,15 +792,15 @@ static int umi_panel_probe(struct mipi_dsi_device *dsi)
 	int ret;
 
 	/*
-	 * 新内核提供 devm_drm_panel_alloc()：panel 结构体
+	 * 7.x 把 drm_panel_init() 换成了 devm_drm_panel_alloc()：panel 结构体
 	 * 内嵌在上下文里，由分配器一并初始化（含 funcs 和 connector_type）。
 	 * 它是宏，所以 #ifdef 可以拿来当特性探测，两个内核版本都能编。
 	 */
 #ifdef devm_drm_panel_alloc
 	ctx = devm_drm_panel_alloc(&dsi->dev, struct umi_panel, panel,
 				   &umi_panel_funcs, DRM_MODE_CONNECTOR_DSI);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
+	if (!ctx)
+		return -ENOMEM;
 #else
 	ctx = devm_kzalloc(&dsi->dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)

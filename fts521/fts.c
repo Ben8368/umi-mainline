@@ -29,7 +29,6 @@
   ******************************************************************************
   */
 
-#include <linux/sched.h>
 #include <linux/device.h>
 
 #include <linux/init.h>
@@ -119,83 +118,6 @@ static u8 key_mask = 0x00; /* /< store the last update of the key mask
 #endif
 
 extern spinlock_t fts_int;
-
-/* Idle command/timing from colorgarden/umi-mainline, commit
- * 5fa2e0048f89b82355d2a9de89c1d74ab9910959.
- * Serialize the optional write with cancellation. Holds nest across init,
- * reset, recovery and diagnostics; no idle I/O is allowed inside a hold.
- * Never wait for work with idle_lock held: the callback takes that lock.
- */
-static void fts_idle_hold_locked(struct fts_ts_info *info)
-{
-	if (!info->idle_holds) {
-		info->idle_owner = current;
-		info->idle_conflict = false;
-	} else if (info->idle_owner != current) {
-		/* Overlapping callers cannot establish an ordered final state. */
-		info->idle_conflict = true;
-	}
-	info->idle_holds++;
-	info->idle_ready = false;
-	/* A transition during system sleep invalidates the saved readiness. */
-	info->idle_pm_ready = false;
-}
-
-void fts_idle_hold(struct fts_ts_info *info)
-{
-	mutex_lock(&info->idle_lock);
-	fts_idle_hold_locked(info);
-	mutex_unlock(&info->idle_lock);
-	cancel_delayed_work_sync(&info->idle_work);
-}
-
-static void fts_idle_release_locked(struct fts_ts_info *info, bool ready)
-{
-	if (--info->idle_holds == 0 && !info->idle_stopping) {
-		info->idle_ready = ready && !info->idle_conflict;
-		if (info->idle_ready)
-			mod_delayed_work(system_wq, &info->idle_work,
-					 msecs_to_jiffies(3000));
-	}
-}
-
-void fts_idle_release(struct fts_ts_info *info, bool ready)
-{
-	mutex_lock(&info->idle_lock);
-	fts_idle_release_locked(info, ready);
-	mutex_unlock(&info->idle_lock);
-}
-
-static void fts_idle_stop(struct fts_ts_info *info)
-{
-	mutex_lock(&info->idle_lock);
-	info->idle_stopping = true;
-	info->idle_ready = false;
-	mutex_unlock(&info->idle_lock);
-	cancel_delayed_work_sync(&info->idle_work);
-}
-
-static void fts_idle_time_work(struct work_struct *work)
-{
-	struct fts_ts_info *info = container_of(to_delayed_work(work),
-						struct fts_ts_info, idle_work);
-	u8 idle_time[] = { 0xC0, 0x00, 0x00, 0xFF };
-	int ret;
-
-	mutex_lock(&info->idle_lock);
-	if (info->idle_stopping || info->idle_holds || !info->idle_ready ||
-	    !info->irq_registered || !info->resume_bit || info->sensor_sleep)
-		goto out;
-
-	/* 0xff * 50 ms = 12.75 s. Do not send the C0 0A scan command. */
-	ret = fts_write(idle_time, sizeof(idle_time));
-	if (ret < OK)
-		dev_warn(info->dev, "idle-time write failed: %08x (no retry)\n", ret);
-	else
-		dev_info(info->dev, "idle-time set to 12.75 s\n");
-out:
-	mutex_unlock(&info->idle_lock);
-}
 
 static int fts_init_sensing(struct fts_ts_info *info);
 static int fts_mode_handler(struct fts_ts_info *info, int force);
@@ -1427,7 +1349,6 @@ static ssize_t fwupdate_store(struct device *dev,
 
 	if (kstrtoint(buf, 0, &mode))
 		return -EINVAL;
-	fts_idle_hold(info);
 	if (!name)
 		name = "st_fts_j2_2.ftb";
 
@@ -1437,7 +1358,8 @@ static ssize_t fwupdate_store(struct device *dev,
 	 * event FIFO from under the flash procedure (that is what wedged the
 	 * kernel on the first attempt).
 	 */
-	fts_fwupdate_begin(info);
+	if (info->client->irq)
+		disable_irq(info->client->irq);
 
 	if (mode & 128) {
 		/*
@@ -1743,10 +1665,9 @@ static ssize_t fwupdate_store(struct device *dev,
 		fts_lenient_echo = 0;
 	}
 
-	fts_fwupdate_end(info);
+	if (info->client->irq)
+		enable_irq(info->client->irq);
 
-	/* Raw diagnostics may leave the IC in ROM or a non-sensing mode. */
-	fts_idle_release(info, false);
 	return count;
 }
 static DEVICE_ATTR_WO(fwupdate);
@@ -2008,15 +1929,13 @@ static void fts_error_event_handler(struct fts_ts_info *info,
 	switch (event[1]) {
 	case EVT_TYPE_ERROR_ESD: /* esd */
 	{ /* before reset clear all slot */
-		fts_idle_hold(info);
 		release_all_touches(info);
 
-		error = fts_chip_powercycle(info);
+		fts_chip_powercycle(info);
 
-		error |= fts_system_reset();
+		error = fts_system_reset();
 		error |= fts_mode_handler(info, 0);
 		error |= fts_enableInterrupt();
-		fts_idle_release(info, error >= OK && info->resume_bit == 1);
 		if (error < OK)
 			logError(1,
 				 "%s %s Cannot restore the device ERROR %08X\n",
@@ -2026,14 +1945,12 @@ static void fts_error_event_handler(struct fts_ts_info *info,
 	case EVT_TYPE_ERROR_HARD_FAULT: /* hard fault */
 	case EVT_TYPE_ERROR_WATCHDOG: /* watch dog timer */
 	{
-		fts_idle_hold(info);
 		dumpErrorInfo(NULL, 0);
 		/* before reset clear all slots */
 		release_all_touches(info);
 		error = fts_system_reset();
 		error |= fts_mode_handler(info, 0);
 		error |= fts_enableInterrupt();
-		fts_idle_release(info, error >= OK && info->resume_bit == 1);
 		if (error < OK)
 			logError(1,
 				 "%s %s Cannot reset the device ERROR %08X\n",
@@ -2057,12 +1974,10 @@ static void fts_controller_ready_event_handler(struct fts_ts_info *info,
 		"%s %s Received event %02X %02X %02X %02X %02X %02X %02X %02X\n",
 		tag, __func__, event[0], event[1], event[2], event[3], event[4],
 		event[5], event[6], event[7]);
-	fts_idle_hold(info);
 	release_all_touches(info);
 	setSystemResetedUp(1);
 	setSystemResetedDown(1);
 	error = fts_mode_handler(info, 0);
-	fts_idle_release(info, error >= OK && info->resume_bit == 1);
 	if (error < OK)
 		logError(1,
 			 "%s %s Cannot restore the device status ERROR %08X\n",
@@ -2501,7 +2416,6 @@ static irqreturn_t fts_event_handler(int irq, void *ts_info)
 
 	event_dispatch_handler_t event_handler;
 
-	WRITE_ONCE(info->irq_thread, current);
 	pm_wakeup_event(info->dev, jiffies_to_msecs(HZ));
 
 	/* read the FIFO and parsing events */
@@ -2542,7 +2456,6 @@ static irqreturn_t fts_event_handler(int irq, void *ts_info)
 		}
 	}
 	input_sync(info->input_dev);
-	WRITE_ONCE(info->irq_thread, NULL);
 	return IRQ_HANDLED;
 }
 /** @}*/
@@ -2565,7 +2478,6 @@ static int fts_init_flow(struct fts_ts_info *info)
 	int error = 0;
 	u8 init_type = 0;
 
-	fts_idle_hold(info);
 	logError(0, "%s %s: Verifying if CX CRC Error...\n", tag, __func__);
 	ret = fts_system_reset();
 	if (ret >= OK) {
@@ -2608,15 +2520,13 @@ static int fts_init_flow(struct fts_ts_info *info)
 			 */
 			fts_lenient_echo = 1;
 		}
-	} else {
-		error |= ret;
+	} else
 		logError(
 			1,
 			"%s %s: Error while executing system reset! ERROR %08X\n",
 			tag, __func__, ret); /* better skip initialization
 						 * because the real state is
 						 * unknown */
-	}
 
 	if (init_type != SPECIAL_FULL_PANEL_INIT) {
 #ifdef PRE_SAVED_METHOD
@@ -2644,7 +2554,7 @@ static int fts_init_flow(struct fts_ts_info *info)
 	if (init_type != 0) { /* initialization status not correct or
 					 * after FW complete update, do
 					 * initialization. */
-		error |= fts_chip_initialization(info, init_type);
+		error = fts_chip_initialization(info, init_type);
 		if (error < OK)
 			logError(
 				1,
@@ -2652,14 +2562,13 @@ static int fts_init_flow(struct fts_ts_info *info)
 				tag, __func__, error);
 	}
 
-	error |= fts_init_sensing(info);
+	error = fts_init_sensing(info);
 	if (error < OK)
 		logError(
 			1,
 			"%s Cannot initialize the hardware device ERROR %08X\n",
 			tag, error);
 
-	fts_idle_release(info, error >= OK);
 	return error;
 }
 
@@ -2758,22 +2667,16 @@ static int fts_interrupt_install(struct fts_ts_info *info)
 	install_handler(info, STATUS_UPDATE, status);
 	install_handler(info, USER_REPORT, user_report);
 
-	/* NO_AUTOEN supplies the external owner's initial disable depth.
-	 * Do not mask an IRQ descriptor before it belongs to this device.
-	 */
-	info->irq_external_disabled = true;
+	/* disable interrupts in any case */
+	error = fts_disableInterrupt();
 
 	logError(0, "%s Interrupt Mode\n", tag);
 	if (request_threaded_irq(info->client->irq, NULL, fts_event_handler,
-				 info->board->irq_flags | IRQF_ONESHOT |
-				 IRQF_NO_AUTOEN,
+				 info->board->irq_flags | IRQF_ONESHOT,
 				 FTS_TS_DRV_NAME, info)) {
 		logError(1, "%s Request irq failed\n", tag);
 		kfree(info->event_dispatch_table);
-		info->event_dispatch_table = NULL;
 		error = -EBUSY;
-	} else {
-		info->irq_registered = true;
 	}
 
 	return error;
@@ -2785,13 +2688,11 @@ static int fts_interrupt_install(struct fts_ts_info *info)
   */
 static void fts_interrupt_uninstall(struct fts_ts_info *info)
 {
-	if (!info->irq_registered)
-		return;
 	fts_disableInterrupt();
-	free_irq(info->client->irq, info);
-	info->irq_registered = false;
+
 	kfree(info->event_dispatch_table);
-	info->event_dispatch_table = NULL;
+
+	free_irq(info->client->irq, info);
 }
 
 /**@}*/
@@ -2920,9 +2821,7 @@ static int fts_init(struct fts_ts_info *info)
 int fts_chip_powercycle(struct fts_ts_info *info)
 {
 	int error = 0;
-	int ret;
 
-	fts_idle_hold(info);
 	logError(0, "%s %s: Power Cycle Starting...\n", tag, __func__);
 	logError(0, "%s %s: Disabling IRQ...\n", tag, __func__);
 	/* if IRQ pin is short with DVDD a call to the ISR will triggered when
@@ -2930,17 +2829,15 @@ int fts_chip_powercycle(struct fts_ts_info *info)
 	fts_disableInterrupt();
 
 	if (info->vdd_reg) {
-		ret = regulator_disable(info->vdd_reg);
-		error |= ret;
-		if (ret < 0)
+		error = regulator_disable(info->vdd_reg);
+		if (error < 0)
 			logError(0, "%s %s: Failed to disable DVDD regulator\n",
 				 tag, __func__);
 	}
 
 	if (info->avdd_reg) {
-		ret = regulator_disable(info->avdd_reg);
-		error |= ret;
-		if (ret < 0)
+		error = regulator_disable(info->avdd_reg);
+		if (error < 0)
 			logError(0, "%s %s: Failed to disable AVDD regulator\n",
 				 tag, __func__);
 	}
@@ -2952,9 +2849,8 @@ int fts_chip_powercycle(struct fts_ts_info *info)
 
 	/* in FTI power up first the digital and then the analog */
 	if (info->vdd_reg) {
-		ret = regulator_enable(info->vdd_reg);
-		error |= ret;
-		if (ret < 0)
+		error = regulator_enable(info->vdd_reg);
+		if (error < 0)
 			logError(0, "%s %s: Failed to enable DVDD regulator\n",
 				 tag, __func__);
 	}
@@ -2962,9 +2858,8 @@ int fts_chip_powercycle(struct fts_ts_info *info)
 	msleep(1);
 
 	if (info->avdd_reg) {
-		ret = regulator_enable(info->avdd_reg);
-		error |= ret;
-		if (ret < 0)
+		error = regulator_enable(info->avdd_reg);
+		if (error < 0)
 			logError(0, "%s %s: Failed to enable AVDD regulator\n",
 				 tag, __func__);
 	}
@@ -2984,7 +2879,6 @@ int fts_chip_powercycle(struct fts_ts_info *info)
 		 __func__, error);
 	setSystemResetedUp(1);
 	setSystemResetedDown(1);
-	fts_idle_release(info, false);
 	return error;
 }
 
@@ -2994,22 +2888,41 @@ int fts_chip_powercycle(struct fts_ts_info *info)
   * Register the notifier for the suspend/resume actions and the event handler
   * @return OK if success or an error code which specify the type of error
   */
-static int fts_init_sensing(struct fts_ts_info *info)
+/*
+ * umi: 把 FW 的 "进入 idle 的时间" 拉到最大。
+ *
+ * 症状：屏幕静止一会儿之后，第一下/极短的点击接不住 —— "要按一会才跟手"。
+ * 那是芯片空闲降了扫描率。厂商驱动用的原始 FW 命令是：
+ *     C0 00 00 xx   进入 idle 的时间 = xx * 50 ms
+ * 发 0xFF → 12.75 s（厂商 DT 的 fts,touch-idletime-def 就是 12450ms）。
+ *
+ * 实测（静置 20s 后极短按 10 下，看 /proc/interrupts 的 fts 增量）：
+ *   FW 默认             ->   0 次中断
+ *   发过这条命令之后     -> 105 次
+ *
+ * ⚠ 时机很关键：在 init 序列里紧接着 sense-on 发，触摸会**直接不响应**
+ * （IRQ 冻结，只有 system_reset 能救），而芯片正常扫了一会儿之后再发就没事。
+ * 所以这里用 delayed_work 延迟 3 秒发。配套的 C0 0A xx（动态扫描频率切换）
+ * 风险更大，没加。
+ */
+static void fts_idle_time_work(struct work_struct *work)
 {
-	int error = 0;
+	struct fts_ts_info *info = container_of(work, struct fts_ts_info,
+						idle_work.work);
+	u8 idle_time[4] = { 0xC0, 0x00, 0x00, 0xFF };
+	int ret;
 
-	fts_idle_hold(info);
-	if (!info->notifier_registered) {
-		error = fb_register_client(&info->notifier);
-		if (error < OK)
-			goto out;
-		info->notifier_registered = true;
-	}
-	if (!info->irq_registered) {
-		error = fts_interrupt_install(info);
-		if (error < OK)
-			goto out;
-	}
+	ret = fts_write(idle_time, sizeof(idle_time));
+	logError(1, "%s %s: idle-time set to 12.75s (%d)\n", tag, __func__, ret);
+}
+
+static int fts_init_sensing(struct fts_ts_info *info)
+{	int error = 0;
+
+	error |= fb_register_client(&info->notifier); /* register the
+							 * suspend/resume
+							 * function */
+	error |= fts_interrupt_install(info); /* register event handler */
 	error |= fts_mode_handler(info, 0); /* enable the features and
 						 * sensing */
 	/*
@@ -3021,12 +2934,31 @@ static int fts_init_sensing(struct fts_ts_info *info)
 	mdelay(WAIT_AFTER_SENSEOFF);
 	error |= setScanMode(SCAN_MODE_ACTIVE, 0x01);
 
-	/* The idle command is queued only after the whole init succeeds. */
+	/*
+	 * umi: 这里**不要**发 FW 的 idle/动态扫描命令。
+	 *
+	 * 厂商驱动里那两条原始命令是：
+	 *     C0 00 00 xx   进入 idle 的时间 = xx * 50 ms
+	 *     C0 0A 00/01   关/开"动态扫描频率切换"
+	 *
+	 * 在 init 之后紧接着发（C0 00 00 FF + C0 0A 01）实测会让**触摸直接
+	 * 不响应**（IRQ 计数不再增长，sysinfo/raw 都还正常），只有 system_reset
+	 * 才能救回来 —— 说明这两条命令的时序/参数不能照搬到主线的初始化流程里。
+	 *
+	 * 想要"空闲之后第一下也跟手"，得在用户态用 /root/fwcmd.py 一条一条试，
+	 * 见 docs/TOUCH.md §13.5。
+	 */
 
+	/*
+	 * umi: 把 FW 的"进入 idle 的时间"拉到最大（12.75s），但要**延迟 3 秒**
+	 * 再发 —— 理由见 fts_idle_time_work() 与 fts.h 里的注释：
+	 * 在 init 序列里紧接着 sense-on 发这条命令会让触摸直接不响应。
+	 */
+	schedule_delayed_work(&info->idle_work, msecs_to_jiffies(3000));
+
+	error |= fts_resetDisableIrqCount();
 	error |= fts_enableInterrupt();
 
-out:
-	fts_idle_release(info, error >= OK);
 	if (error < OK)
 		logError(1, "%s %s Init after Probe error (ERROR = %08X)\n",
 			 tag, __func__, error);
@@ -3057,8 +2989,6 @@ static int fts_mode_handler(struct fts_ts_info *info, int force)
 	int res = OK;
 	int ret = OK;
 	u8 settings[4] = { 0 };
-
-	fts_idle_hold(info);
 
 	/* disable irq wake because resuming from gesture mode */
 	if (IS_POWER_MODE(info->mode, SCAN_MODE_LOW_POWER) &&
@@ -3247,7 +3177,6 @@ static int fts_mode_handler(struct fts_ts_info *info, int force)
 
 	logError(0, "%s %s: Mode Handler finished! res = %08X mode = %08X\n",
 		 tag, __func__, res, info->mode);
-	fts_idle_release(info, res >= OK && info->resume_bit == 1);
 	return res;
 }
 
@@ -3261,12 +3190,11 @@ static void fts_resume_work(struct work_struct *work)
 	int r;
 	info = container_of(work, struct fts_ts_info, resume_work);
 
-	fts_idle_hold(info);
-	r = fts_disableInterrupt();
+	fts_disableInterrupt();
 
 #ifdef CONFIG_PINCTRL
 	if (info->ts_pinctrl) {
-		r |= pinctrl_select_state(info->ts_pinctrl,
+		r = pinctrl_select_state(info->ts_pinctrl,
 					 info->pinctrl_state_active);
 		if (r < 0)
 			logError(
@@ -3277,13 +3205,12 @@ static void fts_resume_work(struct work_struct *work)
 #endif
 
 	info->resume_bit = 1;
-	r |= fts_system_reset();
+	fts_system_reset();
 	release_all_touches(info);
-	r |= fts_mode_handler(info, 0);
+	fts_mode_handler(info, 0);
 	info->sensor_sleep = false;
 
-	r |= fts_enableInterrupt();
-	fts_idle_release(info, r >= OK);
+	fts_enableInterrupt();
 }
 
 /**
@@ -3295,7 +3222,6 @@ static void fts_suspend_work(struct work_struct *work)
 	struct fts_ts_info *info;
 	info = container_of(work, struct fts_ts_info, suspend_work);
 
-	fts_idle_hold(info);
 	fts_disableInterrupt();
 	info->resume_bit = 0;
 
@@ -3318,7 +3244,6 @@ static void fts_suspend_work(struct work_struct *work)
 		logError(0, "%s %s: enter gesture mode!\n", tag, __func__);
 		fts_enableInterrupt();
 	}
-	fts_idle_release(info, false);
 }
 /** @}*/
 
@@ -3331,11 +3256,11 @@ static void fts_suspend_work(struct work_struct *work)
 static int fts_fb_state_chg_callback(struct notifier_block *nb,
 				     unsigned long val, void *data)
 {
-#ifndef FB_EVENT_BLANK
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
 	/*
-	 * 新内核的 fbdev notifier 不再提供 FB_EVENT_BLANK。
-	 * 按实际头文件探测，兼容 6.18 等已移除该事件的内核。屏亮灭由
-	 * 显示栈负责；idle PM 屏障只暂停可选命令，不切换 sensing。
+	 * 7.x 的 fbdev notifier 只剩 FB_EVENT_FB_REGISTERED / UNREGISTERED，
+	 * FB_EVENT_BLANK 和 FB_BLANK_* 都被移除了。屏亮灭改由 PM 回调
+	 * （fts_pm_suspend / fts_pm_resume）承担，这里无事可做。
 	 */
 	(void)nb;
 	(void)val;
@@ -3453,8 +3378,6 @@ static int fts_enable_reg(struct fts_ts_info *info, bool enable)
 {
 	int retval;
 
-	fts_idle_hold(info);
-
 	if (!enable) {
 		retval = 0;
 		goto disable_pwr_reg;
@@ -3492,7 +3415,6 @@ static int fts_enable_reg(struct fts_ts_info *info, bool enable)
 		}
 	}
 
-	fts_idle_release(info, false);
 	return OK;
 
 disable_pwr_reg:
@@ -3504,7 +3426,6 @@ disable_bus_reg:
 		regulator_disable(info->vdd_reg);
 
 exit:
-	fts_idle_release(info, false);
 	return retval;
 }
 
@@ -3544,14 +3465,12 @@ static int fts_gpio_setup(int gpio, bool config, int dir, int state)
 		if (retval) {
 			logError(1, "%s %s: Failed to set gpio %d direction",
 				 tag, __func__, gpio);
-			goto free_gpio;
+			return retval;
 		}
-		return retval;
 	}
-
-free_gpio:
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
-	gpio_free(gpio);
+	else
+		gpio_free(gpio);
 #endif
 
 	return retval;
@@ -3663,8 +3582,6 @@ static int parse_dt(struct device *dev, struct fts_hw_platform_data *bdata)
 	bdata->irq_gpio = GPIO_NOT_DEFINED;
 #else
 	bdata->irq_gpio = of_get_named_gpio(np, "fts,irq-gpio", 0);
-	if (bdata->irq_gpio < 0)
-		return bdata->irq_gpio;
 #endif
 
 	logError(0, "%s irq_gpio = %d\n", tag, bdata->irq_gpio);
@@ -3712,15 +3629,13 @@ static int parse_dt(struct device *dev, struct fts_hw_platform_data *bdata)
 							      GPIOD_ASIS);
 
 		if (IS_ERR(gd))
-			return PTR_ERR(gd);
+			gd = NULL;
 		bdata->reset_gpio = gd ? desc_to_gpio(gd) : GPIO_NOT_DEFINED;
 		logError(0, "%s reset_gpio =%d\n", tag, bdata->reset_gpio);
 	}
 #else
 	if (of_property_read_bool(np, "fts,reset-gpio")) {
 		bdata->reset_gpio = of_get_named_gpio(np, "fts,reset-gpio", 0);
-		if (bdata->reset_gpio < 0)
-			return bdata->reset_gpio;
 		logError(0, "%s reset_gpio =%d\n", tag, bdata->reset_gpio);
 	} else
 		bdata->reset_gpio = GPIO_NOT_DEFINED;
@@ -3769,7 +3684,6 @@ static int fts_probe(struct spi_device *client)
 	struct device_node *dp = client->dev.of_node;
 	int retval;
 	int skip_5_1 = 0;
-	bool gpio_ready = false;
 	u16 bus_type;
 
 	logError(1, "%s %s: driver probe begin!\n", tag, __func__);
@@ -3830,9 +3744,6 @@ static int fts_probe(struct spi_device *client)
 		goto ProbeErrorExit_0;
 	}
 
-	mutex_init(&info->idle_lock);
-	mutex_init(&info->fwupdate_lock);
-	INIT_DELAYED_WORK(&info->idle_work, fts_idle_time_work);
 	info->client = client;
 	info->dev = &info->client->dev;
 	fts_info = info;
@@ -3846,12 +3757,9 @@ static int fts_probe(struct spi_device *client)
 		if (!info->board) {
 			logError(1, "%s ERROR:info.board kzalloc failed\n",
 				 tag);
-			error = -ENOMEM;
 			goto ProbeErrorExit_1;
 		}
-		error = parse_dt(&client->dev, info->board);
-		if (error < 0)
-			goto ProbeErrorExit_1;
+		parse_dt(&client->dev, info->board);
 	}
 
 	logError(0, "%s SET Regulators:\n", tag);
@@ -3859,15 +3767,13 @@ static int fts_probe(struct spi_device *client)
 	if (retval < 0) {
 		logError(1, "%s ERROR: %s: Failed to get regulators\n", tag,
 			 __func__);
-		error = retval;
-		goto ProbeErrorExit_2;
+		goto ProbeErrorExit_1;
 	}
 
 	retval = fts_enable_reg(info, true);
 	if (retval < 0) {
 		logError(1, "%s %s: ERROR Failed to enable regulators\n", tag,
 			 __func__);
-		error = retval;
 		goto ProbeErrorExit_2;
 	}
 
@@ -3876,10 +3782,8 @@ static int fts_probe(struct spi_device *client)
 	if (retval < 0) {
 		logError(1, "%s %s: ERROR Failed to set up GPIO's\n", tag,
 			 __func__);
-		error = retval;
-		goto ProbeErrorExit_4;
+		goto ProbeErrorExit_2;
 	}
-	gpio_ready = true;
 
 #ifdef CONFIG_PINCTRL
 	logError(0, "%s %s: Pinctrl Init!\n", tag, __func__);
@@ -3915,6 +3819,7 @@ static int fts_probe(struct spi_device *client)
 
 	INIT_WORK(&info->resume_work, fts_resume_work);
 	INIT_WORK(&info->suspend_work, fts_suspend_work);
+	INIT_DELAYED_WORK(&info->idle_work, fts_idle_time_work);
 
 	info->dev = &info->client->dev;
 	fts_info = info;
@@ -4087,10 +3992,6 @@ static int fts_probe(struct spi_device *client)
 	return OK;
 
 ProbeErrorExit_6:
-	fts_idle_stop(info);
-	if (info->notifier_registered)
-		fb_unregister_client(&info->notifier);
-	fts_interrupt_uninstall(info);
 	input_unregister_device(info->input_dev);
 
 ProbeErrorExit_5_1:
@@ -4101,21 +4002,12 @@ ProbeErrorExit_5:
 	destroy_workqueue(info->event_wq);
 
 ProbeErrorExit_4:
-	if (gpio_ready) {
-		if (info->board->irq_gpio != GPIO_NOT_DEFINED)
-			fts_gpio_setup(info->board->irq_gpio, false, 0, 0);
-		if (info->board->reset_gpio != GPIO_NOT_DEFINED)
-			fts_gpio_setup(info->board->reset_gpio, false, 0, 0);
-	}
 	fts_enable_reg(info, false);
 
 ProbeErrorExit_2:
 	fts_get_reg(info, false);
 
 ProbeErrorExit_1:
-	fts_idle_stop(info);
-	dev_set_drvdata(&client->dev, NULL);
-	fts_info = NULL;
 	kfree(info);
 
 ProbeErrorExit_0:
@@ -4138,17 +4030,13 @@ static void fts_remove(struct spi_device *client)
 
 	struct fts_ts_info *info = dev_get_drvdata(&(client->dev));
 
-	fts_idle_stop(info);
 	/* sysfs stuff */
 	sysfs_remove_group(&client->dev.kobj, &info->attrs);
 
-	if (info->notifier_registered)
-		fb_unregister_client(&info->notifier);
-	cancel_work_sync(&info->resume_work);
-	cancel_work_sync(&info->suspend_work);
-
-	/* No resume worker may re-enable an IRQ after it has been freed. */
+	/* remove interrupt and event handlers */
 	fts_interrupt_uninstall(info);
+
+	fb_unregister_client(&info->notifier);
 
 	/* unregister the device */
 	input_unregister_device(info->input_dev);
@@ -4181,50 +4069,6 @@ static void fts_remove(struct spi_device *client)
 	kfree(info);
 }
 
-/* Existing sensing/DPMS policy is unchanged. Fence only the optional idle
- * command across system sleep, including aborted suspend and hibernation.
- */
-static int fts_idle_pm_prepare(struct device *dev)
-{
-	struct fts_ts_info *info = dev_get_drvdata(dev);
-	bool ready;
-
-	mutex_lock(&info->idle_lock);
-	ready = info->idle_ready;
-	fts_idle_hold_locked(info);
-	info->idle_pm_ready = ready;
-	mutex_unlock(&info->idle_lock);
-	cancel_delayed_work_sync(&info->idle_work);
-	return 0;
-}
-
-static void fts_idle_pm_complete(struct device *dev)
-{
-	struct fts_ts_info *info = dev_get_drvdata(dev);
-
-	mutex_lock(&info->idle_lock);
-	fts_idle_release_locked(info, info->idle_pm_ready);
-	mutex_unlock(&info->idle_lock);
-}
-
-static const struct dev_pm_ops fts_idle_pm_ops = {
-	.prepare = fts_idle_pm_prepare,
-	.complete = fts_idle_pm_complete,
-};
-
-#ifdef I2C_INTERFACE
-static void fts_shutdown(struct i2c_client *client)
-#else
-static void fts_shutdown(struct spi_device *client)
-#endif
-{
-	struct fts_ts_info *info = dev_get_drvdata(&client->dev);
-
-	fts_idle_stop(info);
-	cancel_work_sync(&info->resume_work);
-	cancel_work_sync(&info->suspend_work);
-}
-
 /**
   * Struct which contains the compatible names that need to match with
   * the definition of the device in the device tree node
@@ -4247,11 +4091,9 @@ static struct i2c_driver fts_i2c_driver = {
 		.name		= FTS_TS_DRV_NAME,
 		.owner 		= THIS_MODULE,
 		.of_match_table = fts_of_match_table,
-		.pm = &fts_idle_pm_ops,
 	},
 	.probe			= fts_probe,
 	.remove			= fts_remove,
-	.shutdown		= fts_shutdown,
 	.id_table		= fts_device_id,
 };
 #else
@@ -4259,12 +4101,10 @@ static struct spi_driver fts_spi_driver = {
 	.driver			= {
 		.name		= FTS_TS_DRV_NAME,
 		.of_match_table = fts_of_match_table,
-		.pm = &fts_idle_pm_ops,
 		.owner		= THIS_MODULE,
 	},
 	.probe			= fts_probe,
 	.remove			= fts_remove,
-	.shutdown		= fts_shutdown,
 };
 #endif
 

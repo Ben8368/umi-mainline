@@ -23,7 +23,6 @@
 #include "pm8150b.dtsi"
 #include "pm8150l.dtsi"
 #include "pm8009.dtsi"
-#include "xiaomi-umi-thermistors.dtsi"
 
 /*
  * 上游 sm8250.dtsi 里这几个 reserved-memory 是按 MTP 参考板写的，
@@ -746,4 +745,3 @@
  * overlay 用 &label 找目标，label 不全就整体失败 -> ABL 静默回 fastboot。
  * 这个文件给 overlay 要的 224 个 label 建了空占位节点（自动生成，别手改）。 */
 #include "umi-dtbo-stubs.dtsi"
-#include "umi-spmi-overlay-guard.dtsi"

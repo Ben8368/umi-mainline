@@ -13,16 +13,15 @@
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
 #include <linux/types.h>
-#include <linux/version.h>
 #include <linux/workqueue.h>
 
 /*
  * 6.12 只有 devm_power_supply_get_by_phandle(dev, prop)；新内核把它改名为
- * devm_power_supply_get_by_reference()（上游从 6.17 起）。函数声明不是宏，
- * 不能用 #ifndef 检测，否则会覆盖新 API 并调用已移除的旧名字。
+ * devm_power_supply_get_by_reference()。这个驱动是按新名字写的，兼容一下。
  */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 17, 0)
-#define devm_power_supply_get_by_reference devm_power_supply_get_by_phandle
+#ifndef devm_power_supply_get_by_reference
+#define devm_power_supply_get_by_reference(dev, prop) \
+	devm_power_supply_get_by_phandle(dev, prop)
 #endif
 
 /* SOC */
@@ -1077,7 +1076,7 @@ static int qcom_fg_clear_ima(struct qcom_fg_chip *chip,
 	return 0;
 }
 
-static irqreturn_t qcom_fg_handle_soc_delta(int irq, void *data)
+irqreturn_t qcom_fg_handle_soc_delta(int irq, void *data)
 {
 	struct qcom_fg_chip *chip = data;
 
@@ -1088,7 +1087,7 @@ static irqreturn_t qcom_fg_handle_soc_delta(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t qcom_fg_handle_mem_avail(int irq, void *data)
+irqreturn_t qcom_fg_handle_mem_avail(int irq, void *data)
 {
 	struct qcom_fg_chip *chip = data;
 
@@ -1349,10 +1348,6 @@ static void qcom_fg_remove(struct platform_device *pdev)
 {
 	struct qcom_fg_chip *chip = platform_get_drvdata(pdev);
 
-	if (chip->chg_psy) {
-		power_supply_unreg_notifier(&chip->nb);
-		cancel_delayed_work_sync(&chip->status_changed_work);
-	}
 	power_supply_put_battery_info(chip->batt_psy, chip->batt_info);
 
 	if(chip->sram_wq)

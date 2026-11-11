@@ -14,9 +14,7 @@
 set -e
 
 WS=${WS:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
-# shellcheck source=../config/kernel.env
-. "$WS/config/kernel.env"
-TREE=${TREE:-/root/linux-$UMI_KERNEL_VERSION}
+TREE=${TREE:-/root/linux}
 OUT=${OUT:-$TREE/out}
 IMG=${1:-/root/arch/umi-rootfs.img}
 MNT=/mnt/umirootfs
